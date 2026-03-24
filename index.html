@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ИСО/СМК — Генератор документов</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Fira+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F5F3EE;--surface:#FFF;--border:#DDD8CF;
+  --navy:#1E3A5F;--navyL:#2B5180;
+  --gold:#B8891A;--goldL:#F5EDD3;
+  --teal:#0B7A79;--tealL:#D6EFEF;
+  --orange:#C05C1A;--orangeL:#FAEADE;
+  --green:#2D6A4F;--greenL:#D8F0E5;
+  --red:#B91C1C;--text:#18181B;--muted:#706A5E;
+  --r:6px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Fira Sans',sans-serif;background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden}
+
+/* ── SIDEBAR ── */
+#sidebar{
+  width:220px;flex-shrink:0;background:var(--navy);
+  display:flex;flex-direction:column;height:100vh;overflow-y:auto;
+}
+.sb-logo{
+  padding:18px 16px 14px;border-bottom:1px solid rgba(255,255,255,.1);
+  display:flex;align-items:center;gap:10px;
+}
+.sb-logo .mark{
+  width:36px;height:36px;background:var(--gold);
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Playfair Display',serif;font-size:14px;font-weight:700;color:#fff;
+  border-radius:4px;flex-shrink:0;
+}
+.sb-logo h1{font-family:'Playfair Display',serif;font-size:13px;color:#fff;font-weight:500;line-height:1.3}
+.sb-logo p{font-size:9.5px;color:rgba(255,255,255,.5);margin-top:1px}
+
+.sb-section{padding:14px 12px 4px;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.4)}
+.sb-item{
+  display:flex;align-items:center;gap:9px;
+  padding:9px 12px;margin:1px 8px;border-radius:5px;
+  font-size:12px;color:rgba(255,255,255,.75);cursor:pointer;
+  transition:background .14s,color .14s;
+}
+.sb-item:hover{background:rgba(255,255,255,.08);color:#fff}
+.sb-item.active{background:rgba(255,255,255,.12);color:#fff;font-weight:600}
+.sb-item .icon{font-size:14px;width:18px;text-align:center;flex-shrink:0}
+
+.sb-divider{height:1px;background:rgba(255,255,255,.08);margin:8px 12px}
+
+/* ── MAIN ── */
+#main{flex:1;overflow-y:auto;display:flex;flex-direction:column}
+
+/* ── TOP BAR ── */
+#topbar{
+  background:var(--surface);border-bottom:1px solid var(--border);
+  padding:0 28px;height:52px;display:flex;align-items:center;gap:12px;
+  flex-shrink:0;
+}
+#topbar h2{font-family:'Playfair Display',serif;font-size:17px;color:var(--navy);flex:1}
+.tb-btn{
+  height:32px;padding:0 14px;border-radius:var(--r);border:none;cursor:pointer;
+  font-family:'Fira Sans',sans-serif;font-size:11.5px;font-weight:600;
+  display:flex;align-items:center;gap:6px;transition:opacity .15s;
+}
+.tb-btn:hover{opacity:.85}
+.tb-btn.navy{background:var(--navy);color:#fff}
+.tb-btn.gold{background:var(--gold);color:#fff}
+.tb-btn.out{background:transparent;border:1.5px solid var(--border);color:var(--text)}
+.tb-btn.red{background:var(--red);color:#fff}
+
+/* ── CONTENT AREA ── */
+#content{flex:1;padding:24px 28px}
+
+/* ── CARDS ── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:16px;overflow:hidden}
+.card-head{padding:13px 20px;border-bottom:1px solid var(--border);background:#FAFAF8;display:flex;align-items:center;gap:10px}
+.card-head .chi{width:26px;height:26px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
+.card-head h3{font-family:'Playfair Display',serif;font-size:14px;color:var(--navy);font-weight:600}
+.card-body{padding:20px}
+
+/* ── GRID FORMS ── */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.full{grid-column:1/-1}
+.fg{display:flex;flex-direction:column;gap:4px}
+label{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+label .req{color:var(--gold)}
+input,select,textarea{
+  padding:8px 11px;border:1.5px solid var(--border);border-radius:var(--r);
+  font-family:'Fira Sans',sans-serif;font-size:13px;color:var(--text);background:#fff;width:100%;
+  transition:border-color .14s,box-shadow .14s;
+}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--navyL);box-shadow:0 0 0 3px rgba(43,81,128,.1)}
+input::placeholder{color:#C4BDB2}
+.hint{font-size:10px;color:var(--muted)}
+.divider{height:1px;background:var(--border);margin:16px 0}
+.sec-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.sec-lbl::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ── COMPANY LIST ── */
+.co-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.co-card{
+  background:var(--surface);border:1.5px solid var(--border);border-radius:var(--r);
+  padding:14px;cursor:pointer;transition:border-color .14s,box-shadow .14s;
+  display:flex;flex-direction:column;gap:6px;
+}
+.co-card:hover{border-color:var(--navyL);box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.co-card.selected{border-color:var(--gold);background:var(--goldL)}
+.co-name{font-size:14px;font-weight:700;color:var(--navy)}
+.co-meta{font-size:11px;color:var(--muted)}
+.co-actions{display:flex;gap:6px;margin-top:4px}
+.co-btn{
+  height:26px;padding:0 10px;border-radius:4px;border:none;cursor:pointer;
+  font-family:'Fira Sans',sans-serif;font-size:10.5px;font-weight:600;
+  transition:opacity .12s;
+}
+.co-btn:hover{opacity:.85}
+.co-btn.edit{background:var(--tealL);color:var(--teal)}
+.co-btn.del{background:#FEE2E2;color:var(--red)}
+.co-btn.gen{background:var(--navy);color:#fff}
+
+/* ── TABS ── */
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px}
+.tab{
+  padding:10px 18px;font-size:12.5px;font-weight:600;cursor:pointer;
+  border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);
+  transition:color .14s,border-color .14s;
+}
+.tab.active{color:var(--navy);border-bottom-color:var(--gold)}
+.tab:hover:not(.active){color:var(--text)}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* ── SUBTABS ── */
+.subtabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px}
+.subtab{
+  padding:6px 14px;border-radius:20px;font-size:11.5px;font-weight:600;cursor:pointer;
+  border:1.5px solid var(--border);color:var(--muted);background:var(--surface);
+  transition:all .14s;
+}
+.subtab.active{background:var(--navy);color:#fff;border-color:var(--navy)}
+.subtab:hover:not(.active){border-color:var(--navyL);color:var(--navy)}
+
+/* ── GENERATE BUTTON ── */
+.gen-btn{
+  width:100%;padding:14px;background:var(--navy);color:#fff;border:none;
+  border-radius:var(--r);font-family:'Fira Sans',sans-serif;font-size:14px;font-weight:700;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;
+  transition:background .15s;margin-top:6px;
+}
+.gen-btn:hover{background:#152D4A}
+.gen-btn:disabled{background:#8FA8C4;cursor:not-allowed}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .65s linear infinite;display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── ALERTS ── */
+.alert{padding:12px 16px;border-radius:var(--r);font-size:12.5px;margin-top:12px;display:none}
+.alert.err{background:#FEF2F2;border:1px solid #FECACA;color:var(--red)}
+.alert.ok{background:#F0FDF4;border:1px solid #86EFAC;color:var(--green)}
+
+/* ── JOURNAL ── */
+.jn-item{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  padding:14px 18px;display:flex;align-items:center;gap:14px;margin-bottom:8px;
+}
+.jn-icon{font-size:22px}
+.jn-info{flex:1}
+.jn-name{font-size:13px;font-weight:700;color:var(--navy)}
+.jn-meta{font-size:11px;color:var(--muted);margin-top:2px}
+.jn-actions{display:flex;gap:6px}
+
+/* ── MODAL ── */
+#modal-bg{
+  position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;
+  display:none;align-items:center;justify-content:center;padding:20px;
+}
+#modal-bg.open{display:flex}
+#modal{
+  background:#fff;border-radius:10px;width:100%;max-width:680px;
+  max-height:90vh;overflow-y:auto;
+  box-shadow:0 20px 60px rgba(0,0,0,.25);
+}
+.modal-head{
+  padding:18px 22px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;background:#fff;z-index:1;
+}
+.modal-head h3{font-family:'Playfair Display',serif;font-size:16px;color:var(--navy)}
+.modal-close{width:28px;height:28px;border:none;background:none;cursor:pointer;font-size:18px;color:var(--muted)}
+.modal-body{padding:22px}
+.modal-foot{padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px}
+
+/* ── RESULT BOX ── */
+#result-box{display:none;margin-top:16px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:var(--r);padding:18px}
+#result-box h3{font-size:14px;font-weight:700;color:var(--green);margin-bottom:10px}
+.dl-btn{
+  display:flex;align-items:center;gap:8px;padding:10px 14px;
+  background:#fff;border:1px solid #86EFAC;border-radius:var(--r);
+  font-size:12.5px;font-weight:600;color:var(--green);cursor:pointer;
+  text-decoration:none;transition:background .12s;width:fit-content;
+}
+.dl-btn:hover{background:#F0FDF4}
+
+/* ── EMPTY STATE ── */
+.empty{text-align:center;padding:50px 20px;color:var(--muted)}
+.empty .ei{font-size:40px;margin-bottom:12px}
+.empty p{font-size:13px}
+
+@media(max-width:700px){
+  #sidebar{display:none}
+  .g2,.g3,.g4{grid-template-columns:1fr}
+  #content{padding:16px}
+}
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div id="sidebar">
+  <div class="sb-logo">
+    <div class="mark">СМК</div>
+    <div>
+      <h1>ИСО/СУОТ</h1>
+      <p>Генератор документов</p>
+    </div>
+  </div>
+
+  <div class="sb-section">Навигация</div>
+  <div class="sb-item active" data-page="docs" onclick="nav('docs',this)">
+    <span class="icon">📄</span> Документы
+  </div>
+  <div class="sb-item" data-page="companies" onclick="nav('companies',this)">
+    <span class="icon">🏢</span> Компании
+  </div>
+  <div class="sb-item" data-page="journal" onclick="nav('journal',this)">
+    <span class="icon">📋</span> Журнал
+  </div>
+
+  <div class="sb-divider"></div>
+  <div class="sb-section">Система</div>
+  <div class="sb-item" onclick="openAddTemplate()">
+    <span class="icon">➕</span> Свой шаблон
+  </div>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+  <div id="topbar">
+    <h2 id="page-title">Документы ИСО</h2>
+    <button class="tb-btn gold" onclick="openGenModal()" id="btn-gen-top" style="display:none">
+      ⚡ Сформировать пакет
+    </button>
+  </div>
+
+  <div id="content">
+
+    <!-- PAGE: DOCS -->
+    <div id="page-docs" class="page-content">
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('iso',this)">🏅 ИСО / СМК</div>
+        <div class="tab" onclick="switchTab('suot',this)">🦺 СУОТ <span style="font-size:9px;background:#E2E0D8;padding:1px 6px;border-radius:8px;margin-left:4px">скоро</span></div>
+      </div>
+
+      <!-- ISO TAB -->
+      <div id="tab-iso" class="tab-content active">
+        <div class="subtabs">
+          <div class="subtab active" onclick="switchSub('journals',this)">📚 Журналы</div>
+          <div class="subtab" onclick="switchSub('instructions',this)">📝 Инструкции</div>
+          <div class="subtab" onclick="switchSub('smk',this)">🏗 СМК и приказы</div>
+          <div class="subtab" onclick="switchSub('cards',this)">🃏 Карточки</div>
+        </div>
+
+        <!-- JOURNALS -->
+        <div id="sub-journals" class="subtab-content active">
+          <div class="card">
+            <div class="card-head">
+              <div class="chi" style="background:#EDE8F7">📚</div>
+              <h3>Журналы СМК</h3>
+            </div>
+            <div class="card-body">
+              <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">Все 12 журналов формируются автоматически на основе данных компании. Даты, название организации и подписи подставляются из карточки компании.</p>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <div id="journal-list"></div>
+              </div>
+              <div style="margin-top:14px;padding:12px;background:var(--goldL);border-radius:var(--r);font-size:11.5px;color:#7A6830">
+                💡 Для формирования документов выберите компанию в разделе «Компании» и нажмите «Сформировать пакет»
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- INSTRUCTIONS -->
+        <div id="sub-instructions" class="subtab-content">
+          <div class="card">
+            <div class="card-head">
+              <div class="chi" style="background:var(--tealL)">📝</div>
+              <h3>Должностные инструкции ИТР</h3>
+            </div>
+            <div class="card-body">
+              <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">Должностные инструкции формируются по каждой должности ИТР. Шаблоны уже загружены.</p>
+              <div id="di-list" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px"></div>
+              <div style="margin-top:14px;padding:12px;background:var(--tealL);border-radius:var(--r);font-size:11.5px;color:var(--teal)">
+                💡 Инструкции включены в общий пакет при формировании документов
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SMK -->
+        <div id="sub-smk" class="subtab-content">
+          <div class="card">
+            <div class="card-head">
+              <div class="chi" style="background:var(--orangeL)">🏗</div>
+              <h3>СМК — приказы, протоколы, программы</h3>
+            </div>
+            <div class="card-body">
+              <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">Все документы СМК формируются автоматически согласно промту оформления ИСО.</p>
+              <div id="smk-list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CARDS -->
+        <div id="sub-cards" class="subtab-content">
+          <div class="card">
+            <div class="card-head">
+              <div class="chi" style="background:var(--greenL)">🃏</div>
+              <h3>Карточки и отчёты</h3>
+            </div>
+            <div class="card-body">
+              <div id="cards-list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /tab-iso -->
+
+      <!-- SUOT TAB -->
+      <div id="tab-suot" class="tab-content">
+        <div class="card">
+          <div class="card-body" style="text-align:center;padding:50px">
+            <div style="font-size:48px;margin-bottom:16px">🦺</div>
+            <div style="font-size:16px;font-weight:600;color:var(--navy);margin-bottom:8px">СУОТ — в разработке</div>
+            <p style="font-size:13px;color:var(--muted)">Раздел СУОТ будет добавлен в следующей версии</p>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /page-docs -->
+
+    <!-- PAGE: COMPANIES -->
+    <div id="page-companies" class="page-content" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <div style="font-size:13px;color:var(--muted)" id="co-count">Загрузка...</div>
+        <button class="tb-btn navy" onclick="openCoModal()">+ Добавить компанию</button>
+      </div>
+      <div id="co-list" class="co-grid"></div>
+    </div>
+
+    <!-- PAGE: JOURNAL -->
+    <div id="page-journal" class="page-content" style="display:none">
+      <div id="journal-entries"></div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+
+<!-- MODAL: Company form -->
+<div id="modal-bg">
+  <div id="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">Новая компания</h3>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="sec-lbl">Организация</div>
+      <div class="g2" style="margin-bottom:14px">
+        <div class="fg">
+          <label>Форма собственности <span class="req">*</span></label>
+          <select id="f-orgForm">
+            <option value="ООО">ООО</option>
+            <option value="ОАО">ОАО</option>
+            <option value="ЗАО">ЗАО</option>
+            <option value="УП">УП</option>
+            <option value="ИП">ИП</option>
+            <option value="РУП">РУП</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label>Название организации <span class="req">*</span></label>
+          <input id="f-orgName" placeholder="ЭнергоМагистраль" />
+        </div>
+        <div class="fg">
+          <label>Город <span class="req">*</span></label>
+          <input id="f-city" placeholder="Минск" value="Минск"/>
+        </div>
+        <div class="fg">
+          <label>Область СМК <span class="req">*</span></label>
+          <select id="f-scope">
+            <option value="выполнения функций генерального подрядчика, производства строительно-монтажных работ">Ген.подрядчик + СМР</option>
+            <option value="производства строительно-монтажных работ">Только СМР</option>
+            <option value="выполнения функций генерального подрядчика">Только ген.подрядчик</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Даты</div>
+      <div class="g3" style="margin-bottom:14px">
+        <div class="fg">
+          <label>Дата начала разработки <span class="req">*</span></label>
+          <input id="f-startDate" type="date"/>
+          <div class="hint">Журналы, начало</div>
+        </div>
+        <div class="fg">
+          <label>Дата внедрения <span class="req">*</span></label>
+          <input id="f-implDate" type="date"/>
+          <div class="hint">Основная дата приказов</div>
+        </div>
+        <div class="fg">
+          <label>Дата окончания системы <span class="req">*</span></label>
+          <input id="f-endDate" type="date"/>
+          <div class="hint">Протокол КС, отчёты</div>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Директор</div>
+      <div class="g3" style="margin-bottom:14px">
+        <div class="fg">
+          <label>Фамилия директора <span class="req">*</span></label>
+          <input id="f-dirSurname" placeholder="Шакуро"/>
+        </div>
+        <div class="fg">
+          <label>Инициалы директора <span class="req">*</span></label>
+          <input id="f-dirInitials" placeholder="А.А."/>
+        </div>
+        <div class="fg">
+          <label>Число ИТР <span class="req">*</span></label>
+          <input id="f-itrCount" type="number" placeholder="5" min="1"/>
+          <div class="hint">Для исходной инф. СМК</div>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Аудиторы (3 человека с удостоверениями ОТ)</div>
+      <div style="margin-bottom:14px">
+        <!-- Auditor 1 = Director -->
+        <div style="background:var(--goldL);padding:10px 12px;border-radius:var(--r);margin-bottom:10px">
+          <div style="font-size:10px;font-weight:700;color:var(--gold);margin-bottom:6px;letter-spacing:.06em">АУДИТОР 1 (обычно директор)</div>
+          <div class="g3">
+            <div class="fg">
+              <label>Должность <span class="req">*</span></label>
+              <input id="f-aud1Post" placeholder="директор" value="директор"/>
+            </div>
+            <div class="fg">
+              <label>Фамилия <span class="req">*</span></label>
+              <input id="f-aud1Surname" placeholder="Шакуро"/>
+            </div>
+            <div class="fg">
+              <label>Инициалы <span class="req">*</span></label>
+              <input id="f-aud1Initials" placeholder="А.А."/>
+            </div>
+          </div>
+        </div>
+        <!-- Auditor 2 -->
+        <div style="background:var(--tealL);padding:10px 12px;border-radius:var(--r);margin-bottom:10px">
+          <div style="font-size:10px;font-weight:700;color:var(--teal);margin-bottom:6px;letter-spacing:.06em">АУДИТОР 2</div>
+          <div class="g3">
+            <div class="fg">
+              <label>Должность <span class="req">*</span></label>
+              <input id="f-aud2Post" placeholder="главный инженер"/>
+            </div>
+            <div class="fg">
+              <label>Фамилия <span class="req">*</span></label>
+              <input id="f-aud2Surname" placeholder="Семенчуков"/>
+            </div>
+            <div class="fg">
+              <label>Инициалы <span class="req">*</span></label>
+              <input id="f-aud2Initials" placeholder="В.В."/>
+            </div>
+          </div>
+        </div>
+        <!-- Auditor 3 -->
+        <div style="background:var(--orangeL);padding:10px 12px;border-radius:var(--r)">
+          <div style="font-size:10px;font-weight:700;color:var(--orange);margin-bottom:6px;letter-spacing:.06em">АУДИТОР 3</div>
+          <div class="g3">
+            <div class="fg">
+              <label>Должность</label>
+              <input id="f-aud3Post" placeholder="производитель работ"/>
+            </div>
+            <div class="fg">
+              <label>Фамилия</label>
+              <input id="f-aud3Surname" placeholder="Нестерёнок"/>
+            </div>
+            <div class="fg">
+              <label>Инициалы</label>
+              <input id="f-aud3Initials" placeholder="С.Д."/>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Ответственный за ФНПА (2-й, не директор)</div>
+      <div class="g3" style="margin-bottom:14px">
+        <div class="fg">
+          <label>Должность</label>
+          <input id="f-secPost" placeholder="главный инженер"/>
+        </div>
+        <div class="fg">
+          <label>Фамилия</label>
+          <input id="f-secSurname" placeholder="Семенчуков"/>
+        </div>
+        <div class="fg">
+          <label>Инициалы</label>
+          <input id="f-secInitials" placeholder="В.В."/>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Строительный объект (для отчёта)</div>
+      <div class="fg full" style="margin-bottom:14px">
+        <label>Наименование объекта</label>
+        <input id="f-object" placeholder="Жилой дом по ул. Ленина, г. Минск"/>
+      </div>
+
+      <div id="modal-alert" class="alert err"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="tb-btn out" onclick="closeModal()">Отмена</button>
+      <button class="tb-btn navy" onclick="saveCompany()">💾 Сохранить компанию</button>
+    </div>
+  </div>
+</div>
+
+<!-- GENERATE MODAL -->
+<div id="gen-modal-bg" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:none;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:10px;width:100%;max-width:500px;box-shadow:0 20px 60px rgba(0,0,0,.25)">
+    <div class="modal-head">
+      <h3>⚡ Сформировать пакет документов</h3>
+      <button class="modal-close" onclick="closeGenModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="gen-co-info" style="background:var(--goldL);padding:12px;border-radius:var(--r);margin-bottom:14px;font-size:13px"></div>
+      <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">Будут сформированы все документы ИСО: журналы, инструкции, приказы, протоколы, программы. Итоговый пакет — ZIP-архив.</p>
+
+      <button class="gen-btn" id="gen-btn" onclick="doGenerate()">
+        <div class="spin" id="gen-spin"></div>
+        <span id="gen-btn-text">⚡ Сформировать все документы</span>
+      </button>
+
+      <div id="gen-error" class="alert err"></div>
+      <div id="gen-result" style="display:none;margin-top:14px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:var(--r);padding:16px">
+        <div style="font-size:13px;font-weight:700;color:var(--green);margin-bottom:8px">✅ Документы готовы!</div>
+        <div id="gen-result-info" style="font-size:12px;color:var(--green);margin-bottom:12px"></div>
+        <a id="gen-dl-link" class="dl-btn" href="#" onclick="downloadZip(event)">
+          ⬇ Скачать ZIP-архив
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── STATE ─────────────────────────────────────────────────
+let currentPage = 'docs';
+let companies = [];
+let selectedCompanyId = null;
+let currentGenZip = null;
+let editingCompanyId = null;
+
+// ── NAVIGATION ────────────────────────────────────────────
+function nav(page, el) {
+  document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.page-content').forEach(p => p.style.display = 'none');
+  document.getElementById('page-' + page).style.display = 'block';
+  currentPage = page;
+
+  const titles = { docs: 'Документы ИСО', companies: 'Компании', journal: 'Журнал' };
+  document.getElementById('page-title').textContent = titles[page] || page;
+  document.getElementById('btn-gen-top').style.display = page === 'docs' ? 'flex' : 'none';
+
+  if (page === 'companies') loadCompanies();
+  if (page === 'journal') loadJournal();
+}
+
+function switchTab(name, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+function switchSub(name, el) {
+  document.querySelectorAll('.subtab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.subtab-content').forEach(t => t.classList.remove('active'));
+  document.getElementById('sub-' + name).classList.add('active');
+}
+
+// ── DOCUMENT LISTS ────────────────────────────────────────
+const JOURNALS = [
+  'Журнал учёта документов СМК',
+  'Журнал учёта должностных инструкций',
+  'Журнал учёта СИ',
+  'Журнал учёта тех. документации',
+  'Журнал рег. входящей документации',
+  'Журнал рег. исходящей корреспонденции',
+  'Журнал рег. приказов',
+  'Журнал рег. договоров с заказчиками',
+  'Журнал рег. договоров с поставщиками',
+  'Журнал рег. проектно-сметной документации',
+  'Журнал входного контроля СТБ 1306',
+  'Журнал учёта претензий',
+];
+
+const DI_LIST = [
+  'ДИ Директор', 'ДИ Главный инженер', 'ДИ Главный бухгалтер',
+  'ДИ Производитель работ', 'ДИ Мастер', 'ДИ Мастер эл/монтажных работ',
+  'ДИ Инженер по сметной работе', 'ДИ Специалист по организ. закупок',
+  'ДИ Агент по снабжению', 'ДИ Юрисконсульт',
+];
+
+const SMK_LIST = [
+  '1. Политика в области качества',
+  '2.1 Цели в области качества',
+  '2.2 Лист ознакомления с целями',
+  '3. Номенклатура дел',
+  '3.1 Приказ о начале разработки СМК',
+  '3.2 Приказ о введении в действие СМК',
+  '3.3 Приказ о назначении аудиторов',
+  '3.4 Приказ о внесении изменений в ДИ',
+  '3.5 Приказ о назначении отв. за риски',
+  '3.6 Приказ о назначении рук. процесса',
+  '3.7 Приказ об отв. за ФНПА и фонд СМК',
+  '3.8.1 Приказ о создании КС',
+  '3.8.2 Протокол КС',
+  '3.9.1 Приказ о внутреннем обучении',
+  '3.9.2 Протокол обучения',
+  '3.9.3 Программа обучения СМК',
+  '4.1 Программа внутренних аудитов',
+  'Реестр рисков',
+  'План-отчёт мероприятий по рискам',
+  'Анкета-вопросник СМК',
+  'Исходная информация СМК',
+  'Отчёт по процессу строительства',
+  'Перечень продукции вх. контроля',
+  'План по возможностям',
+  'План повышения квалификации',
+  'Приказ о вх. контроле',
+  'Приказ о ТО СИ',
+  'РК СМК', 'СТП СМК 02', 'СТП СМК 03', 'СТП СМК 04',
+  'Сводный отчёт по СМК',
+];
+
+const CARDS_LIST = [
+  'Отчёт по оценке удовлетв. заказчиков',
+  'Карточка оценки поставщиков 1',
+  'Карточка оценки поставщиков 2',
+  'Карточка оценки поставщиков 3',
+];
+
+function renderDocLists() {
+  const renderList = (items, containerId, color) => {
+    const c = document.getElementById(containerId);
+    if (!c) return;
+    c.innerHTML = items.map(i => `
+      <div style="background:${color};padding:8px 10px;border-radius:4px;font-size:11.5px;display:flex;align-items:center;gap:6px">
+        <span>📄</span> ${i}
+      </div>`).join('');
+  };
+  
+  const jl = document.getElementById('journal-list');
+  if (jl) jl.outerHTML = `<div id="journal-list" style="display:contents">${JOURNALS.map(i => `
+    <div style="background:#F3F0FA;padding:8px 10px;border-radius:4px;font-size:11.5px;display:flex;align-items:center;gap:6px">
+      <span>📓</span> ${i}
+    </div>`).join('')}</div>`;
+  
+  renderList(DI_LIST, 'di-list', '#EFF9F7');
+  renderList(SMK_LIST, 'smk-list', '#FFF8F0');
+  renderList(CARDS_LIST, 'cards-list', '#F0FDF4');
+}
+
+// ── COMPANIES ─────────────────────────────────────────────
+async function loadCompanies() {
+  const res = await fetch('/api/companies');
+  companies = await res.json();
+  renderCompanies();
+}
+
+function renderCompanies() {
+  const c = document.getElementById('co-list');
+  document.getElementById('co-count').textContent = `${companies.length} ${pluralize(companies.length, 'компания', 'компании', 'компаний')}`;
+  
+  if (!companies.length) {
+    c.innerHTML = `<div class="empty"><div class="ei">🏢</div><p>Нет компаний. Добавьте первую!</p></div>`;
+    return;
+  }
+  
+  c.innerHTML = companies.map(co => `
+    <div class="co-card${selectedCompanyId === co.id ? ' selected' : ''}" onclick="selectCompany('${co.id}')">
+      <div class="co-name">${co.orgForm} «${co.orgName}»</div>
+      <div class="co-meta">📅 ${co.implDate || '—'} &nbsp;·&nbsp; 🏙 ${co.city || 'Минск'}</div>
+      <div class="co-meta">👤 Директор: ${co.dirSurname} ${co.dirInitials}</div>
+      <div class="co-actions">
+        <button class="co-btn edit" onclick="event.stopPropagation();editCompany('${co.id}')">✎ Редактировать</button>
+        <button class="co-btn gen" onclick="event.stopPropagation();selectAndGen('${co.id}')">⚡ Сформировать</button>
+        <button class="co-btn del" onclick="event.stopPropagation();deleteCompany('${co.id}')">🗑</button>
+      </div>
+    </div>`).join('');
+}
+
+function selectCompany(id) {
+  selectedCompanyId = id;
+  renderCompanies();
+}
+
+function selectAndGen(id) {
+  selectedCompanyId = id;
+  openGenModal();
+}
+
+async function deleteCompany(id) {
+  if (!confirm('Удалить компанию?')) return;
+  await fetch('/api/companies/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+  loadCompanies();
+}
+
+// ── COMPANY MODAL ─────────────────────────────────────────
+function openCoModal(data) {
+  editingCompanyId = data?.id || null;
+  document.getElementById('modal-title').textContent = data ? 'Редактировать компанию' : 'Новая компания';
+  
+  const fields = ['orgForm','orgName','city','scope','startDate','implDate','endDate',
+    'dirSurname','dirInitials','itrCount',
+    'aud1Post','aud1Surname','aud1Initials',
+    'aud2Post','aud2Surname','aud2Initials',
+    'aud3Post','aud3Surname','aud3Initials',
+    'secPost','secSurname','secInitials','object'];
+  
+  if (data) {
+    fields.forEach(f => {
+      const el = document.getElementById('f-' + f);
+      if (el) el.value = data[f] || '';
+    });
+  } else {
+    fields.forEach(f => {
+      const el = document.getElementById('f-' + f);
+      if (el && !['orgForm','city','f-aud1Post'].includes(f)) el.value = '';
+    });
+  }
+  
+  document.getElementById('modal-alert').style.display = 'none';
+  document.getElementById('modal-bg').classList.add('open');
+}
+
+function editCompany(id) {
+  const co = companies.find(c => c.id === id);
+  if (co) openCoModal(co);
+}
+
+function closeModal() {
+  document.getElementById('modal-bg').classList.remove('open');
+}
+
+async function saveCompany() {
+  const required = ['orgName','dirSurname','dirInitials','implDate','aud1Surname','aud2Surname'];
+  for (const f of required) {
+    if (!document.getElementById('f-' + f)?.value.trim()) {
+      const alert = document.getElementById('modal-alert');
+      alert.textContent = `⚠️ Заполните обязательные поля`;
+      alert.style.display = 'block';
+      return;
+    }
+  }
+  
+  const data = {};
+  ['orgForm','orgName','city','scope','startDate','implDate','endDate',
+   'dirSurname','dirInitials','itrCount',
+   'aud1Post','aud1Surname','aud1Initials',
+   'aud2Post','aud2Surname','aud2Initials',
+   'aud3Post','aud3Surname','aud3Initials',
+   'secPost','secSurname','secInitials','object'].forEach(f => {
+    data[f] = document.getElementById('f-' + f)?.value.trim() || '';
+  });
+  
+  if (editingCompanyId) data.id = editingCompanyId;
+  
+  await fetch('/api/companies/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  closeModal();
+  loadCompanies();
+}
+
+// ── GENERATE ──────────────────────────────────────────────
+function openGenModal() {
+  const co = companies.find(c => c.id === selectedCompanyId);
+  if (!co && currentPage === 'docs') {
+    alert('Сначала выберите компанию в разделе «Компании»');
+    return;
+  }
+  
+  const info = document.getElementById('gen-co-info');
+  if (co) {
+    info.innerHTML = `<strong>${co.orgForm} «${co.orgName}»</strong><br>Директор: ${co.dirSurname} ${co.dirInitials} · Дата внедрения: ${co.implDate}`;
+  } else {
+    info.innerHTML = '<span style="color:var(--red)">⚠️ Компания не выбрана</span>';
+  }
+  
+  document.getElementById('gen-result').style.display = 'none';
+  document.getElementById('gen-error').style.display = 'none';
+  document.getElementById('gen-modal-bg').style.display = 'flex';
+}
+
+function closeGenModal() {
+  document.getElementById('gen-modal-bg').style.display = 'none';
+}
+
+async function doGenerate() {
+  const co = companies.find(c => c.id === selectedCompanyId);
+  if (!co) {
+    document.getElementById('gen-error').textContent = '⚠️ Выберите компанию';
+    document.getElementById('gen-error').style.display = 'block';
+    return;
+  }
+  
+  const btn = document.getElementById('gen-btn');
+  const spin = document.getElementById('gen-spin');
+  const btnText = document.getElementById('gen-btn-text');
+  
+  btn.disabled = true;
+  spin.style.display = 'block';
+  btnText.textContent = 'Формирование...';
+  document.getElementById('gen-error').style.display = 'none';
+  
+  try {
+    const resp = await fetch('/api/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(co)
+    });
+    const result = await resp.json();
+    
+    if (!result.success) throw new Error(result.error || 'Ошибка генерации');
+    
+    currentGenZip = result.zip;
+    document.getElementById('gen-result-info').textContent = `Сформировано ${result.fileCount} документов`;
+    document.getElementById('gen-result').style.display = 'block';
+    loadJournal();
+    
+  } catch(e) {
+    document.getElementById('gen-error').textContent = '⚠️ ' + e.message;
+    document.getElementById('gen-error').style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    spin.style.display = 'none';
+    btnText.textContent = '⚡ Сформировать все документы';
+  }
+}
+
+function downloadZip(e) {
+  e.preventDefault();
+  if (!currentGenZip) return;
+  const co = companies.find(c => c.id === selectedCompanyId);
+  const name = co ? `ISO_${co.orgName}.zip` : 'ISO_docs.zip';
+  const blob = b64Blob(currentGenZip);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+}
+
+function b64Blob(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i=0; i<bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], {type: 'application/zip'});
+}
+
+// ── JOURNAL ───────────────────────────────────────────────
+async function loadJournal() {
+  const res = await fetch('/api/journal');
+  const entries = await res.json();
+  const c = document.getElementById('journal-entries');
+  
+  if (!entries.length) {
+    c.innerHTML = `<div class="empty"><div class="ei">📋</div><p>Журнал пуст. Сформируйте документы для компании.</p></div>`;
+    return;
+  }
+  
+  c.innerHTML = entries.map(e => `
+    <div class="jn-item">
+      <div class="jn-icon">📦</div>
+      <div class="jn-info">
+        <div class="jn-name">${e.orgName}</div>
+        <div class="jn-meta">📅 ${e.created} · 📄 ${e.fileCount} файлов · Внедрение: ${e.implDate}</div>
+      </div>
+      <div class="jn-actions">
+        <a href="/api/download/${e.id}" class="co-btn gen">⬇ Скачать</a>
+        <button class="co-btn del" onclick="deleteJournalEntry('${e.id}')">🗑</button>
+      </div>
+    </div>`).join('');
+}
+
+async function deleteJournalEntry(id) {
+  if (!confirm('Удалить запись из журнала?')) return;
+  await fetch('/api/journal/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+  loadJournal();
+}
+
+// ── CUSTOM TEMPLATE ───────────────────────────────────────
+function openAddTemplate() {
+  alert('Раздел «Свой шаблон» — в разработке.\n\nВы сможете загрузить свой .docx файл и программа автоматически определит поля для замены.');
+}
+
+// ── UTILS ─────────────────────────────────────────────────
+function pluralize(n, one, few, many) {
+  n = Math.abs(n) % 100;
+  const n1 = n % 10;
+  if (n > 10 && n < 20) return many;
+  if (n1 > 1 && n1 < 5) return few;
+  if (n1 === 1) return one;
+  return many;
+}
+
+// ── INIT ──────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  renderDocLists();
+  loadCompanies().catch(() => {});
+});
+</script>
+</body>
+</html>
