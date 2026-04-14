@@ -33,6 +33,59 @@ def date_minus(s,days):
 def year_of(s):
     _,_,y=parse_date(s); return str(y)
 
+
+def merge_date_runs(xml):
+    """Merge split dates: DD + .MM.YYYY across XML runs"""
+    import re as _re
+    pattern = (
+        r'(<w:t[^>]*>)(\d{2})(</w:t></w:r>)'
+        r'(?:<w:bookmarkStart[^/]*/>\s*<w:bookmarkEnd[^/]*/>\s*)?'
+        r'(?:<w:proofErr[^/]*/>\s*)*'
+        r'(<w:r[^>]*>(?:<w:rPr>.*?</w:rPr>)?<w:t[^>]*>)'
+        r'(\.\d{2}\.\d{4})'
+    )
+    return _re.sub(pattern,
+        lambda m: m.group(1)+m.group(2)+m.group(5)+m.group(3)+m.group(4),
+        xml, flags=_re.DOTALL)
+
+def merge_name_runs(xml):
+    """Merge split text runs (single letter + rest, or word + initials split by proofErr)"""
+    import re as _re
+    # Fix 1: single letter + rest of word (e.g. "Д" + "иректора")
+    # Only merge if result would be a 4+ char Cyrillic word (not initials)
+    p1 = (
+        r'(<w:t[^>]*>)([А-ЯA-Z])(</w:t></w:r>)'
+        r'(?:<w:bookmarkStart[^/]*/>\s*<w:bookmarkEnd[^/]*/>\s*)?'
+        r'(<w:r[^>]*>(?:<w:rPr>.*?</w:rPr>)?<w:t[^>]*>)'
+        r'([а-яё]{3,})'
+    )
+    xml = _re.sub(p1, lambda m: m.group(1)+m.group(2)+m.group(5)+m.group(3)+m.group(4),
+        xml, flags=_re.DOTALL)
+    # Fix 2: standalone surname run + proofErr + initials run
+    # The surname must be the ENTIRE content of its <w:t> tag
+    p2 = (
+        r'(>[А-Я][а-яё\-]{2,})(</w:t></w:r>)'
+        r'(?:<w:proofErr[^/]*/>\s*)+'
+        r'(<w:r[^>]*>(?:<w:rPr>.*?</w:rPr>)?<w:t[^>]*>)'
+        r'( [А-ЯA-Z]\.[А-ЯA-Z]\.)'
+    )
+    xml = _re.sub(p2,
+        lambda m: m.group(1)+m.group(4)+m.group(2)+m.group(3),
+        xml, flags=_re.DOTALL)
+    # Fix 3: partial word + 1-3 char suffix in adjacent runs (e.g. "Нестерён"+"ка")
+    # Safe: only joins if combined result is a valid word continuation
+    p3 = (
+        r'(>[А-Яа-яё\-]{4,})(</w:t></w:r>)'
+        r'(?:<w:bookmarkStart[^/]*/>\s*<w:bookmarkEnd[^/]*/>\s*)?'
+        r'(<w:r[^>]*>(?:<w:rPr>.*?</w:rPr>)?<w:t[^>]*>)'
+        r'([а-яё]{1,3}</w:t>)'
+    )
+    def _join_p3(m):
+        suffix = m.group(4).replace('</w:t>','')
+        return m.group(1)+suffix+m.group(2)+m.group(3)+'</w:t>'
+    xml = _re.sub(p3, _join_p3, xml, flags=_re.DOTALL)
+    return xml
+
 def replace_in_docx(src,dst,reps):
     with tempfile.TemporaryDirectory() as td:
         tmp=os.path.join(td,'s.docx'); shutil.copy2(str(src),tmp)
@@ -44,6 +97,8 @@ def replace_in_docx(src,dst,reps):
                 fp=os.path.join(root,fn)
                 try:
                     with open(fp,'r',encoding='utf-8') as f: c=f.read()
+                    c=merge_date_runs(c)
+                    c=merge_name_runs(c)
                     ch=False
                     for o,n in reps:
                         if o and n is not None and o in c: c=c.replace(o,n); ch=True
@@ -90,6 +145,10 @@ def build_reps(data):
         ('С.Д. Нестерёнок',f'{a3i} {a3s}' if a3s else None),
         ('Нестерёнок С.Д.',f'{a3s} {a3i}' if a3s else None),
         ('производителя работ Нестерёнок С.Д.',f'{a3p} {a3s} {a3i}' if a3s else None),
+        # Full dative patterns for the ТО СИ order
+        ('Производителю работ С.Д. Нестерёнку', f'{cap(a3p)}у работ {a3i} {a3s}' if a3s else None),
+        ('Производителю работ Нестерёнку', f'{cap(a3p)}у работ {a3s}' if a3s else None),
+        ('производителю работ С.Д. Нестерёнку', f'{a3p}у работ {a3i} {a3s}' if a3s else None),
         ('производителя работ С.Д. Нестерёнок',f'{a3p} {a3i} {a3s}' if a3s else None),
         ('Производитель работ С.Д. Нестерёнок',f'{cap(a3p)} {a3i} {a3s}' if a3s else None),
         ('Председатель КС: Директор А.А. Шакуро',f'Председатель КС: {cap(a1p)} {a1i} {a1s}'),
@@ -110,11 +169,75 @@ def build_reps(data):
         ('на 2026 год',f'на {yr} год'),('на 2026 г',f'на {yr} г'),
         (' 2026год',f' {yr}год'),('2026год',f'{yr}год'),
         ('г. Минск',f'г. {city}'),
+        # Standalone surnames (catch remaining split runs where only surname is in the run)
+        ('Шакуро', ds),
+        ('Нестерёнок', a3s if a3s else None),
+        # "Нестерёнк" split form (before ка/ку suffix gets appended)
+        ('Нестерёнк', a3s[:-2]+'к' if (a3s and a3s.endswith('ок')) else a3s if a3s else None),
+        ('Нестерёнка', (a3s[:-2]+'ка' if a3s.endswith('ок') else a3s+'а') if a3s else None),
+        ('Нестерёнку', (a3s[:-2]+'ку' if a3s.endswith('ок') else a3s+'у') if a3s else None),
+        ('Семенчукова', (a2s[:-2]+'ича' if a2s.endswith('ич') else a2s+'а') if a2s else None),
+        ('Семенчуков', a2s if a2s else None),
+        ('Никитича', (a2s+'а') if a2s else None),
+        ('Никитич', a2s if a2s else None),
     ]
     return [(o,n) for o,n in r if o and n is not None]
 
+
+def replace_itr_table(src, dst, itr_list, impl_date):
+    """Replace ITR table in 2.2 лист ознакомления с целями"""
+    import shutil, tempfile as _tmp
+    with _tmp.TemporaryDirectory() as td:
+        import os as _os
+        tmp = _os.path.join(td,'s.docx')
+        shutil.copy2(str(src), tmp)
+        up = _os.path.join(td,'up'); _os.makedirs(up)
+        with zipfile.ZipFile(tmp,'r') as z: z.extractall(up)
+        fp = _os.path.join(up,'word','document.xml')
+        with open(fp,'r',encoding='utf-8') as f: xml = f.read()
+        # Find all table rows
+        row_matches = list(re.finditer(r'<w:tr[ >].*?</w:tr>', xml, re.DOTALL))
+        if len(row_matches) > 1:
+            # Get first data row as template
+            tmpl = row_matches[1].group(0)
+            # Build new rows for each ITR person
+            new_rows = ''
+            for person in itr_list:
+                fio = person.get('fio','').strip()
+                if not fio: continue
+                row = tmpl
+                # Replace FIO (first w:t content)
+                row = re.sub(r'(<w:t[^>]*>)[^<]*(</w:t>)',
+                    lambda m, v=fio: m.group(1)+v+m.group(2), row, count=1)
+                # Replace date
+                row = re.sub(r'(<w:t[^>]*>)\d{2}\.\d{2}\.\d{4}(</w:t>)',
+                    lambda m, d=impl_date: m.group(1)+d+m.group(2), row)
+                # Clear signature cell
+                new_rows += row
+            # Replace all data rows with new content
+            start = row_matches[1].start()
+            end   = row_matches[-1].end()
+            xml = xml[:start] + new_rows + xml[end:]
+        with open(fp,'w',encoding='utf-8') as f: f.write(xml)
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(str(dst),'w',zipfile.ZIP_DEFLATED) as zo:
+            for root,_,files in _os.walk(up):
+                for fn in files:
+                    fpath = _os.path.join(root,fn)
+                    zo.write(fpath, _os.path.relpath(fpath,up))
+
 def generate_all(data,out_dir):
     reps=build_reps(data); org=data['orgName']
+    impl=date_dot(data.get('implDate',''))
+    # Parse ITR list from form (list of {fio, post} dicts or newline-separated string)
+    itr_raw = data.get('itrList','')
+    itr_list = []
+    if isinstance(itr_raw, list):
+        itr_list = itr_raw
+    elif itr_raw:
+        for line in itr_raw.strip().split('\n'):
+            line = line.strip()
+            if line: itr_list.append({'fio': line})
     Path(out_dir).mkdir(parents=True,exist_ok=True); done=[]
     for src in TPL_DIR.rglob('*'):
         if src.is_dir(): continue
@@ -123,7 +246,12 @@ def generate_all(data,out_dir):
         parts[-1]=parts[-1].replace('ЭнергоМагистраль',org)
         rel=os.path.join(*parts); dst=Path(out_dir)/rel
         try:
-            if src.name.endswith('.docx'): replace_in_docx(src,dst,reps)
+            is_22 = '2.2' in src.name and 'ознакомл' in src.name.lower()
+            if src.name.endswith('.docx') and is_22 and itr_list:
+                replace_itr_table(src, dst, itr_list, impl)
+                # Also apply standard replacements on top
+                replace_in_docx(dst, dst, reps)
+            elif src.name.endswith('.docx'): replace_in_docx(src,dst,reps)
             else: dst.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(src,dst)
             done.append({'name':parts[-1],'path':str(dst),'rel':rel})
         except Exception as e: print(f'  ERR {src.name}: {e}')

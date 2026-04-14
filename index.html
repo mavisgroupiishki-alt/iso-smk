@@ -525,6 +525,13 @@ input::placeholder{color:#C4BDB2}
         <input id="f-object" placeholder="Жилой дом по ул. Ленина, г. Минск"/>
       </div>
 
+      <div class="sec-lbl">Список ИТР <span style="color:var(--gold)">*</span></div>
+      <div class="fg full" style="margin-bottom:14px">
+        <label>ФИО сотрудников ИТР (каждый с новой строки) <span class="req">*</span></label>
+        <textarea id="f-itrList" rows="8" placeholder="Иванов Иван Иванович&#10;Петрова Мария Сергеевна&#10;Сидоров Александр Петрович" style="padding:9px 11px;border:1.5px solid var(--border);border-radius:var(--r);font-family:Fira Sans,sans-serif;font-size:13px;resize:vertical;width:100%"></textarea>
+        <div class="hint">Только ИТР должности (директор, инженеры, бухгалтеры, прорабы, мастера и т.д.) — берётся из штатного расписания. Используется в листе ознакомления с целями.</div>
+      </div>
+
       <div id="modal-alert" class="alert err"></div>
     </div>
     <div class="modal-foot">
@@ -738,7 +745,7 @@ function openCoModal(data) {
     'aud1Post','aud1Surname','aud1Initials',
     'aud2Post','aud2Surname','aud2Initials',
     'aud3Post','aud3Surname','aud3Initials',
-    'secPost','secSurname','secInitials','object'];
+    'secPost','secSurname','secInitials','object','itrList'];
   
   if (data) {
     fields.forEach(f => {
@@ -782,7 +789,7 @@ async function saveCompany() {
    'aud1Post','aud1Surname','aud1Initials',
    'aud2Post','aud2Surname','aud2Initials',
    'aud3Post','aud3Surname','aud3Initials',
-   'secPost','secSurname','secInitials','object'].forEach(f => {
+   'secPost','secSurname','secInitials','object','itrList'].forEach(f => {
     data[f] = document.getElementById('f-' + f)?.value.trim() || '';
   });
   
