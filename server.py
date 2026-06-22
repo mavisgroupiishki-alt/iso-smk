@@ -364,6 +364,68 @@ def get_zip(eid):
         except: pass
 
 
+
+# ── Извлечение текста из файлов ──────────────────────────────
+def extract_text_from_file(file_bytes, filename):
+    """Извлекает текст из docx, pdf, txt, xlsx"""
+    ext = filename.rsplit('.', 1)[-1].lower()
+    try:
+        if ext in ('txt', 'csv'):
+            return file_bytes.decode('utf-8', errors='replace')[:8000]
+
+        elif ext == 'docx':
+            # docx = zip с XML
+            import io
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+                if 'word/document.xml' in z.namelist():
+                    xml = z.read('word/document.xml').decode('utf-8', errors='replace')
+                    # Убираем теги, оставляем текст
+                    text = re.sub(r'<[^>]+>', ' ', xml)
+                    text = re.sub(r'\s+', ' ', text).strip()
+                    return text[:8000]
+            return '[docx: не удалось прочитать]'
+
+        elif ext == 'pdf':
+            # Простое извлечение текста из PDF (только текстовые PDF)
+            text = file_bytes.decode('latin-1', errors='replace')
+            # Ищем текстовые блоки между BT и ET
+            import re as _re
+            blocks = _re.findall(r'BT(.*?)ET', text, _re.DOTALL)
+            result = []
+            for b in blocks:
+                strings = _re.findall(r'\(([^)]+)\)', b)
+                result.extend(strings)
+            if result:
+                return ' '.join(result)[:8000]
+            return '[PDF: не удалось извлечь текст — попробуйте скопировать текст вручную]'
+
+        elif ext in ('xlsx', 'xls'):
+            import io
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+                # Читаем shared strings
+                shared = []
+                if 'xl/sharedStrings.xml' in z.namelist():
+                    xml = z.read('xl/sharedStrings.xml').decode('utf-8', errors='replace')
+                    shared = re.findall(r'<t[^>]*>([^<]+)</t>', xml)
+                # Читаем первый лист
+                sheets = [n for n in z.namelist() if n.startswith('xl/worksheets/sheet')]
+                if sheets:
+                    xml = z.read(sheets[0]).decode('utf-8', errors='replace')
+                    refs = re.findall(r'<v>(\d+)</v>', xml)
+                    values = []
+                    for ref in refs:
+                        idx = int(ref)
+                        if idx < len(shared):
+                            values.append(shared[idx])
+                    if values:
+                        return ' | '.join(values[:200])
+            return '[xlsx: не удалось прочитать]'
+
+    except Exception as e:
+        return f'[Ошибка чтения файла: {e}]'
+
+    return '[Неизвестный формат файла]'
+
 INDEX = (BASE_DIR/'index.html').read_text('utf-8')
 
 # ── HTTP-сервер ───────────────────────────────────────────────
@@ -392,7 +454,21 @@ class H(http.server.BaseHTTPRequestHandler):
         p=self.path.split('?')[0]
         try:
             # ── ИИ-чат ──────────────────────────────────────
-            if p=='/api/ai/chat':
+            if p=='/api/extract-text':
+                import cgi, io
+                content_type = self.headers.get('Content-Type','')
+                # Парсим multipart form
+                environ = {'REQUEST_METHOD':'POST','CONTENT_TYPE':content_type,'CONTENT_LENGTH':len(body)}
+                fs = cgi.FieldStorage(fp=io.BytesIO(body), environ=environ, keep_blank_values=True)
+                f = fs['file'] if 'file' in fs else None
+                if not f:
+                    self._json({'success':False,'error':'Нет файла'}, 400); return
+                filename = f.filename or 'file'
+                file_bytes = f.file.read()
+                text = extract_text_from_file(file_bytes, filename)
+                self._json({'success':True,'text':text,'filename':filename,'type':filename.rsplit('.',1)[-1]})
+
+            elif p=='/api/ai/chat':
                 req=json.loads(body)
                 api_key=os.environ.get('VIBE_API_KEY','')
                 if not api_key:
