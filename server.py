@@ -1,21 +1,84 @@
 #!/usr/bin/env python3
-"""ИСО/СМК Генератор. Запуск: python server.py  →  http://localhost:8766"""
-import sys,json,os,shutil,tempfile,base64,zipfile,re
+"""ИСО/СМК Генератор с ИИ-оформителем. Запуск: python server.py → http://localhost:8766"""
+import sys,json,os,shutil,tempfile,base64,zipfile,re,requests as req_lib
 import http.server,socketserver
 from pathlib import Path
 from datetime import datetime,timedelta
 
-BASE_DIR    = Path(__file__).parent.resolve()
-TPL_DIR     = BASE_DIR/'templates'/'ISO_shablon'/'ИСО ЭнергоМагистраль'
-# On cloud (Render) use persistent disk, locally use app folder
-_DATA = Path('/data') if Path('/data').exists() else BASE_DIR
+BASE_DIR = Path(__file__).parent.resolve()
+TPL_DIR  = BASE_DIR/'templates'/'ISO_shablon'/'ИСО ЭнергоМагистраль'
+
+# Render: без persistent disk — храним в /tmp или рядом с приложением
+_DATA = Path('/data') if Path('/data').exists() else BASE_DIR/'_data'
 JOURNAL_DIR = _DATA/'journal'
 CO_DIR      = _DATA/'companies'
 OUT_DIR     = _DATA/'output'
-PORT=int(os.environ.get("PORT", 8766))
+PORT = int(os.environ.get("PORT", 8766))
 
-for d in [JOURNAL_DIR,CO_DIR,OUT_DIR]: d.mkdir(parents=True,exist_ok=True)
+for d in [JOURNAL_DIR, CO_DIR, OUT_DIR]: d.mkdir(parents=True, exist_ok=True)
 
+# ── Vibe Code AI ─────────────────────────────────────────────
+VIBE_URL   = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
+VIBE_MODEL = "bitrix/bitrixgpt-5.5"
+
+AI_SYSTEM = """Ты — ИИ-оформитель документов ИСО/СМК для компании Mavis Group (Беларусь).
+
+ТВОЯ РОЛЬ: анализируешь входящие данные от эксперта, сам решаешь кто куда идёт в документах, проверяешь корректность и задаёшь вопросы если чего-то не хватает. Принимаешь правки на человеческом языке.
+
+ИЗВЛЕКАЙ И СТРУКТУРИРУЙ из текста эксперта:
+1. Реквизиты: название компании, форма (ООО/ЧУП/ОДО), УНП, юр.адрес, город, ФИО директора, должность директора, email
+2. Сертификация: стандарт (ISO 9001 / ISO 45001 / оба), область (дословно как в заявке), орган сертификации
+3. Даты: дата выезда эксперта органа → дата разработки = выезд минус 14 дней; дата внедрения = выезд минус 7 дней
+4. Сотрудники: ФИО, должность, роль (director/auditor/responsible/itr), удостоверения ОТ с датами (для ISO 45001 нужно минимум 3)
+5. Объекты (2-3): название, год, заказчик/контрагент
+6. Поставщики (3-5): название, тип
+
+ПРАВИЛА НАЗНАЧЕНИЯ РОЛЕЙ:
+- Аудиторы = ИТР сотрудники (не директор)
+- Ответственный за ФНПА = главный инженер или зам директора
+- Если два удостоверения ОТ у одного — берём более свежее
+- Область в документах должна совпадать с заявкой слово в слово
+- Строительство в области без строительного аттестата = критический флаг
+
+ПРИНИМАЙ ПРАВКИ: "исправь директора на Иванов И.И.", "добавь объект", "поменяй дату" — обновляй данные и подтверждай изменение.
+
+ОТВЕЧАЙ СТРОГО JSON без обёрток ```json:
+{
+  "message": "текст ответа оформителю (по-русски, коротко и профессионально)",
+  "questions": ["вопрос если чего-то не хватает"],
+  "data": {
+    "company": {"name":"","form":"","unp":"","address":"","city":"","director_fio":"","director_position":"","email":""},
+    "certification": {"standard":"","scope":"","body":"","audit_date":""},
+    "dates": {"audit_date":"","development_date":"","implementation_date":""},
+    "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","ot_certificate":false,"ot_certificate_date":""}],
+    "objects": [{"name":"","year":"","customer":""}],
+    "suppliers": [{"name":"","type":""}],
+    "flags": [{"type":"error|warning|ok","text":""}],
+    "readiness": "waiting|partial|review|ready"
+  }
+}
+Включай только заполненные поля. Пустые не включай."""
+
+
+def call_ai(messages, api_key):
+    """Вызов BitrixGPT через Vibe Code API"""
+    resp = req_lib.post(
+        VIBE_URL,
+        headers={"Content-Type":"application/json","X-Api-Key":api_key},
+        json={"model":VIBE_MODEL,"max_tokens":3000,"messages":[
+            {"role":"system","content":AI_SYSTEM},
+            *messages[-10:]
+        ]},
+        timeout=60
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    return "".join(c.get("message",{}).get("content","") for c in data.get("choices",[]))
+
+
+# ── Дата-утилиты (без изменений) ─────────────────────────────
 def date_dot(s):
     s=str(s).strip()
     if '-' in s:
@@ -34,8 +97,8 @@ def year_of(s):
     _,_,y=parse_date(s); return str(y)
 
 
+# ── XML-патч для разорванных дат/имён (без изменений) ────────
 def merge_date_runs(xml):
-    """Merge split dates: DD + .MM.YYYY across XML runs"""
     import re as _re
     pattern = (
         r'(<w:t[^>]*>)(\d{2})(</w:t></w:r>)'
@@ -49,10 +112,7 @@ def merge_date_runs(xml):
         xml, flags=_re.DOTALL)
 
 def merge_name_runs(xml):
-    """Merge split text runs (single letter + rest, or word + initials split by proofErr)"""
     import re as _re
-    # Fix 1: single letter + rest of word (e.g. "Д" + "иректора")
-    # Only merge if result would be a 4+ char Cyrillic word (not initials)
     p1 = (
         r'(<w:t[^>]*>)([А-ЯA-Z])(</w:t></w:r>)'
         r'(?:<w:bookmarkStart[^/]*/>\s*<w:bookmarkEnd[^/]*/>\s*)?'
@@ -61,19 +121,14 @@ def merge_name_runs(xml):
     )
     xml = _re.sub(p1, lambda m: m.group(1)+m.group(2)+m.group(5)+m.group(3)+m.group(4),
         xml, flags=_re.DOTALL)
-    # Fix 2: standalone surname run + proofErr + initials run
-    # The surname must be the ENTIRE content of its <w:t> tag
     p2 = (
         r'(>[А-Я][а-яё\-]{2,})(</w:t></w:r>)'
         r'(?:<w:proofErr[^/]*/>\s*)+'
         r'(<w:r[^>]*>(?:<w:rPr>.*?</w:rPr>)?<w:t[^>]*>)'
         r'( [А-ЯA-Z]\.[А-ЯA-Z]\.)'
     )
-    xml = _re.sub(p2,
-        lambda m: m.group(1)+m.group(4)+m.group(2)+m.group(3),
+    xml = _re.sub(p2, lambda m: m.group(1)+m.group(4)+m.group(2)+m.group(3),
         xml, flags=_re.DOTALL)
-    # Fix 3: partial word + 1-3 char suffix in adjacent runs (e.g. "Нестерён"+"ка")
-    # Safe: only joins if combined result is a valid word continuation
     p3 = (
         r'(>[А-Яа-яё\-]{4,})(</w:t></w:r>)'
         r'(?:<w:bookmarkStart[^/]*/>\s*<w:bookmarkEnd[^/]*/>\s*)?'
@@ -86,7 +141,9 @@ def merge_name_runs(xml):
     xml = _re.sub(p3, _join_p3, xml, flags=_re.DOTALL)
     return xml
 
-def replace_in_docx(src,dst,reps):
+
+# ── Генерация документов (без изменений) ─────────────────────
+def replace_in_docx(src, dst, reps):
     with tempfile.TemporaryDirectory() as td:
         tmp=os.path.join(td,'s.docx'); shutil.copy2(str(src),tmp)
         up=os.path.join(td,'up'); os.makedirs(up)
@@ -97,8 +154,7 @@ def replace_in_docx(src,dst,reps):
                 fp=os.path.join(root,fn)
                 try:
                     with open(fp,'r',encoding='utf-8') as f: c=f.read()
-                    c=merge_date_runs(c)
-                    c=merge_name_runs(c)
+                    c=merge_date_runs(c); c=merge_name_runs(c)
                     ch=False
                     for o,n in reps:
                         if o and n is not None and o in c: c=c.replace(o,n); ch=True
@@ -112,20 +168,54 @@ def replace_in_docx(src,dst,reps):
                     fp=os.path.join(root,fn)
                     zo.write(fp,os.path.relpath(fp,up))
 
+
 def build_reps(data):
-    org =data['orgName']; form=data.get('orgForm','ООО'); city=data.get('city','Минск')
-    scope=data.get('scope','производства строительно-монтажных работ')
-    ds=data['dirSurname']; di=data['dirInitials']
+    """Строит список замен из данных карточки (старая логика + поддержка ИИ-данных)"""
+    org  = data.get('orgName','')
+    form = data.get('orgForm','ООО')
+    city = data.get('city','Минск')
+    scope= data.get('scope','производства строительно-монтажных работ')
+
+    # Поддержка данных от ИИ (вложенная структура)
+    ai = data.get('ai_data', {})
+    if ai.get('company',{}).get('name'): org  = ai['company']['name']
+    if ai.get('company',{}).get('form'): form = ai['company']['form']
+    if ai.get('company',{}).get('city'): city = ai['company']['city']
+    if ai.get('certification',{}).get('scope'): scope = ai['certification']['scope']
+
+    ds=data.get('dirSurname',''); di=data.get('dirInitials','')
+    # ИИ может дать полное ФИО директора
+    if ai.get('company',{}).get('director_fio'):
+        parts = ai['company']['director_fio'].split()
+        if len(parts)>=2:
+            ds = parts[0]
+            di = '.'.join(p[0] for p in parts[1:] if p) + '.' if len(parts)>1 else di
+
     a1p=data.get('aud1Post','директор'); a1s=data.get('aud1Surname',ds); a1i=data.get('aud1Initials',di)
     a2p=data.get('aud2Post',''); a2s=data.get('aud2Surname',''); a2i=data.get('aud2Initials','')
     a3p=data.get('aud3Post',''); a3s=data.get('aud3Surname',''); a3i=data.get('aud3Initials','')
+
+    # Если ИИ нашёл сотрудников — берём аудиторов оттуда
+    staff = ai.get('staff',[])
+    auditors = [s for s in staff if s.get('role')=='auditor']
+    if len(auditors)>=1:
+        p=auditors[0].get('fio','').split()
+        a2p=auditors[0].get('position',''); a2s=p[0] if p else ''; a2i='.'.join(x[0] for x in p[1:] if x)+'.' if len(p)>1 else ''
+    if len(auditors)>=2:
+        p=auditors[1].get('fio','').split()
+        a3p=auditors[1].get('position',''); a3s=p[0] if p else ''; a3i='.'.join(x[0] for x in p[1:] if x)+'.' if len(p)>1 else ''
+
     sp=data.get('secPost',a2p); ss=data.get('secSurname',a2s); si=data.get('secInitials',a2i)
-    impl=date_dot(data.get('implDate','')); start=date_dot(data.get('startDate',impl))
-    end=date_dot(data.get('endDate',impl)); ord1=date_minus(impl,4); yr=year_of(impl)
+    impl=date_dot(data.get('implDate',''))
+    if ai.get('dates',{}).get('implementation_date'): impl=ai['dates']['implementation_date']
+    start=date_dot(data.get('startDate',impl)); end=date_dot(data.get('endDate',impl))
+    ord1=date_minus(impl,4) if impl else ''; yr=year_of(impl) if impl else '2026'
+
     def cap(s): return s[0].upper()+s[1:] if s else s
     def gen(s):
         if s.endswith(('ов','ев','ин','ын')): return s+'а'
         return s+'а'
+
     r=[
         ('ЭнергоМагистраль',org), ('«ЭнергоМагистраль»',f'«{org}»'),
         (f'ООО «ЭнергоМагистраль»',f'{form} «{org}»'),
@@ -145,10 +235,8 @@ def build_reps(data):
         ('С.Д. Нестерёнок',f'{a3i} {a3s}' if a3s else None),
         ('Нестерёнок С.Д.',f'{a3s} {a3i}' if a3s else None),
         ('производителя работ Нестерёнок С.Д.',f'{a3p} {a3s} {a3i}' if a3s else None),
-        # Full dative patterns for the ТО СИ order
-        ('Производителю работ С.Д. Нестерёнку', f'{cap(a3p)}у работ {a3i} {a3s}' if a3s else None),
-        ('Производителю работ Нестерёнку', f'{cap(a3p)}у работ {a3s}' if a3s else None),
-        ('производителю работ С.Д. Нестерёнку', f'{a3p}у работ {a3i} {a3s}' if a3s else None),
+        ('Производителю работ С.Д. Нестерёнку', f'{cap(a3p)}у {a3i} {a3s}' if a3s else None),
+        ('производителю работ С.Д. Нестерёнку', f'{a3p}у {a3i} {a3s}' if a3s else None),
         ('производителя работ С.Д. Нестерёнок',f'{a3p} {a3i} {a3s}' if a3s else None),
         ('Производитель работ С.Д. Нестерёнок',f'{cap(a3p)} {a3i} {a3s}' if a3s else None),
         ('Председатель КС: Директор А.А. Шакуро',f'Председатель КС: {cap(a1p)} {a1i} {a1s}'),
@@ -169,94 +257,85 @@ def build_reps(data):
         ('на 2026 год',f'на {yr} год'),('на 2026 г',f'на {yr} г'),
         (' 2026год',f' {yr}год'),('2026год',f'{yr}год'),
         ('г. Минск',f'г. {city}'),
-        # Standalone surnames (catch remaining split runs where only surname is in the run)
-        ('Шакуро', ds),
-        ('Нестерёнок', a3s if a3s else None),
-        # "Нестерёнк" split form (before ка/ку suffix gets appended)
-        ('Нестерёнк', a3s[:-2]+'к' if (a3s and a3s.endswith('ок')) else a3s if a3s else None),
-        ('Нестерёнка', (a3s[:-2]+'ка' if a3s.endswith('ок') else a3s+'а') if a3s else None),
-        ('Нестерёнку', (a3s[:-2]+'ку' if a3s.endswith('ок') else a3s+'у') if a3s else None),
-        ('Семенчукова', (a2s[:-2]+'ича' if a2s.endswith('ич') else a2s+'а') if a2s else None),
-        ('Семенчуков', a2s if a2s else None),
-        ('Никитича', (a2s+'а') if a2s else None),
-        ('Никитич', a2s if a2s else None),
+        ('Шакуро',ds),
+        ('Нестерёнок',a3s if a3s else None),
+        ('Семенчуков',a2s if a2s else None),
     ]
     return [(o,n) for o,n in r if o and n is not None]
 
 
 def replace_itr_table(src, dst, itr_list, impl_date):
-    """Replace ITR table in 2.2 лист ознакомления с целями"""
-    import shutil, tempfile as _tmp
+    import shutil as _sh, tempfile as _tmp, os as _os
     with _tmp.TemporaryDirectory() as td:
-        import os as _os
-        tmp = _os.path.join(td,'s.docx')
-        shutil.copy2(str(src), tmp)
-        up = _os.path.join(td,'up'); _os.makedirs(up)
+        tmp=_os.path.join(td,'s.docx'); _sh.copy2(str(src),tmp)
+        up=_os.path.join(td,'up'); _os.makedirs(up)
         with zipfile.ZipFile(tmp,'r') as z: z.extractall(up)
-        fp = _os.path.join(up,'word','document.xml')
-        with open(fp,'r',encoding='utf-8') as f: xml = f.read()
-        # Find all table rows
-        row_matches = list(re.finditer(r'<w:tr[ >].*?</w:tr>', xml, re.DOTALL))
-        if len(row_matches) > 1:
-            # Get first data row as template
-            tmpl = row_matches[1].group(0)
-            # Build new rows for each ITR person
-            new_rows = ''
+        fp=_os.path.join(up,'word','document.xml')
+        with open(fp,'r',encoding='utf-8') as f: xml=f.read()
+        row_matches=list(re.finditer(r'<w:tr[ >].*?</w:tr>',xml,re.DOTALL))
+        if len(row_matches)>1:
+            tmpl=row_matches[1].group(0); new_rows=''
             for person in itr_list:
-                fio = person.get('fio','').strip()
+                fio=person.get('fio','').strip()
                 if not fio: continue
-                row = tmpl
-                # Replace FIO (first w:t content)
-                row = re.sub(r'(<w:t[^>]*>)[^<]*(</w:t>)',
-                    lambda m, v=fio: m.group(1)+v+m.group(2), row, count=1)
-                # Replace date
-                row = re.sub(r'(<w:t[^>]*>)\d{2}\.\d{2}\.\d{4}(</w:t>)',
-                    lambda m, d=impl_date: m.group(1)+d+m.group(2), row)
-                # Clear signature cell
-                new_rows += row
-            # Replace all data rows with new content
-            start = row_matches[1].start()
-            end   = row_matches[-1].end()
-            xml = xml[:start] + new_rows + xml[end:]
+                row=tmpl
+                row=re.sub(r'(<w:t[^>]*>)[^<]*(</w:t>)',
+                    lambda m,v=fio:m.group(1)+v+m.group(2),row,count=1)
+                row=re.sub(r'(<w:t[^>]*>)\d{2}\.\d{2}\.\d{4}(</w:t>)',
+                    lambda m,d=impl_date:m.group(1)+d+m.group(2),row)
+                new_rows+=row
+            s=row_matches[1].start(); e=row_matches[-1].end()
+            xml=xml[:s]+new_rows+xml[e:]
         with open(fp,'w',encoding='utf-8') as f: f.write(xml)
-        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).parent.mkdir(parents=True,exist_ok=True)
         with zipfile.ZipFile(str(dst),'w',zipfile.ZIP_DEFLATED) as zo:
             for root,_,files in _os.walk(up):
                 for fn in files:
-                    fpath = _os.path.join(root,fn)
-                    zo.write(fpath, _os.path.relpath(fpath,up))
+                    fpath=_os.path.join(root,fn)
+                    zo.write(fpath,_os.path.relpath(fpath,up))
 
-def generate_all(data,out_dir):
-    reps=build_reps(data); org=data['orgName']
+
+def generate_all(data, out_dir):
+    reps=build_reps(data); org=data.get('orgName','')
+    # Если ИИ дал название — берём его
+    ai_name = data.get('ai_data',{}).get('company',{}).get('name','')
+    if ai_name: org=ai_name
     impl=date_dot(data.get('implDate',''))
-    # Parse ITR list from form (list of {fio, post} dicts or newline-separated string)
-    itr_raw = data.get('itrList','')
-    itr_list = []
-    if isinstance(itr_raw, list):
-        itr_list = itr_raw
+    ai_impl=data.get('ai_data',{}).get('dates',{}).get('implementation_date','')
+    if ai_impl: impl=ai_impl
+
+    itr_raw=data.get('itrList','')
+    itr_list=[]
+    if isinstance(itr_raw,list): itr_list=itr_raw
     elif itr_raw:
         for line in itr_raw.strip().split('\n'):
-            line = line.strip()
-            if line: itr_list.append({'fio': line})
+            line=line.strip()
+            if line: itr_list.append({'fio':line})
+    # Добавляем ИТР из ИИ-данных
+    ai_staff=data.get('ai_data',{}).get('staff',[])
+    if ai_staff and not itr_list:
+        itr_list=[{'fio':s['fio']} for s in ai_staff if s.get('is_itr') or s.get('role')=='itr']
+
     Path(out_dir).mkdir(parents=True,exist_ok=True); done=[]
     for src in TPL_DIR.rglob('*'):
         if src.is_dir(): continue
         if not src.name.endswith(('.docx','.doc')): continue
         parts=list(src.relative_to(TPL_DIR).parts)
-        parts[-1]=parts[-1].replace('ЭнергоМагистраль',org)
+        parts[-1]=parts[-1].replace('ЭнергоМагистраль', org)
         rel=os.path.join(*parts); dst=Path(out_dir)/rel
         try:
-            is_22 = '2.2' in src.name and 'ознакомл' in src.name.lower()
+            is_22='2.2' in src.name and 'ознакомл' in src.name.lower()
             if src.name.endswith('.docx') and is_22 and itr_list:
-                replace_itr_table(src, dst, itr_list, impl)
-                # Also apply standard replacements on top
-                replace_in_docx(dst, dst, reps)
+                replace_itr_table(src,dst,itr_list,impl)
+                replace_in_docx(dst,dst,reps)
             elif src.name.endswith('.docx'): replace_in_docx(src,dst,reps)
             else: dst.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(src,dst)
             done.append({'name':parts[-1],'path':str(dst),'rel':rel})
         except Exception as e: print(f'  ERR {src.name}: {e}')
     return done
 
+
+# ── Хранилище ─────────────────────────────────────────────────
 def get_companies():
     return [json.loads(f.read_text('utf-8')) for f in sorted(CO_DIR.glob('*.json'))
             if not f.name.startswith('.')]
@@ -284,15 +363,18 @@ def get_zip(eid):
                 zp=e.get('zipPath'); return zp if zp and os.path.exists(zp) else None
         except: pass
 
-INDEX=(BASE_DIR/'index.html').read_text('utf-8')
 
+INDEX = (BASE_DIR/'index.html').read_text('utf-8')
+
+# ── HTTP-сервер ───────────────────────────────────────────────
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
+
     def do_GET(self):
         p=self.path.split('?')[0]
-        if p in('/','//index.html'):           self._html(INDEX)
-        elif p=='/api/companies':              self._json(get_companies())
-        elif p=='/api/journal':                self._json(get_journal())
+        if p in('/','//index.html'):          self._html(INDEX)
+        elif p=='/api/companies':             self._json(get_companies())
+        elif p=='/api/journal':               self._json(get_journal())
         elif p.startswith('/api/download/'):
             zp=get_zip(p.split('/')[-1])
             if zp:
@@ -309,7 +391,17 @@ class H(http.server.BaseHTTPRequestHandler):
         body=self.rfile.read(int(self.headers.get('Content-Length',0)))
         p=self.path.split('?')[0]
         try:
-            if p=='/api/companies/save':
+            # ── ИИ-чат ──────────────────────────────────────
+            if p=='/api/ai/chat':
+                req=json.loads(body)
+                api_key=req.get('api_key') or os.environ.get('VIBE_API_KEY','')
+                if not api_key:
+                    self._json({'success':False,'error':'Нет Vibe API ключа'},400); return
+                messages=req.get('messages',[])
+                text=call_ai(messages, api_key)
+                self._json({'success':True,'text':text})
+
+            elif p=='/api/companies/save':
                 d=json.loads(body); self._json({'success':True,'id':save_company(d)})
             elif p=='/api/companies/delete':
                 cid=json.loads(body)['id']; f=CO_DIR/f'{cid}.json'
@@ -317,7 +409,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._json({'success':True})
             elif p=='/api/generate':
                 data=json.loads(body)
-                org=re.sub(r'[^\w\-]','_',data.get('orgName','org'))
+                org=re.sub(r'[^\w\-]','_',
+                    data.get('ai_data',{}).get('company',{}).get('name','') or
+                    data.get('orgName','org'))
                 ts=datetime.now().strftime('%Y%m%d_%H%M%S')
                 out=OUT_DIR/f'{org}_{ts}'
                 done=generate_all(data,out)
@@ -326,8 +420,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     for item in done:
                         if os.path.exists(item['path']): zf.write(item['path'],item['rel'])
                 zb=base64.b64encode(open(zp,'rb').read()).decode()
-                eid=save_journal({'orgName':data.get('orgName',''),'implDate':data.get('implDate',''),
-                                  'fileCount':len(done),'zipPath':zp})
+                eid=save_journal({
+                    'orgName': data.get('ai_data',{}).get('company',{}).get('name','') or data.get('orgName',''),
+                    'implDate': data.get('ai_data',{}).get('dates',{}).get('implementation_date','') or data.get('implDate',''),
+                    'fileCount':len(done),'zipPath':zp
+                })
                 self._json({'success':True,'fileCount':len(done),'journalId':eid,'zip':zb})
             elif p=='/api/journal/delete':
                 eid=json.loads(body)['id']
@@ -361,11 +458,12 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_OPTIONS(self): self.send_response(200); self.end_headers()
 
+
 if __name__=='__main__':
     print(f'\n✅  ИСО/СМК Генератор: http://localhost:{PORT}')
     print(f'   Откройте в браузере | Ctrl+C для остановки\n')
     class ThreadedServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-        allow_reuse_address = True
-    with ThreadedServer(('', PORT), H) as s:
+        allow_reuse_address=True
+    with ThreadedServer(('',PORT),H) as s:
         try: s.serve_forever()
         except KeyboardInterrupt: print('\n⏹  Остановлен')

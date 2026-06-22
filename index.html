@@ -241,6 +241,10 @@ input::placeholder{color:#C4BDB2}
   </div>
 
   <div class="sb-divider"></div>
+  <div class="sb-item" data-page="ai" onclick="nav('ai',this)" style="background:rgba(184,137,26,.15);border:1px solid rgba(184,137,26,.3);margin:4px 8px;border-radius:5px">
+    <span class="icon">🤖</span> ИИ Оформитель
+  </div>
+  <div class="sb-divider"></div>
   <div class="sb-section">Система</div>
   <div class="sb-item" onclick="openAddTemplate()">
     <span class="icon">➕</span> Свой шаблон
@@ -364,6 +368,76 @@ input::placeholder{color:#C4BDB2}
     <!-- PAGE: JOURNAL -->
     <div id="page-journal" class="page-content" style="display:none">
       <div id="journal-entries"></div>
+    </div>
+
+    <!-- PAGE: AI ОФОРМИТЕЛЬ -->
+    <div id="page-ai" class="page-content" style="display:none;height:calc(100vh - 52px);margin:-24px -28px;display:none;flex-direction:column">
+
+      <!-- KEY BAR -->
+      <div style="background:#FDF8EE;border-bottom:1px solid #F5EDD3;padding:8px 20px;display:flex;align-items:center;gap:10px;flex-shrink:0">
+        <span style="font-size:11px;font-weight:700;color:#B8891A;white-space:nowrap">🔑 Vibe API ключ:</span>
+        <input id="ai-key-input" type="password" placeholder="vibe_api_..." autocomplete="off"
+          style="flex:1;height:28px;padding:0 10px;border:1px solid #F5EDD3;border-radius:6px;font-size:12px;background:#fff">
+        <button onclick="aiSaveKey()" style="height:28px;padding:0 12px;background:#B8891A;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Подключить</button>
+        <span id="ai-key-status" style="font-size:10px;color:#9D9790">Ключ не введён</span>
+      </div>
+
+      <!-- CHAT + CARD LAYOUT -->
+      <div style="flex:1;display:flex;overflow:hidden;min-height:0">
+
+        <!-- LEFT: DATA CARD -->
+        <div style="width:280px;flex-shrink:0;background:#fff;border-right:1px solid #E2E0D8;display:flex;flex-direction:column;overflow:hidden">
+          <div style="padding:12px 14px 8px;border-bottom:1px solid #E2E0D8;background:#FAFAF8">
+            <div style="font-size:12px;font-weight:700;color:#1B2B45">Карточка компании</div>
+            <div id="ai-card-status" style="font-size:10px;color:#9D9790;margin-top:2px">Данных нет</div>
+          </div>
+          <div id="ai-card-body" style="flex:1;overflow-y:auto;padding:10px;font-size:11px">
+            <div style="color:#B0AAA2;text-align:center;padding:20px 10px">Передайте данные в чате →</div>
+          </div>
+          <div style="padding:10px;border-top:1px solid #E2E0D8">
+            <button id="ai-gen-btn" onclick="aiGenerate()" disabled
+              style="width:100%;height:36px;background:#8FA8C4;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:not-allowed;transition:background .15s">
+              📦 Сформировать пакет
+            </button>
+          </div>
+        </div>
+
+        <!-- CHAT -->
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+          <div id="ai-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;gap:8px;align-items:flex-start;max-width:680px">
+              <div style="width:28px;height:28px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0">ИИ</div>
+              <div style="padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:0.5px solid #E2E0D8;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+                Здравствуйте! Введите Vibe API ключ выше, затем вставьте сюда текст от эксперта — я сам разберу данные, назначу роли и скажу что нужно уточнить.<br><br>
+                Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.
+              </div>
+            </div>
+          </div>
+
+          <!-- QUICK REPLIES -->
+          <div id="ai-quick" style="padding:0 14px 6px;display:flex;gap:5px;flex-wrap:wrap">
+            <button onclick="aiQuick('Исправь директора на: ')" class="ai-qr">✏️ Директора</button>
+            <button onclick="aiQuick('Дата выезда эксперта органа: ')" class="ai-qr">📅 Дата выезда</button>
+            <button onclick="aiQuick('Добавь объект: ')" class="ai-qr">🏗 Объект</button>
+            <button onclick="aiQuick('Поставщики: ')" class="ai-qr">📦 Поставщики</button>
+            <button onclick="aiQuick('Удостоверения ОТ сотрудников: ')" class="ai-qr">🛡 ОТ</button>
+          </div>
+
+          <!-- INPUT -->
+          <div style="padding:10px 14px;border-top:1px solid #E2E0D8;background:#fff">
+            <div style="display:flex;gap:7px;align-items:flex-end">
+              <div style="flex:1;border:1px solid #C8C5BC;border-radius:12px;overflow:hidden;transition:border-color .15s">
+                <textarea id="ai-input" rows="2" placeholder="Вставьте текст от эксперта или напишите правку..."
+                  onkeydown="aiHandleKey(event)" oninput="aiResize(this)"
+                  style="width:100%;padding:8px 11px;border:none;outline:none;resize:none;font-family:inherit;font-size:12.5px;line-height:1.5;max-height:100px;min-height:38px;background:transparent"></textarea>
+                <div style="padding:4px 8px;border-top:0.5px solid #E2E0D8;font-size:10px;color:#B0AAA2">Enter — отправить · Shift+Enter — новая строка</div>
+              </div>
+              <button id="ai-send-btn" onclick="aiSend()" disabled
+                style="width:36px;height:36px;border-radius:8px;background:#8FA8C4;border:none;cursor:not-allowed;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s">➤</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
   </div><!-- /content -->
@@ -937,6 +1011,309 @@ document.addEventListener('DOMContentLoaded', () => {
   renderDocLists();
   loadCompanies().catch(() => {});
 });
+</script>
+
+<style>
+.ai-qr{font-size:11px;padding:4px 10px;border-radius:16px;border:1px solid #C8C5BC;background:#fff;color:#18181B;cursor:pointer;font-family:inherit;transition:all .12s}
+.ai-qr:hover{border-color:#2B4166;color:#1B2B45;background:#E6F1FB}
+.ai-msg-ai{display:flex;gap:8px;align-items:flex-start;max-width:680px;align-self:flex-start}
+.ai-msg-user{display:flex;gap:8px;align-items:flex-start;max-width:680px;align-self:flex-end;flex-direction:row-reverse}
+.ai-bubble-ai{padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:.5px solid #E2E0D8;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05);max-width:calc(100% - 40px)}
+.ai-bubble-user{padding:9px 12px;border-radius:10px;border-bottom-right-radius:3px;background:#1B2B45;color:#fff;font-size:12.5px;line-height:1.55;max-width:calc(100% - 40px)}
+.ai-avatar{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0}
+.ai-q-block{margin-top:8px;padding:8px 10px;background:#FDF8EE;border:1px solid #F5EDD3;border-radius:8px}
+.ai-q-title{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#B8891A;margin-bottom:4px}
+.ai-q-item{display:flex;gap:5px;padding:3px 0;border-bottom:.5px solid #F5EDD3;font-size:11px}
+.ai-q-item:last-child{border-bottom:none}
+.ai-df{display:flex;justify-content:space-between;padding:4px 6px;border-bottom:.5px solid #E2E0D8;gap:6px}
+.ai-df:last-child{border-bottom:none}
+.ai-dl{font-size:9.5px;color:#706A5E;flex-shrink:0}
+.ai-dv{font-size:10.5px;font-weight:600;color:#2D6A4F;text-align:right;word-break:break-word}
+.ai-person{display:flex;align-items:center;gap:5px;padding:4px 7px;border-radius:6px;background:#E6F1FB;border:.5px solid #B5D4F4;margin-bottom:3px}
+.ai-pname{font-size:10.5px;font-weight:700;color:#1B2B45}
+.ai-prole{font-size:9.5px;color:#3D5A84}
+.ai-flag-err{padding:5px 8px;border-radius:6px;background:#FEF2F2;border:.5px solid #FECACA;color:#B91C1C;font-size:10.5px;margin-bottom:4px}
+.ai-flag-warn{padding:5px 8px;border-radius:6px;background:#FAEADE;border:.5px solid #F5C895;color:#7A3810;font-size:10.5px;margin-bottom:4px}
+.ai-flag-ok{padding:5px 8px;border-radius:6px;background:#D8F0E5;border:.5px solid #86EFAC;color:#2D6A4F;font-size:10.5px;margin-bottom:4px}
+.ai-sec{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#9D9790;margin:8px 0 4px;display:flex;align-items:center;gap:5px}
+.ai-sec::after{content:'';flex:1;height:.5px;background:#E2E0D8}
+.typing-dot{width:5px;height:5px;border-radius:50%;background:#706A5E;animation:tdot .8s infinite;display:inline-block;margin:0 2px}
+.typing-dot:nth-child(2){animation-delay:.15s}
+.typing-dot:nth-child(3){animation-delay:.3s}
+@keyframes tdot{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-4px)}}
+</style>
+
+<script>
+// ── ИИ Оформитель ────────────────────────────────────────────
+let aiKey = '';
+let aiHistory = [];
+let aiCurrentData = {};
+let aiLoading = false;
+
+// Перехватываем nav для страницы ai
+const _origNav = typeof nav === 'function' ? nav : null;
+function nav(page, el) {
+  document.querySelectorAll('.page-content').forEach(p => {
+    p.style.display = 'none';
+  });
+  document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
+  const titles = {docs:'Документы ИСО', companies:'Компании', journal:'Журнал генераций', ai:'ИИ Оформитель'};
+  document.getElementById('page-title').textContent = titles[page] || page;
+  if(el) el.classList.add('active');
+
+  const pg = document.getElementById('page-'+page);
+  if(pg){
+    if(page === 'ai') {
+      pg.style.display = 'flex';
+    } else {
+      pg.style.display = 'block';
+    }
+  }
+
+  const btnTop = document.getElementById('btn-gen-top');
+  if(btnTop) btnTop.style.display = (page==='docs') ? 'flex' : 'none';
+
+  if(page==='companies') loadCompanies && loadCompanies();
+  if(page==='journal') loadJournal && loadJournal();
+  if(page==='docs') loadDocs && loadDocs();
+}
+
+function aiSaveKey() {
+  const v = document.getElementById('ai-key-input').value.trim();
+  if(!v.startsWith('vibe_')) {
+    document.getElementById('ai-key-status').textContent = '❌ Ключ должен начинаться с vibe_';
+    document.getElementById('ai-key-status').style.color = '#B91C1C';
+    return;
+  }
+  aiKey = v;
+  document.getElementById('ai-key-input').value = '••••••••••••••••';
+  document.getElementById('ai-key-status').textContent = '✅ Подключено · BitrixGPT 5.5 · Бесплатно';
+  document.getElementById('ai-key-status').style.color = '#2D6A4F';
+  document.getElementById('ai-send-btn').disabled = false;
+  document.getElementById('ai-send-btn').style.cssText = 'width:36px;height:36px;border-radius:8px;background:#1B2B45;border:none;cursor:pointer;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s';
+  aiAddMsg('ai', 'Подключено! Теперь вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я всё разберу сам.');
+}
+
+function aiAddMsg(role, text, questions) {
+  const box = document.getElementById('ai-messages');
+  const d = document.createElement('div');
+  d.className = role==='ai' ? 'ai-msg-ai' : 'ai-msg-user';
+  let qHtml = '';
+  if(questions && questions.length) {
+    qHtml = `<div class="ai-q-block"><div class="ai-q-title">❓ Нужна информация</div>${questions.map((q,i)=>`<div class="ai-q-item"><span style="font-weight:700;color:#B8891A;flex-shrink:0">${i+1}.</span><span>${q}</span></div>`).join('')}</div>`;
+  }
+  const avatarStyle = `background:${role==='ai'?'#1B2B45':'#B8891A'}`;
+  d.innerHTML = `<div class="ai-avatar" style="${avatarStyle}">${role==='ai'?'ИИ':'ОФ'}</div><div class="${role==='ai'?'ai-bubble-ai':'ai-bubble-user'}">${text}${qHtml}</div>`;
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+}
+
+function aiShowTyping() {
+  const box = document.getElementById('ai-messages');
+  const d = document.createElement('div');
+  d.className = 'ai-msg-ai'; d.id = 'ai-typing';
+  d.innerHTML = `<div class="ai-avatar" style="background:#1B2B45">ИИ</div><div class="ai-bubble-ai"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
+  box.appendChild(d); box.scrollTop = box.scrollHeight;
+}
+function aiRemoveTyping(){const t=document.getElementById('ai-typing');if(t)t.remove();}
+
+function aiRenderCard(data) {
+  if(!data) return;
+  // Мержим данные
+  if(data.company) aiCurrentData.company = {...(aiCurrentData.company||{}), ...Object.fromEntries(Object.entries(data.company).filter(([,v])=>v))};
+  if(data.certification) aiCurrentData.certification = {...(aiCurrentData.certification||{}), ...Object.fromEntries(Object.entries(data.certification).filter(([,v])=>v))};
+  if(data.dates) aiCurrentData.dates = {...(aiCurrentData.dates||{}), ...Object.fromEntries(Object.entries(data.dates).filter(([,v])=>v))};
+  if(data.staff && data.staff.length) aiCurrentData.staff = data.staff;
+  if(data.objects && data.objects.length) aiCurrentData.objects = data.objects;
+  if(data.suppliers && data.suppliers.length) aiCurrentData.suppliers = data.suppliers;
+  if(data.flags) aiCurrentData.flags = data.flags;
+  if(data.readiness) aiCurrentData.readiness = data.readiness;
+
+  const r = aiCurrentData.readiness;
+  const st = document.getElementById('ai-card-status');
+  if(r==='ready') st.textContent='✅ Готово к генерации';
+  else if(r==='review') st.textContent='⚠️ Нужна проверка';
+  else if(r==='partial') st.textContent='📋 Данные получены частично';
+
+  // Собираем HTML карточки
+  let html = '';
+
+  // Флаги
+  (aiCurrentData.flags||[]).forEach(f => {
+    const cls = f.type==='error'?'ai-flag-err':f.type==='warning'?'ai-flag-warn':'ai-flag-ok';
+    html += `<div class="${cls}">${f.text}</div>`;
+  });
+
+  // Компания
+  const c = aiCurrentData.company||{};
+  const cF = [['Название',c.name],['Форма',c.form],['УНП',c.unp],['Город',c.city],['Директор',c.director_fio],['Должность',c.director_position]].filter(([,v])=>v);
+  if(cF.length) {
+    html += '<div class="ai-sec">Компания</div><div>';
+    cF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
+    html += '</div>';
+  }
+
+  // Сертификация
+  const cert = aiCurrentData.certification||{};
+  const certF = [['Стандарт',cert.standard],['Область',cert.scope],['Орган',cert.body]].filter(([,v])=>v);
+  if(certF.length) {
+    html += '<div class="ai-sec">Сертификация</div><div>';
+    certF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
+    html += '</div>';
+  }
+
+  // Даты
+  const dt = aiCurrentData.dates||{};
+  const dtF = [['Аудит',dt.audit_date],['Разработка',dt.development_date],['Внедрение',dt.implementation_date]].filter(([,v])=>v);
+  if(dtF.length) {
+    html += '<div class="ai-sec">Даты</div><div>';
+    dtF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
+    html += '</div>';
+  }
+
+  // Сотрудники
+  const staff = aiCurrentData.staff||[];
+  if(staff.length) {
+    html += '<div class="ai-sec">Сотрудники</div>';
+    const rl = {director:'Директор',auditor:'Аудитор',responsible:'Ответств. ФНПА',itr:'ИТР'};
+    staff.forEach(p => {
+      html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${(p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase()}</div><div><div class="ai-pname">${p.fio||''}</div><div class="ai-prole">${p.position||''}${p.role?' · '+(rl[p.role]||p.role):''}${p.ot_certificate?' · 🛡 '+p.ot_certificate_date:''}</div></div></div>`;
+    });
+  }
+
+  // Объекты
+  const objs = aiCurrentData.objects||[];
+  if(objs.length) {
+    html += '<div class="ai-sec">Объекты</div><div>';
+    objs.forEach((o,i) => html += `<div class="ai-df"><span class="ai-dl">${i+1}. ${o.year||''}</span><span class="ai-dv">${o.name}${o.customer?' ('+o.customer+')':''}</span></div>`);
+    html += '</div>';
+  }
+
+  // Поставщики
+  const sups = aiCurrentData.suppliers||[];
+  if(sups.length) {
+    html += '<div class="ai-sec">Поставщики</div><div>';
+    sups.forEach((s,i) => html += `<div class="ai-df"><span class="ai-dl">${i+1}.</span><span class="ai-dv">${s.name}${s.type?' · '+s.type:''}</span></div>`);
+    html += '</div>';
+  }
+
+  document.getElementById('ai-card-body').innerHTML = html || '<div style="color:#B0AAA2;text-align:center;padding:20px 10px">Передайте данные в чате →</div>';
+
+  // Кнопка генерации
+  const btn = document.getElementById('ai-gen-btn');
+  if(r==='ready'||r==='partial'||r==='review') {
+    btn.disabled = false;
+    btn.style.cssText = 'width:100%;height:36px;background:#0B7A79;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s';
+  }
+}
+
+function aiParseResponse(raw) {
+  try {
+    let t = raw.trim();
+    if(t.startsWith('```')) t = t.replace(/^```json?\s*/,'').replace(/```\s*$/,'').trim();
+    const start = t.indexOf('{');
+    if(start === -1) return {message: raw};
+    return JSON.parse(t.slice(start));
+  } catch(e) { return {message: raw}; }
+}
+
+async function aiSend() {
+  if(aiLoading || !aiKey) return;
+  const ta = document.getElementById('ai-input');
+  const text = ta.value.trim();
+  if(!text) return;
+
+  aiAddMsg('user', text);
+  ta.value = ''; ta.style.height = '';
+
+  aiLoading = true;
+  document.getElementById('ai-send-btn').disabled = true;
+  aiShowTyping();
+
+  // Добавляем контекст текущих данных
+  let content = text;
+  if(Object.keys(aiCurrentData).length > 0) {
+    content = 'ТЕКУЩИЕ ДАННЫЕ КАРТОЧКИ:\n' + JSON.stringify(aiCurrentData, null, 2) + '\n\nЗАПРОС ОФОРМИТЕЛЯ:\n' + text;
+  }
+  aiHistory.push({role:'user', content});
+
+  try {
+    const resp = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({api_key: aiKey, messages: aiHistory.slice(-10)})
+    });
+    const result = await resp.json();
+    aiRemoveTyping();
+
+    if(!result.success) throw new Error(result.error || 'Ошибка сервера');
+
+    const parsed = aiParseResponse(result.text);
+    aiHistory.push({role:'assistant', content: result.text});
+
+    if(parsed.data) aiRenderCard(parsed.data);
+    aiAddMsg('ai', parsed.message || result.text, parsed.questions);
+
+  } catch(e) {
+    aiRemoveTyping();
+    aiAddMsg('ai', '❌ Ошибка: ' + e.message);
+  }
+
+  aiLoading = false;
+  document.getElementById('ai-send-btn').disabled = false;
+}
+
+function aiHandleKey(e) {
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();aiSend();}
+}
+function aiResize(ta) {
+  ta.style.height='auto';
+  ta.style.height=Math.min(ta.scrollHeight,100)+'px';
+}
+function aiQuick(t) {
+  document.getElementById('ai-input').value = t;
+  document.getElementById('ai-input').focus();
+}
+
+async function aiGenerate() {
+  const c = aiCurrentData.company;
+  if(!c || !c.name) { aiAddMsg('ai','Для генерации нужны данные компании.'); return; }
+
+  // Передаём ai_data в существующий endpoint /api/generate
+  const payload = {
+    orgName: c.name,
+    orgForm: c.form || 'ООО',
+    city: c.city || 'Минск',
+    scope: aiCurrentData.certification?.scope || '',
+    implDate: aiCurrentData.dates?.implementation_date || '',
+    startDate: aiCurrentData.dates?.development_date || '',
+    dirSurname: (c.director_fio||'').split(' ')[0] || '',
+    dirInitials: (c.director_fio||'').split(' ').slice(1).map(x=>x[0]||'').join('.') + '.' || '',
+    ai_data: aiCurrentData,
+    itrList: (aiCurrentData.staff||[]).filter(s=>s.role==='itr'||s.is_itr).map(s=>s.fio).join('\n'),
+  };
+
+  aiAddMsg('ai', `⏳ Формирую пакет документов для <strong>${c.name}</strong>...`);
+  const btn = document.getElementById('ai-gen-btn');
+  btn.disabled = true; btn.textContent = '⏳ Генерирую...';
+
+  try {
+    const resp = await fetch('/api/generate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const r = await resp.json();
+    if(r.success) {
+      aiAddMsg('ai', `✅ Готово! Сформировано ${r.fileCount} документов.<br><br><a href="/api/download/${r.journalId}" style="display:inline-flex;align-items:center;gap:5px;padding:7px 14px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">📥 Скачать ISO_docs.zip</a>`);
+    } else {
+      aiAddMsg('ai', '❌ Ошибка генерации: ' + r.error);
+    }
+  } catch(e) {
+    aiAddMsg('ai', '❌ Ошибка: ' + e.message);
+  }
+
+  btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+}
 </script>
 </body>
 </html>
