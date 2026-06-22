@@ -394,9 +394,9 @@ class H(http.server.BaseHTTPRequestHandler):
             # ── ИИ-чат ──────────────────────────────────────
             if p=='/api/ai/chat':
                 req=json.loads(body)
-                api_key=req.get('api_key') or os.environ.get('VIBE_API_KEY','')
+                api_key=os.environ.get('VIBE_API_KEY','')
                 if not api_key:
-                    self._json({'success':False,'error':'Нет Vibe API ключа'},400); return
+                    self._json({'success':False,'error':'VIBE_API_KEY не задан на сервере. Добавьте в Environment на Render.'},500); return
                 messages=req.get('messages',[])
                 text=call_ai(messages, api_key)
                 self._json({'success':True,'text':text})

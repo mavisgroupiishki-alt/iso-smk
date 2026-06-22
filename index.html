@@ -373,13 +373,9 @@ input::placeholder{color:#C4BDB2}
     <!-- PAGE: AI ОФОРМИТЕЛЬ -->
     <div id="page-ai" class="page-content" style="display:none;height:calc(100vh - 52px);margin:-24px -28px;display:none;flex-direction:column">
 
-      <!-- KEY BAR -->
-      <div style="background:#FDF8EE;border-bottom:1px solid #F5EDD3;padding:8px 20px;display:flex;align-items:center;gap:10px;flex-shrink:0">
-        <span style="font-size:11px;font-weight:700;color:#B8891A;white-space:nowrap">🔑 Vibe API ключ:</span>
-        <input id="ai-key-input" type="password" placeholder="vibe_api_..." autocomplete="off"
-          style="flex:1;height:28px;padding:0 10px;border:1px solid #F5EDD3;border-radius:6px;font-size:12px;background:#fff">
-        <button onclick="aiSaveKey()" style="height:28px;padding:0 12px;background:#B8891A;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Подключить</button>
-        <span id="ai-key-status" style="font-size:10px;color:#9D9790">Ключ не введён</span>
+      <!-- KEY — задаётся через VIBE_API_KEY на сервере, не нужно вводить вручную -->
+      <div style="background:#D8F0E5;border-bottom:1px solid #86EFAC;padding:5px 20px;display:flex;align-items:center;gap:8px;flex-shrink:0">
+        <span style="font-size:11px;color:#2D6A4F">✅ BitrixGPT 5.5 · Бесплатно · Ключ задан на сервере</span>
       </div>
 
       <!-- CHAT + CARD LAYOUT -->
@@ -408,8 +404,7 @@ input::placeholder{color:#C4BDB2}
             <div style="display:flex;gap:8px;align-items:flex-start;max-width:680px">
               <div style="width:28px;height:28px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0">ИИ</div>
               <div style="padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:0.5px solid #E2E0D8;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05)">
-                Здравствуйте! Введите Vibe API ключ выше, затем вставьте сюда текст от эксперта — я сам разберу данные, назначу роли и скажу что нужно уточнить.<br><br>
-                Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.
+                Здравствуйте! Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.
               </div>
             </div>
           </div>
@@ -432,8 +427,8 @@ input::placeholder{color:#C4BDB2}
                   style="width:100%;padding:8px 11px;border:none;outline:none;resize:none;font-family:inherit;font-size:12.5px;line-height:1.5;max-height:100px;min-height:38px;background:transparent"></textarea>
                 <div style="padding:4px 8px;border-top:0.5px solid #E2E0D8;font-size:10px;color:#B0AAA2">Enter — отправить · Shift+Enter — новая строка</div>
               </div>
-              <button id="ai-send-btn" onclick="aiSend()" disabled
-                style="width:36px;height:36px;border-radius:8px;background:#8FA8C4;border:none;cursor:not-allowed;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s">➤</button>
+              <button id="ai-send-btn" onclick="aiSend()"
+                style="width:36px;height:36px;border-radius:8px;background:#1B2B45;border:none;cursor:pointer;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s">➤</button>
             </div>
           </div>
         </div>
@@ -1045,7 +1040,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <script>
 // ── ИИ Оформитель ────────────────────────────────────────────
-let aiKey = '';
+let aiKey = 'server'; // ключ хранится на сервере
 let aiHistory = [];
 let aiCurrentData = {};
 let aiLoading = false;
@@ -1078,21 +1073,7 @@ function nav(page, el) {
   if(page==='docs') loadDocs && loadDocs();
 }
 
-function aiSaveKey() {
-  const v = document.getElementById('ai-key-input').value.trim();
-  if(!v.startsWith('vibe_')) {
-    document.getElementById('ai-key-status').textContent = '❌ Ключ должен начинаться с vibe_';
-    document.getElementById('ai-key-status').style.color = '#B91C1C';
-    return;
-  }
-  aiKey = v;
-  document.getElementById('ai-key-input').value = '••••••••••••••••';
-  document.getElementById('ai-key-status').textContent = '✅ Подключено · BitrixGPT 5.5 · Бесплатно';
-  document.getElementById('ai-key-status').style.color = '#2D6A4F';
-  document.getElementById('ai-send-btn').disabled = false;
-  document.getElementById('ai-send-btn').style.cssText = 'width:36px;height:36px;border-radius:8px;background:#1B2B45;border:none;cursor:pointer;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s';
-  aiAddMsg('ai', 'Подключено! Теперь вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я всё разберу сам.');
-}
+// Ключ задаётся через VIBE_API_KEY на сервере
 
 function aiAddMsg(role, text, questions) {
   const box = document.getElementById('ai-messages');
@@ -1218,7 +1199,7 @@ function aiParseResponse(raw) {
 }
 
 async function aiSend() {
-  if(aiLoading || !aiKey) return;
+  if(aiLoading) return;
   const ta = document.getElementById('ai-input');
   const text = ta.value.trim();
   if(!text) return;
@@ -1241,7 +1222,7 @@ async function aiSend() {
     const resp = await fetch('/api/ai/chat', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({api_key: aiKey, messages: aiHistory.slice(-10)})
+      body: JSON.stringify({messages: aiHistory.slice(-10)})
     });
     const result = await resp.json();
     aiRemoveTyping();
