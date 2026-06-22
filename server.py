@@ -399,6 +399,51 @@ def extract_text_from_file(file_bytes, filename):
                 return ' '.join(result)[:8000]
             return '[PDF: не удалось извлечь текст — попробуйте скопировать текст вручную]'
 
+        elif ext == 'rar':
+            # RAR — пробуем через системные утилиты
+            import io, tempfile, subprocess, os as _os
+            texts = []
+            with tempfile.TemporaryDirectory() as td:
+                rar_path = _os.path.join(td, 'archive.rar')
+                with open(rar_path, 'wb') as f_out:
+                    f_out.write(file_bytes)
+                # Пробуем unrar, потом 7z
+                extracted = False
+                for cmd in [
+                    ['unrar', 'x', '-y', rar_path, td],
+                    ['7z', 'x', '-y', f'-o{td}', rar_path],
+                ]:
+                    try:
+                        r = subprocess.run(cmd, capture_output=True, timeout=30)
+                        if r.returncode == 0:
+                            extracted = True
+                            break
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        continue
+
+                if extracted:
+                    for root, dirs, files in _os.walk(td):
+                        for fn in files:
+                            if fn == 'archive.rar':
+                                continue
+                            inner_ext = fn.rsplit('.', 1)[-1].lower()
+                            if inner_ext not in ('docx','txt','csv','xlsx','pdf','rar'):
+                                continue
+                            try:
+                                fp = _os.path.join(root, fn)
+                                with open(fp, 'rb') as f_in:
+                                    inner_bytes = f_in.read()
+                                inner_text = extract_text_from_file(inner_bytes, fn)
+                                if inner_text and not inner_text.startswith('['):
+                                    texts.append(f'--- {fn} ---\n{inner_text}')
+                            except:
+                                pass
+                    if texts:
+                        return '\n\n'.join(texts)[:12000]
+                    return '[rar: распакован, но читаемых файлов не найдено]'
+                else:
+                    return '[rar: не удалось распаковать — на сервере нет unrar/7z. Пожалуйста, перепакуйте в zip.]'
+
         elif ext == 'zip':
             # Распаковываем zip и читаем все текстовые файлы внутри
             import io
@@ -409,7 +454,7 @@ def extract_text_from_file(file_bytes, filename):
                         if name.endswith('/'):
                             continue
                         inner_ext = name.rsplit('.', 1)[-1].lower()
-                        if inner_ext not in ('docx','txt','csv','xlsx','pdf'):
+                        if inner_ext not in ('docx','txt','csv','xlsx','pdf','rar'):
                             continue
                         try:
                             inner_bytes = z.read(name)
