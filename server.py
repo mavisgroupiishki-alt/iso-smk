@@ -399,6 +399,33 @@ def extract_text_from_file(file_bytes, filename):
                 return ' '.join(result)[:8000]
             return '[PDF: не удалось извлечь текст — попробуйте скопировать текст вручную]'
 
+        elif ext == 'zip':
+            # Распаковываем zip и читаем все текстовые файлы внутри
+            import io
+            texts = []
+            try:
+                with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+                    for name in z.namelist():
+                        if name.endswith('/'):
+                            continue
+                        inner_ext = name.rsplit('.', 1)[-1].lower()
+                        if inner_ext not in ('docx','txt','csv','xlsx','pdf'):
+                            continue
+                        try:
+                            inner_bytes = z.read(name)
+                            inner_name = name.split('/')[-1]
+                            inner_text = extract_text_from_file(inner_bytes, inner_name)
+                            if inner_text and not inner_text.startswith('['):
+                                texts.append(f'--- {inner_name} ---\n{inner_text}')
+                        except:
+                            pass
+                if texts:
+                    combined = '\n\n'.join(texts)
+                    return combined[:12000]
+                return '[zip: внутри не найдено читаемых файлов]'
+            except Exception as e:
+                return f'[zip: ошибка распаковки — {e}]'
+
         elif ext in ('xlsx', 'xls'):
             import io
             with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:

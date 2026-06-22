@@ -431,14 +431,14 @@ input::placeholder{color:#C4BDB2}
                     style="display:flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:4px;border:0.5px solid #C8C5BC;background:transparent;font-size:10.5px;color:#706A5E;cursor:pointer;font-family:inherit">
                     📎 Прикрепить файл
                   </button>
-                  <span style="font-size:10px;color:#B0AAA2">docx, pdf, txt, xlsx · Enter — отправить</span>
+                  <span style="font-size:10px;color:#B0AAA2">docx, pdf, xlsx, zip, txt · Enter — отправить</span>
                 </div>
               </div>
               <button id="ai-send-btn" onclick="aiSend()"
                 style="width:36px;height:36px;border-radius:8px;background:#1B2B45;border:none;cursor:pointer;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s">➤</button>
             </div>
             <input type="file" id="ai-file-input" multiple
-              accept=".txt,.docx,.pdf,.xlsx,.csv,.doc"
+              accept=".txt,.docx,.pdf,.xlsx,.csv,.doc,.zip"
               style="display:none" onchange="aiHandleFiles(this.files)">
           </div>
         </div>
