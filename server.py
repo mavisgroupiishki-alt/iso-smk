@@ -400,49 +400,65 @@ def extract_text_from_file(file_bytes, filename):
             return '[PDF: не удалось извлечь текст — попробуйте скопировать текст вручную]'
 
         elif ext == 'rar':
-            # RAR — пробуем через системные утилиты
-            import io, tempfile, subprocess, os as _os
+            # RAR — через Python библиотеку rarfile
+            import io, tempfile, os as _os
             texts = []
-            with tempfile.TemporaryDirectory() as td:
-                rar_path = _os.path.join(td, 'archive.rar')
-                with open(rar_path, 'wb') as f_out:
-                    f_out.write(file_bytes)
-                # Пробуем unrar, потом 7z
-                extracted = False
-                for cmd in [
-                    ['unrar', 'x', '-y', rar_path, td],
-                    ['7z', 'x', '-y', f'-o{td}', rar_path],
-                ]:
-                    try:
-                        r = subprocess.run(cmd, capture_output=True, timeout=30)
-                        if r.returncode == 0:
-                            extracted = True
-                            break
-                    except (FileNotFoundError, subprocess.TimeoutExpired):
-                        continue
+            extracted = False
+            # Способ 1: rarfile (Python)
+            try:
+                import rarfile as _rar
+                _rar.UNRAR_TOOL = '7z'  # fallback
+                with _rar.RarFile(io.BytesIO(file_bytes)) as rf:
+                    for name in rf.namelist():
+                        inner_ext = name.rsplit('.', 1)[-1].lower()
+                        if inner_ext not in ('docx','txt','csv','xlsx','pdf'):
+                            continue
+                        try:
+                            inner_bytes = rf.read(name)
+                            fn = name.split('/')[-1]
+                            inner_text = extract_text_from_file(inner_bytes, fn)
+                            if inner_text and not inner_text.startswith('['):
+                                texts.append('--- ' + fn + ' ---\n' + inner_text)
+                        except:
+                            pass
+                extracted = True
+            except Exception as e1:
+                # Способ 2: через subprocess 7z/unrar
+                import tempfile, subprocess
+                with tempfile.TemporaryDirectory() as td:
+                    rar_path = _os.path.join(td, 'archive.rar')
+                    with open(rar_path, 'wb') as f_out:
+                        f_out.write(file_bytes)
+                    for cmd in [
+                        ['7z', 'x', '-y', f'-o{td}', rar_path],
+                        ['unrar', 'x', '-y', rar_path, td],
+                    ]:
+                        try:
+                            r = subprocess.run(cmd, capture_output=True, timeout=30)
+                            if r.returncode == 0:
+                                extracted = True
+                                break
+                        except (FileNotFoundError, subprocess.TimeoutExpired):
+                            continue
+                    if extracted:
+                        for root, dirs, files_list in _os.walk(td):
+                            for fn in files_list:
+                                if fn == 'archive.rar': continue
+                                inner_ext = fn.rsplit('.', 1)[-1].lower()
+                                if inner_ext not in ('docx','txt','csv','xlsx','pdf'): continue
+                                try:
+                                    with open(_os.path.join(root, fn), 'rb') as f_in:
+                                        inner_bytes = f_in.read()
+                                    inner_text = extract_text_from_file(inner_bytes, fn)
+                                    if inner_text and not inner_text.startswith('['):
+                                        texts.append('--- ' + fn + ' ---\n' + inner_text)
+                                except: pass
 
-                if extracted:
-                    for root, dirs, files in _os.walk(td):
-                        for fn in files:
-                            if fn == 'archive.rar':
-                                continue
-                            inner_ext = fn.rsplit('.', 1)[-1].lower()
-                            if inner_ext not in ('docx','txt','csv','xlsx','pdf','rar'):
-                                continue
-                            try:
-                                fp = _os.path.join(root, fn)
-                                with open(fp, 'rb') as f_in:
-                                    inner_bytes = f_in.read()
-                                inner_text = extract_text_from_file(inner_bytes, fn)
-                                if inner_text and not inner_text.startswith('['):
-                                    texts.append(f'--- {fn} ---\n{inner_text}')
-                            except:
-                                pass
-                    if texts:
-                        return '\n\n'.join(texts)[:12000]
-                    return '[rar: распакован, но читаемых файлов не найдено]'
-                else:
-                    return '[rar: не удалось распаковать — на сервере нет unrar/7z. Пожалуйста, перепакуйте в zip.]'
+            if texts:
+                return '\n\n'.join(texts)[:12000]
+            if not extracted:
+                return '[rar: не удалось распаковать. Пожалуйста, перепакуйте в zip — это займёт 30 секунд]'
+            return '[rar: распакован, но читаемых файлов внутри не найдено]'
 
         elif ext == 'zip':
             # Распаковываем zip и читаем все текстовые файлы внутри
