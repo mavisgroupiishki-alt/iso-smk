@@ -25,6 +25,12 @@ AI_SYSTEM = """Ты — ИИ-оформитель документов ИСО/С
 
 ТВОЯ РОЛЬ: анализируешь входящие данные от эксперта, сам решаешь кто куда идёт в документах, проверяешь корректность и задаёшь вопросы если чего-то не хватает. Принимаешь правки на человеческом языке.
 
+ПРОДУКТЫ которые ты умеешь оформлять:
+- ISO (ИСО) — ISO 9001, ISO 45001 или оба вместе
+- СПК — Свидетельство о технической компетентности (два варианта: Строй Комплекс и БИСП)
+- СУОТ — Система управления охраной труда (ISO 45001)
+- Периодика — обновление части документов для ISO/СПК/СУОТ
+
 ИЗВЛЕКАЙ И СТРУКТУРИРУЙ из текста эксперта:
 1. Реквизиты: название компании, форма (ООО/ЧУП/ОДО), УНП, юр.адрес, город, ФИО директора, должность директора, email
 2. Сертификация: стандарт (ISO 9001 / ISO 45001 / оба), область (дословно как в заявке), орган сертификации
@@ -54,7 +60,7 @@ AI_SYSTEM = """Ты — ИИ-оформитель документов ИСО/С
     "objects": [{"name":"","year":"","customer":""}],
     "suppliers": [{"name":"","type":""}],
     "flags": [{"type":"error|warning|ok","text":""}],
-    "readiness": "waiting|partial|review|ready"
+    "product": "iso|spk_stroy|spk_bisp|suot|iso_suot|periodika","readiness": "waiting|partial|review|ready"
   }
 }
 Включай только заполненные поля. Пустые не включай."""
@@ -295,11 +301,102 @@ def replace_itr_table(src, dst, itr_list, impl_date):
                     zo.write(fpath,_os.path.relpath(fpath,up))
 
 
+
+
+def build_reps_spk(data, variant='stroy'):
+    """Замены для СПК (Строй Комплекс или БИСП)"""
+    ai = data.get('ai_data', {})
+    c = ai.get('company', {}) or {}
+    org = c.get('name') or data.get('orgName', '')
+    form = c.get('form') or data.get('orgForm', 'ООО')
+    
+    # Директор
+    dir_fio = c.get('director_fio', '')
+    parts = dir_fio.split() if dir_fio else []
+    dir_s = parts[0] if parts else data.get('dirSurname', '')
+    dir_i = '.'.join(p[0] for p in parts[1:] if p) + '.' if len(parts) > 1 else data.get('dirInitials', '')
+    
+    # Даты
+    impl = ai.get('dates', {}).get('implementation_date', '') or date_dot(data.get('implDate', ''))
+    
+    if variant == 'stroy':
+        # Сфера Секьюрити / Пеганов В.Н. / Артюх А.В.
+        staff = ai.get('staff', [])
+        gi_fio = next((s['fio'] for s in staff if s.get('role') in ('responsible','auditor')), '')
+        gi_parts = gi_fio.split() if gi_fio else []
+        gi_s = gi_parts[0] if gi_parts else 'Артюх'
+        gi_i = '.'.join(p[0] for p in gi_parts[1:] if p)+'.' if len(gi_parts)>1 else 'А.В.'
+        
+        return [
+            ('Сфера Секьюрити', org), ('«Сфера Секьюрити»', f'«{org}»'),
+            (f'ООО «Сфера Секьюрити»', f'{form} «{org}»'),
+            ('Пеганов Владимир Николаевич', f'{dir_fio}' if dir_fio else 'Пеганов Владимир Николаевич'),
+            ('Пеганов В.Н.', f'{dir_s} {dir_i}' if dir_s else 'Пеганов В.Н.'),
+            ('В.Н. Пеганов', f'{dir_i} {dir_s}' if dir_s else 'В.Н. Пеганов'),
+            ('Артюх Андрей Владимирович', gi_fio or 'Артюх Андрей Владимирович'),
+            ('Артюх А.В.', f'{gi_s} {gi_i}' if gi_s else 'Артюх А.В.'),
+            ('А.В. Артюх', f'{gi_i} {gi_s}' if gi_s else 'А.В. Артюх'),
+        ] + ([('27.05.2026', impl), ('27.05.2025', impl)] if impl else [])
+    else:
+        # Кастом-Инвест / Юковец А.К.
+        return [
+            ('Кастом-Инвест', org), ('«Кастом-Инвест»', f'«{org}»'),
+            (f'ООО «Кастом-Инвест»', f'{form} «{org}»'),
+            ('Юковец А.К.', f'{dir_s} {dir_i}' if dir_s else 'Юковец А.К.'),
+            ('А.К. Юковец', f'{dir_i} {dir_s}' if dir_s else 'А.К. Юковец'),
+        ] + ([('27.05.2026', impl), ('27.05.2025', impl)] if impl else [])
+
+
+def build_reps_suot(data):
+    """Замены для СУОТ (Варта / Василенко)"""
+    ai = data.get('ai_data', {})
+    c = ai.get('company', {}) or {}
+    org = c.get('name') or data.get('orgName', '')
+    form = c.get('form') or data.get('orgForm', 'ООО')
+    scope = ai.get('certification', {}).get('scope', '') or data.get('scope', '')
+    
+    dir_fio = c.get('director_fio', '')
+    parts = dir_fio.split() if dir_fio else []
+    dir_s = parts[0] if parts else ''
+    dir_i = '.'.join(p[0] for p in parts[1:] if p)+'.' if len(parts)>1 else ''
+    
+    impl = ai.get('dates', {}).get('implementation_date', '') or date_dot(data.get('implDate', ''))
+    yr = year_of(impl) if impl else '2026'
+    
+    reps = [
+        ('Варта', org), ('«Варта»', f'«{org}»'),
+        ('ООО «Варта»', f'{form} «{org}»'),
+        ('Василенко С.Ф.', f'{dir_s} {dir_i}' if dir_s else 'Василенко С.Ф.'),
+        ('С.Ф. Василенко', f'{dir_i} {dir_s}' if dir_s else 'С.Ф. Василенко'),
+        ('Василенко', dir_s if dir_s else 'Василенко'),
+        ('монтаж внутренних систем электроснабжения; монтаж наружных сетей электроснабжения, трансформаторных подстанций и распределительных устройств; устройство систем связи и сигнализации, видеонаблюдения', scope or 'монтаж внутренних систем электроснабжения; монтаж наружных сетей электроснабжения, трансформаторных подстанций и распределительных устройств; устройство систем связи и сигнализации, видеонаблюдения'),
+        ('13.04.2026', impl or '13.04.2026'),
+        ('2026 года', f'{yr} года'), ('2026г.', f'{yr}г.'), ('2026 г.', f'{yr} г.'),
+        ('на 2026', f'на {yr}'),
+    ]
+    return [(o,n) for o,n in reps if o and n]
+
+
 def generate_all(data, out_dir):
-    reps=build_reps(data); org=data.get('orgName','')
-    # Если ИИ дал название — берём его
+    product = data.get('product','iso') or 'iso'
     ai_name = data.get('ai_data',{}).get('company',{}).get('name','')
-    if ai_name: org=ai_name
+    org = ai_name or data.get('orgName','')
+
+    # Выбираем шаблоны и замены по продукту
+    if product == 'spk_stroy':
+        tpl_dir = BASE_DIR/'templates'/'СПК_Строй'
+        reps = build_reps_spk(data, 'stroy')
+    elif product == 'spk_bisp':
+        tpl_dir = BASE_DIR/'templates'/'СПК_БИСП'
+        reps = build_reps_spk(data, 'bisp')
+    elif product in ('suot','iso_suot'):
+        tpl_dir = BASE_DIR/'templates'/'ИСО_СУОТ'
+        reps = build_reps_suot(data)
+        if product == 'iso_suot':
+            reps += build_reps(data)[:]  # + ИСО замены
+    else:
+        tpl_dir = TPL_DIR  # ИСО ЭнергоМагистраль
+        reps = build_reps(data)
     impl=date_dot(data.get('implDate',''))
     ai_impl=data.get('ai_data',{}).get('dates',{}).get('implementation_date','')
     if ai_impl: impl=ai_impl
@@ -317,7 +414,7 @@ def generate_all(data, out_dir):
         itr_list=[{'fio':s['fio']} for s in ai_staff if s.get('is_itr') or s.get('role')=='itr']
 
     Path(out_dir).mkdir(parents=True,exist_ok=True); done=[]
-    for src in TPL_DIR.rglob('*'):
+    for src in Path(tpl_dir).rglob('*'):
         if src.is_dir(): continue
         if not src.name.endswith(('.docx','.doc')): continue
         parts=list(src.relative_to(TPL_DIR).parts)

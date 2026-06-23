@@ -1019,6 +1019,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 
 <style>
+.prod-btn{font-size:11px;padding:4px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);cursor:pointer;font-family:inherit;transition:all .12s}
+.prod-btn:hover{background:rgba(255,255,255,.18);color:#fff}
+.active-prod{background:var(--accent)!important;border-color:var(--accent)!important;color:#fff!important;font-weight:700}
 .ai-qr{font-size:11px;padding:4px 10px;border-radius:16px;border:1px solid #C8C5BC;background:#fff;color:#18181B;cursor:pointer;font-family:inherit;transition:all .12s}
 .ai-qr:hover{border-color:#2B4166;color:#1B2B45;background:#E6F1FB}
 .ai-msg-ai{display:flex;gap:8px;align-items:flex-start;max-width:680px;align-self:flex-start}
@@ -1329,6 +1332,14 @@ function aiResize(ta) {
 function aiQuick(t) {
   document.getElementById('ai-input').value = t;
   document.getElementById('ai-input').focus();
+}
+
+function selectProduct(key, label, short) {
+  SELECTED_PRODUCT.key = key;
+  SELECTED_PRODUCT.label = label;
+  document.querySelectorAll('.prod-btn').forEach(b => b.classList.remove('active-prod'));
+  document.getElementById('pb-' + key)?.classList.add('active-prod');
+  aiAddMsg('ai', `Переключаю на продукт: <strong>${label}</strong>. Передавайте данные — я адаптирую требования.`);
 }
 
 async function aiGenerate() {
