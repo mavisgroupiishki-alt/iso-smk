@@ -365,154 +365,159 @@ def get_zip(eid):
 
 
 
-# ── Извлечение текста из файлов ──────────────────────────────
-def extract_text_from_file(file_bytes, filename):
-    """Извлекает текст из docx, pdf, txt, xlsx"""
-    ext = filename.rsplit('.', 1)[-1].lower()
+# ── Извлечение текста из файлов (рекурсивно) ────────────────
+def extract_text_from_file(file_bytes, filename, _depth=0):
+    """Рекурсивно читает файлы и архивы внутри архивов (до 3 уровней)"""
+    if _depth > 3:
+        return '[слишком глубокая вложенность архивов]'
+
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     try:
         if ext in ('txt', 'csv'):
             return file_bytes.decode('utf-8', errors='replace')[:8000]
 
-        elif ext == 'docx':
-            # docx = zip с XML
+        elif ext == 'docx' or ext == 'doc':
             import io
-            with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-                if 'word/document.xml' in z.namelist():
-                    xml = z.read('word/document.xml').decode('utf-8', errors='replace')
-                    # Убираем теги, оставляем текст
-                    text = re.sub(r'<[^>]+>', ' ', xml)
-                    text = re.sub(r'\s+', ' ', text).strip()
-                    return text[:8000]
+            try:
+                with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+                    if 'word/document.xml' in z.namelist():
+                        xml = z.read('word/document.xml').decode('utf-8', errors='replace')
+                        text = re.sub(r'<[^>]+>', ' ', xml)
+                        text = re.sub(r'\s+', ' ', text).strip()
+                        return text[:8000]
+            except: pass
             return '[docx: не удалось прочитать]'
 
         elif ext == 'pdf':
-            # Простое извлечение текста из PDF (только текстовые PDF)
             text = file_bytes.decode('latin-1', errors='replace')
-            # Ищем текстовые блоки между BT и ET
             import re as _re
             blocks = _re.findall(r'BT(.*?)ET', text, _re.DOTALL)
             result = []
             for b in blocks:
-                strings = _re.findall(r'\(([^)]+)\)', b)
+                strings = _re.findall(r'\(([^)]{2,})\)', b)
                 result.extend(strings)
             if result:
                 return ' '.join(result)[:8000]
-            return '[PDF: не удалось извлечь текст — попробуйте скопировать текст вручную]'
-
-        elif ext == 'rar':
-            # RAR — через Python библиотеку rarfile
-            import io, tempfile, os as _os
-            texts = []
-            extracted = False
-            # Способ 1: rarfile (Python)
-            try:
-                import rarfile as _rar
-                _rar.UNRAR_TOOL = '7z'  # fallback
-                with _rar.RarFile(io.BytesIO(file_bytes)) as rf:
-                    for name in rf.namelist():
-                        inner_ext = name.rsplit('.', 1)[-1].lower()
-                        if inner_ext not in ('docx','txt','csv','xlsx','pdf'):
-                            continue
-                        try:
-                            inner_bytes = rf.read(name)
-                            fn = name.split('/')[-1]
-                            inner_text = extract_text_from_file(inner_bytes, fn)
-                            if inner_text and not inner_text.startswith('['):
-                                texts.append('--- ' + fn + ' ---\n' + inner_text)
-                        except:
-                            pass
-                extracted = True
-            except Exception as e1:
-                # Способ 2: через subprocess 7z/unrar
-                import tempfile, subprocess
-                with tempfile.TemporaryDirectory() as td:
-                    rar_path = _os.path.join(td, 'archive.rar')
-                    with open(rar_path, 'wb') as f_out:
-                        f_out.write(file_bytes)
-                    for cmd in [
-                        ['7z', 'x', '-y', f'-o{td}', rar_path],
-                        ['unrar', 'x', '-y', rar_path, td],
-                    ]:
-                        try:
-                            r = subprocess.run(cmd, capture_output=True, timeout=30)
-                            if r.returncode == 0:
-                                extracted = True
-                                break
-                        except (FileNotFoundError, subprocess.TimeoutExpired):
-                            continue
-                    if extracted:
-                        for root, dirs, files_list in _os.walk(td):
-                            for fn in files_list:
-                                if fn == 'archive.rar': continue
-                                inner_ext = fn.rsplit('.', 1)[-1].lower()
-                                if inner_ext not in ('docx','txt','csv','xlsx','pdf'): continue
-                                try:
-                                    with open(_os.path.join(root, fn), 'rb') as f_in:
-                                        inner_bytes = f_in.read()
-                                    inner_text = extract_text_from_file(inner_bytes, fn)
-                                    if inner_text and not inner_text.startswith('['):
-                                        texts.append('--- ' + fn + ' ---\n' + inner_text)
-                                except: pass
-
-            if texts:
-                return '\n\n'.join(texts)[:12000]
-            if not extracted:
-                return '[rar: не удалось распаковать. Пожалуйста, перепакуйте в zip — это займёт 30 секунд]'
-            return '[rar: распакован, но читаемых файлов внутри не найдено]'
-
-        elif ext == 'zip':
-            # Распаковываем zip и читаем все текстовые файлы внутри
-            import io
-            texts = []
-            try:
-                with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-                    for name in z.namelist():
-                        if name.endswith('/'):
-                            continue
-                        inner_ext = name.rsplit('.', 1)[-1].lower()
-                        if inner_ext not in ('docx','txt','csv','xlsx','pdf','rar'):
-                            continue
-                        try:
-                            inner_bytes = z.read(name)
-                            inner_name = name.split('/')[-1]
-                            inner_text = extract_text_from_file(inner_bytes, inner_name)
-                            if inner_text and not inner_text.startswith('['):
-                                texts.append(f'--- {inner_name} ---\n{inner_text}')
-                        except:
-                            pass
-                if texts:
-                    combined = '\n\n'.join(texts)
-                    return combined[:12000]
-                return '[zip: внутри не найдено читаемых файлов]'
-            except Exception as e:
-                return f'[zip: ошибка распаковки — {e}]'
+            return '[PDF: не удалось извлечь текст]'
 
         elif ext in ('xlsx', 'xls'):
             import io
-            with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-                # Читаем shared strings
-                shared = []
-                if 'xl/sharedStrings.xml' in z.namelist():
-                    xml = z.read('xl/sharedStrings.xml').decode('utf-8', errors='replace')
-                    shared = re.findall(r'<t[^>]*>([^<]+)</t>', xml)
-                # Читаем первый лист
-                sheets = [n for n in z.namelist() if n.startswith('xl/worksheets/sheet')]
-                if sheets:
-                    xml = z.read(sheets[0]).decode('utf-8', errors='replace')
-                    refs = re.findall(r'<v>(\d+)</v>', xml)
-                    values = []
-                    for ref in refs:
-                        idx = int(ref)
-                        if idx < len(shared):
-                            values.append(shared[idx])
-                    if values:
-                        return ' | '.join(values[:200])
+            try:
+                with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+                    shared = []
+                    if 'xl/sharedStrings.xml' in z.namelist():
+                        xml = z.read('xl/sharedStrings.xml').decode('utf-8', errors='replace')
+                        shared = re.findall(r'<t[^>]*>([^<]+)</t>', xml)
+                    sheets = [n for n in z.namelist() if n.startswith('xl/worksheets/sheet')]
+                    if sheets:
+                        xml = z.read(sheets[0]).decode('utf-8', errors='replace')
+                        refs = re.findall(r'<v>(\d+)</v>', xml)
+                        values = [shared[int(r)] for r in refs if int(r) < len(shared)]
+                        if values:
+                            return ' | '.join(values[:300])
+            except: pass
             return '[xlsx: не удалось прочитать]'
 
+        elif ext in ('zip',):
+            return _extract_archive_zip(file_bytes, filename, _depth)
+
+        elif ext == 'rar':
+            return _extract_archive_rar(file_bytes, filename, _depth)
+
     except Exception as e:
-        return f'[Ошибка чтения файла: {e}]'
+        return f'[Ошибка чтения {filename}: {e}]'
 
     return '[Неизвестный формат файла]'
+
+
+def _extract_archive_zip(file_bytes, filename, _depth=0):
+    """Рекурсивно распаковывает ZIP включая вложенные архивы"""
+    import io
+    texts = []
+    READABLE = ('docx','doc','txt','csv','xlsx','pdf','zip','rar')
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+            for name in z.namelist():
+                if name.endswith('/'): continue
+                inner_ext = name.rsplit('.',1)[-1].lower() if '.' in name else ''
+                if inner_ext not in READABLE: continue
+                try:
+                    inner_bytes = z.read(name)
+                    fn = name.split('/')[-1].split('\\')[-1]
+                    # Рекурсия для вложенных архивов
+                    inner_text = extract_text_from_file(inner_bytes, fn, _depth+1)
+                    if inner_text and len(inner_text) > 10 and not inner_text.startswith('['):
+                        texts.append('--- ' + fn + ' ---\n' + inner_text)
+                except: pass
+        if texts:
+            return '\n\n'.join(texts)[:12000]
+        return '[zip: читаемых файлов не найдено]'
+    except Exception as e:
+        return f'[zip ошибка: {e}]'
+
+
+def _extract_archive_rar(file_bytes, filename, _depth=0):
+    """Распаковывает RAR через rarfile или эвристику"""
+    import io
+    texts = []
+    READABLE = ('docx','doc','txt','csv','xlsx','pdf','zip','rar')
+    try:
+        import rarfile as _rar
+        rf = _rar.RarFile(io.BytesIO(file_bytes))
+        for name in rf.namelist():
+            inner_ext = name.rsplit('.',1)[-1].lower() if '.' in name else ''
+            if inner_ext not in READABLE: continue
+            try:
+                inner_bytes = rf.read(name)
+                fn = name.split('/')[-1].split('\\')[-1]
+                inner_text = extract_text_from_file(inner_bytes, fn, _depth+1)
+                if inner_text and len(inner_text) > 10 and not inner_text.startswith('['):
+                    texts.append('--- ' + fn + ' ---\n' + inner_text)
+            except: pass
+        if texts:
+            return '\n\n'.join(texts)[:12000]
+        return '[rar: файлы не найдены]'
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback — системный 7z/unrar
+    import tempfile, subprocess, os as _os
+    with tempfile.TemporaryDirectory() as td:
+        rar_path = _os.path.join(td, 'arch.rar')
+        with open(rar_path, 'wb') as f_out:
+            f_out.write(file_bytes)
+        for cmd in [
+            ['7z', 'x', '-y', f'-o{td}', rar_path],
+            ['unrar', 'x', '-y', rar_path, td],
+            ['unrar-free', 'x', '-y', rar_path, td],
+        ]:
+            try:
+                r = subprocess.run(cmd, capture_output=True, timeout=30)
+                if r.returncode == 0:
+                    for root, dirs, files_list in _os.walk(td):
+                        for fn in files_list:
+                            if fn == 'arch.rar': continue
+                            inner_ext = fn.rsplit('.',1)[-1].lower() if '.' in fn else ''
+                            if inner_ext not in READABLE: continue
+                            try:
+                                with open(_os.path.join(root, fn), 'rb') as f_in:
+                                    inner_bytes = f_in.read()
+                                inner_text = extract_text_from_file(inner_bytes, fn, _depth+1)
+                                if inner_text and len(inner_text) > 10 and not inner_text.startswith('['):
+                                    texts.append('--- ' + fn + ' ---\n' + inner_text)
+                            except: pass
+                    if texts:
+                        return '\n\n'.join(texts)[:12000]
+                    break
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+
+    if texts:
+        return '\n\n'.join(texts)[:12000]
+    return '[RAR: не удалось распаковать. Перепакуйте в ZIP — правая кнопка → 7-Zip → ZIP]'
+
 
 INDEX = (BASE_DIR/'index.html').read_text('utf-8')
 
