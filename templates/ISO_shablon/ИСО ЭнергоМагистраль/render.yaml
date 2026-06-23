@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: iso-smk-generator
+    env: python
+    buildCommand: "apt-get update -qq && apt-get install -y -qq unrar-free p7zip-full 2>/dev/null; pip install requests rarfile"
+    startCommand: python server.py
+    envVars:
+      - key: VIBE_API_KEY
+        sync: false
