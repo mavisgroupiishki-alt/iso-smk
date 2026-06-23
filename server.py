@@ -543,18 +543,37 @@ class H(http.server.BaseHTTPRequestHandler):
         try:
             # ── ИИ-чат ──────────────────────────────────────
             if p=='/api/extract-text':
-                import cgi, io
+                import io, re as _re
                 content_type = self.headers.get('Content-Type','')
-                # Парсим multipart form
-                environ = {'REQUEST_METHOD':'POST','CONTENT_TYPE':content_type,'CONTENT_LENGTH':len(body)}
-                fs = cgi.FieldStorage(fp=io.BytesIO(body), environ=environ, keep_blank_values=True)
-                f = fs['file'] if 'file' in fs else None
-                if not f:
-                    self._json({'success':False,'error':'Нет файла'}, 400); return
-                filename = f.filename or 'file'
-                file_bytes = f.file.read()
+                # Парсим multipart/form-data вручную (надёжнее cgi)
+                boundary = None
+                for part in content_type.split(';'):
+                    part = part.strip()
+                    if part.startswith('boundary='):
+                        boundary = part[9:].strip().encode()
+                        break
+                if not boundary:
+                    self._json({'success':False,'error':'Нет boundary в запросе'},400); return
+                # Разбиваем по boundary
+                parts = body.split(b'--' + boundary)
+                filename = None
+                file_bytes = None
+                for part in parts:
+                    if b'Content-Disposition' not in part: continue
+                    if b'filename=' not in part: continue
+                    # Извлекаем имя файла
+                    header_end = part.find(b'\r\n\r\n')
+                    if header_end == -1: continue
+                    header = part[:header_end].decode('utf-8','replace')
+                    m = _re.search(r'filename="([^"]+)"', header)
+                    if not m: continue
+                    filename = m.group(1)
+                    file_bytes = part[header_end+4:].rstrip(b'\r\n--')
+                    break
+                if not filename or file_bytes is None:
+                    self._json({'success':False,'error':'Файл не найден в запросе'},400); return
                 text = extract_text_from_file(file_bytes, filename)
-                self._json({'success':True,'text':text,'filename':filename,'type':filename.rsplit('.',1)[-1]})
+                self._json({'success':True,'text':text,'filename':filename})
 
             elif p=='/api/ai/chat':
                 req=json.loads(body)

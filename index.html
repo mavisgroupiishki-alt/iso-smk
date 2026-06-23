@@ -1302,33 +1302,20 @@ function aiRemoveFile(i) {
 }
 
 async function aiReadFile(file) {
+  // Все файлы отправляем на сервер — он умеет читать docx, pdf, xlsx, zip, rar, txt
   return new Promise((resolve) => {
-    // Для текстовых файлов читаем напрямую
-    if(file.name.match(/\.(txt|csv|json)$/i)) {
-      const r = new FileReader();
-      r.onload = e => resolve({
+    const formData = new FormData();
+    formData.append('file', file);
+    fetch('/api/extract-text', {method:'POST', body: formData})
+      .then(r => r.json())
+      .then(data => resolve({
         name: file.name,
-        type: 'text',
-        content: e.target.result.slice(0, 8000)
-      });
-      r.readAsText(file, 'utf-8');
-    } else {
-      // Для docx/pdf/xlsx — отправляем на сервер для извлечения текста
-      const formData = new FormData();
-      formData.append('file', file);
-      fetch('/api/extract-text', {method:'POST', body: formData})
-        .then(r => r.json())
-        .then(data => resolve({
-          name: file.name,
-          type: data.type || 'binary',
-          content: data.text || `[Файл ${file.name} — не удалось извлечь текст]`
-        }))
-        .catch(() => resolve({
-          name: file.name,
-          type: 'binary',
-          content: `[Файл ${file.name} прикреплён, ${(file.size/1024).toFixed(0)} КБ]`
-        }));
-    }
+        content: data.text || '[Не удалось извлечь текст из файла]'
+      }))
+      .catch(err => resolve({
+        name: file.name,
+        content: '[Ошибка загрузки файла: ' + err.message + ']'
+      }));
   });
 }
 
