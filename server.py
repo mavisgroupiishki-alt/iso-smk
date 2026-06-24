@@ -6,6 +6,16 @@ from pathlib import Path
 from datetime import datetime,timedelta
 
 BASE_DIR = Path(__file__).parent.resolve()
+
+# Импортируем умный генератор
+try:
+    from generator import generate_package, calculate_dates, LIBS
+    SMART_GENERATOR = True
+    print("✅ Умный генератор загружен")
+except Exception as e:
+    SMART_GENERATOR = False
+    print(f"⚠️  Генератор не загружен: {e}")
+
 TPL_DIR  = BASE_DIR/'templates'/'ISO_shablon'/'ИСО ЭнергоМагистраль'
 
 # Render: без persistent disk — храним в /tmp или рядом с приложением
@@ -20,50 +30,55 @@ for d in [JOURNAL_DIR, CO_DIR, OUT_DIR]: d.mkdir(parents=True, exist_ok=True)
 # ── Vibe Code AI ─────────────────────────────────────────────
 VIBE_URL   = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
 VIBE_MODEL = "bitrix/bitrixgpt-5.5"
+VIBE_MODEL_VISION = "bitrix/bitrixgpt-5.5-thinking"  # vision + reasoning для анализа документов
 
-AI_SYSTEM = """Ты — ИИ-оформитель документов ИСО/СМК для компании Mavis Group (Беларусь).
+AI_SYSTEM = """Ты — Игорь, ИИ-оформитель документов ИСО/СУОТ/СПК (Mavis Group, Беларусь).
 
-ТВОЯ РОЛЬ: анализируешь входящие данные от эксперта, сам решаешь кто куда идёт в документах, проверяешь корректность и задаёшь вопросы если чего-то не хватает. Принимаешь правки на человеческом языке.
+ПРОДУКТЫ: ISO 9001, ISO 45001/СУОТ, ISO 9001+45001, СПК Строй Комплекс, СПК БИСП, Периодика.
 
-ПРОДУКТЫ которые ты умеешь оформлять:
-- ISO (ИСО) — ISO 9001, ISO 45001 или оба вместе
-- СПК — Свидетельство о технической компетентности (два варианта: Строй Комплекс и БИСП)
-- СУОТ — Система управления охраной труда (ISO 45001)
-- Периодика — обновление части документов для ISO/СПК/СУОТ
+ДАТЫ от даты выезда эксперта:
+- Политика = выезд минус 34 дня
+- Цели/Приказы = политика + 5 дней
+- Реестр рисков = дата политики
+- Отчёты = выезд минус 7 дней
 
-ИЗВЛЕКАЙ И СТРУКТУРИРУЙ из текста эксперта:
-1. Реквизиты: название компании, форма (ООО/ЧУП/ОДО), УНП, юр.адрес, город, ФИО директора, должность директора, email
-2. Сертификация: стандарт (ISO 9001 / ISO 45001 / оба), область (дословно как в заявке), орган сертификации
-3. Даты: дата выезда эксперта органа → дата разработки = выезд минус 14 дней; дата внедрения = выезд минус 7 дней
-4. Сотрудники: ФИО, должность, роль (director/auditor/responsible/itr), удостоверения ОТ с датами (для ISO 45001 нужно минимум 3)
-5. Объекты (2-3): название, год, заказчик/контрагент
-6. Поставщики (3-5): название, тип
+ШТАТ: ИТР идут в ИСО, рабочие идут в СУОТ (инструкции ОТ + карты рисков под каждую профессию).
+Для ИСО: аудиторы = 3 чел. с удостоверением ОТ из ИТР.
+Для СУОТ: минимум 3 чел. с удостоверением ОТ.
 
-ПРАВИЛА НАЗНАЧЕНИЯ РОЛЕЙ:
-- Аудиторы = ИТР сотрудники (не директор)
-- Ответственный за ФНПА = главный инженер или зам директора
-- Если два удостоверения ОТ у одного — берём более свежее
-- Область в документах должна совпадать с заявкой слово в слово
-- Строительство в области без строительного аттестата = критический флаг
+НАЗНАЧЕНИЕ РОЛЕЙ:
+- За СМК = директор
+- За процесс = главный инженер / прораб / директор
+- Аудиторы (3 чел.) = директор + ИТР с ОТ
+- За ДИ = директор или кадровик или бухгалтер
+- За ФНПА = главный инженер или зам директора
+- 2 удостоверения ОТ у одного = берём более свежее
 
-ПРИНИМАЙ ПРАВКИ: "исправь директора на Иванов И.И.", "добавь объект", "поменяй дату" — обновляй данные и подтверждай изменение.
+ФЛАГИ:
+- Строительство в области + нет аттестата = критическая ошибка
+- Генподряд = нужен аттестат в течение месяца
+- Меньше 3 чел. с ОТ для СУОТ = предупреждение
 
-ОТВЕЧАЙ СТРОГО JSON без обёрток ```json:
+Принимай правки: "исправь директора", "добавь объект", "поменяй дату" — обновляй данные.
+
+ОТВЕЧАЙ СТРОГО JSON без оберток json:
 {
-  "message": "текст ответа оформителю (по-русски, коротко и профессионально)",
-  "questions": ["вопрос если чего-то не хватает"],
+  "message": "ответ оформителю (по-русски)",
+  "questions": ["вопрос если не хватает данных"],
   "data": {
-    "company": {"name":"","form":"","unp":"","address":"","city":"","director_fio":"","director_position":"","email":""},
-    "certification": {"standard":"","scope":"","body":"","audit_date":""},
+    "company": {"name":"","form":"","unp":"","address":"","city":"","director_fio":"","director_position":"","scope":""},
+    "certification": {"standard":"iso|suot|iso_suot|spk_stroy|spk_bisp","scope":"","body":"","audit_date":""},
     "dates": {"audit_date":"","development_date":"","implementation_date":""},
-    "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","ot_certificate":false,"ot_certificate_date":""}],
+    "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":""}],
     "objects": [{"name":"","year":"","customer":""}],
     "suppliers": [{"name":"","type":""}],
     "flags": [{"type":"error|warning|ok","text":""}],
-    "product": "iso|spk_stroy|spk_bisp|suot|iso_suot|periodika","readiness": "waiting|partial|review|ready"
+    "readiness": "waiting|partial|review|ready"
   }
 }
-Включай только заполненные поля. Пустые не включай."""
+Включай только заполненные поля."""
+
+
 
 
 def call_ai(messages, api_key):
@@ -149,7 +164,50 @@ def merge_name_runs(xml):
 
 
 # ── Генерация документов (без изменений) ─────────────────────
+def clean_after_replace(xml, org_name):
+    """
+    После замены убираем буквы которые 'приклеились' из соседних runs.
+    Primer: OmiTreidr gde r -- nachalo sleduyushego slova.
+    Работает для: названия компании, инициалов директора.
+    """
+    if not org_name:
+        return xml
+    import re as _re
+
+    # 1. Чистим название компании: убираем строчные буквы которые приклеились
+    escaped = _re.escape(org_name)
+    # Название компании не может заканчиваться строчными русскими/латинскими буквами
+    # если оно стоит перед » или пробелом
+    pattern = r'(<w:t[^>]*>)(' + escaped + r')([а-яёa-z]{1,15})(</w:t>)'
+    def fix_org(m):
+        suffix = m.group(3)
+        # Оставляем суффикс только если это падежное окончание самого названия
+        # (т.е. название используется без кавычек в падеже)
+        # Признак проблемы: предыдущий run заканчивается на «
+        return m.group(1) + m.group(2) + m.group(4)
+    xml = _re.sub(pattern, fix_org, xml)
+
+    # 2. Фикс «ООО «НАЗВАНИЕ»» — между кавычками должно быть только название
+    # Паттерн: после « идёт <w:t>НАЗВАНИЕ+мусор</w:t> перед »
+    xml = _re.sub(
+        r'(«</w:t></w:r>[^»]{0,500}?<w:t[^>]*>)(' + escaped + r')([а-яёa-z]{1,15})(</w:t>)',
+        lambda m: m.group(1) + m.group(2) + m.group(4),
+        xml, flags=_re.DOTALL
+    )
+
+    return xml
+
+
 def replace_in_docx(src, dst, reps):
+    # Извлекаем название компании из замен для пост-обработки
+    # Шаблонные компании-образцы — всегда ищем их для замены
+    TEMPLATE_ORGS = ['ЭнергоМагистраль', 'Варта', 'Сфера Секьюрити', 'Кастом-Инвест']
+    org_name = ''
+    for o, n in reps:
+        if o in TEMPLATE_ORGS and n:
+            org_name = n
+            break
+
     with tempfile.TemporaryDirectory() as td:
         tmp=os.path.join(td,'s.docx'); shutil.copy2(str(src),tmp)
         up=os.path.join(td,'up'); os.makedirs(up)
@@ -165,6 +223,9 @@ def replace_in_docx(src, dst, reps):
                     for o,n in reps:
                         if o and n is not None and o in c: c=c.replace(o,n); ch=True
                     if ch:
+                        # Пост-обработка: убираем приклеившиеся буквы
+                        if org_name:
+                            c = clean_after_replace(c, org_name)
                         with open(fp,'w',encoding='utf-8') as f: f.write(c)
                 except: pass
         Path(dst).parent.mkdir(parents=True,exist_ok=True)
@@ -644,7 +705,96 @@ class H(http.server.BaseHTTPRequestHandler):
         p=self.path.split('?')[0]
         try:
             # ── ИИ-чат ──────────────────────────────────────
-            if p=='/api/extract-text':
+            if p=='/api/analyze-image':
+                # Анализ изображения/PDF через BitrixGPT vision
+                import io as _io, re as _re, base64 as _b64
+                api_key = os.environ.get('VIBE_API_KEY','')
+                if not api_key:
+                    self._json({'success':False,'error':'VIBE_API_KEY не задан'},500); return
+
+                content_type = self.headers.get('Content-Type','')
+                boundary = None
+                for part in content_type.split(';'):
+                    part = part.strip()
+                    if part.startswith('boundary='):
+                        boundary = part[9:].strip().encode()
+                        break
+                if not boundary:
+                    self._json({'success':False,'error':'Нет boundary'},400); return
+
+                parts = body.split(b'--' + boundary)
+                filename = None
+                file_bytes = None
+                for part in parts:
+                    if b'Content-Disposition' not in part or b'filename=' not in part: continue
+                    header_end = part.find(b'\r\n\r\n')
+                    if header_end == -1: continue
+                    header = part[:header_end].decode('utf-8','replace')
+                    m = _re.search(r'filename="([^"]+)"', header)
+                    if not m: continue
+                    filename = m.group(1)
+                    file_bytes = part[header_end+4:].rstrip(b'\r\n--')
+                    break
+
+                if not file_bytes:
+                    self._json({'success':False,'error':'Файл не найден'},400); return
+
+                ext = filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
+
+                # Определяем media type
+                if ext == 'pdf':
+                    media_type = 'application/pdf'
+                elif ext in ('jpg','jpeg'):
+                    media_type = 'image/jpeg'
+                elif ext == 'png':
+                    media_type = 'image/png'
+                elif ext == 'webp':
+                    media_type = 'image/webp'
+                else:
+                    # Не изображение — читаем как текст
+                    text = extract_text_from_file(file_bytes, filename)
+                    self._json({'success':True,'text':text,'method':'text'}); return
+
+                # Кодируем в base64
+                b64_data = _b64.b64encode(file_bytes).decode('utf-8')
+
+                # Отправляем в BitrixGPT vision
+                prompt = "Извлеки весь текст с этого документа/изображения. Укажи все ФИО, должности, даты, названия организаций, номера документов. Если это удостоверение — укажи кому выдано, должность, организация, дата выдачи, основание (протокол №, дата). Отвечай только извлечёнными данными, без лишних слов."
+
+                vibe_payload = {
+                    "model": VIBE_MODEL_VISION,
+                    "max_tokens": 1000,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{media_type};base64,{b64_data}"
+                                }
+                            },
+                            {"type": "text", "text": prompt}
+                        ]
+                    }]
+                }
+
+                try:
+                    resp = req_lib.post(
+                        VIBE_URL,
+                        headers={"Content-Type":"application/json","X-Api-Key":api_key},
+                        json=vibe_payload,
+                        timeout=60
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    text = "".join(c.get("message",{}).get("content","") for c in data.get("choices",[]))
+                    self._json({'success':True,'text':text,'method':'vision'})
+                except Exception as e:
+                    # Fallback — пробуем как текст
+                    text = extract_text_from_file(file_bytes, filename)
+                    self._json({'success':True,'text':text,'method':'fallback','error':str(e)})
+
+            elif p=='/api/extract-text':
                 import io, re as _re
                 content_type = self.headers.get('Content-Type','')
                 # Парсим multipart/form-data вручную (надёжнее cgi)
@@ -694,6 +844,54 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._json({'success':True})
             elif p=='/api/generate':
                 data=json.loads(body)
+                
+                # Если есть умный генератор и данные от ИИ — используем его
+                if SMART_GENERATOR and data.get('ai_data') and data['ai_data'].get('company', {}).get('name'):
+                    api_key = os.environ.get('VIBE_API_KEY', '')
+                    product = data.get('product', 'iso')
+                    ai_data = data['ai_data']
+                    
+                    # Прогресс через список
+                    progress_log = []
+                    def on_progress(step, total, msg):
+                        progress_log.append({'step': step, 'total': total, 'msg': msg})
+                        print(f"  [{step}/{total}] {msg}")
+                    
+                    try:
+                        result = generate_package(ai_data, api_key, product, on_progress)
+                        docs = result['docs']
+                        
+                        # Создаём ZIP
+                        org = re.sub(r'[^\w\-]', '_', ai_data.get('company', {}).get('name', 'org'))
+                        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        zp = str(OUT_DIR / f'{org}_{ts}.zip')
+                        
+                        with zipfile.ZipFile(zp, 'w', zipfile.ZIP_DEFLATED) as zf:
+                            for doc in docs:
+                                zf.writestr(doc['name'], doc['bytes'])
+                        
+                        zb = base64.b64encode(open(zp, 'rb').read()).decode()
+                        eid = save_journal({
+                            'orgName': ai_data.get('company', {}).get('name', ''),
+                            'implDate': result['dates'].get('goals', ''),
+                            'fileCount': len(docs),
+                            'zipPath': zp,
+                            'product': product,
+                            'generator': 'smart'
+                        })
+                        self._json({'success': True, 'fileCount': len(docs), 
+                                   'journalId': eid, 'zip': zb,
+                                   'dates': result['dates'],
+                                   'progress': progress_log})
+                        return
+                    except Exception as e:
+                        import traceback
+                        print(f"Smart generator error: {e}")
+                        traceback.print_exc()
+                        # Fallback на старый генератор
+                
+                # Старый генератор (замена в шаблонах) — fallback
+
                 org=re.sub(r'[^\w\-]','_',
                     data.get('ai_data',{}).get('company',{}).get('name','') or
                     data.get('orgName','org'))
