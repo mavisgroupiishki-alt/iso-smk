@@ -242,7 +242,7 @@ input::placeholder{color:#C4BDB2}
 
   <div class="sb-divider"></div>
   <div class="sb-item" data-page="ai" onclick="nav('ai',this)" style="background:rgba(184,137,26,.15);border:1px solid rgba(184,137,26,.3);margin:4px 8px;border-radius:5px">
-    <span class="icon">🤖</span> Игорь — ИИ Оформитель
+    <span class="icon">🤖</span> ИИгорь Оформитель
   </div>
   <div class="sb-divider"></div>
   <div class="sb-section">Система</div>
@@ -404,7 +404,7 @@ input::placeholder{color:#C4BDB2}
             <div style="display:flex;gap:8px;align-items:flex-start;max-width:680px">
               <div style="width:28px;height:28px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0">ИГ</div>
               <div style="padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:0.5px solid #E2E0D8;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05)">
-                Здравствуйте! Меня зовут Игорь, я ИИ-оформитель. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.
+                Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.
               </div>
             </div>
           </div>
@@ -1052,7 +1052,7 @@ document.addEventListener('DOMContentLoaded', () => {
 </style>
 
 <script>
-// ── Игорь — ИИ Оформитель ────────────────────────────────────────────
+// ── ИИгорь Оформитель ────────────────────────────────────────────
 let aiKey = 'server'; // ключ хранится на сервере
 let aiHistory = [];
 let aiCurrentData = {};
@@ -1065,7 +1065,7 @@ function nav(page, el) {
     p.style.display = 'none';
   });
   document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
-  const titles = {docs:'Документы ИСО', companies:'Компании', journal:'Журнал генераций', ai:'Игорь — ИИ Оформитель'};
+  const titles = {docs:'Документы ИСО', companies:'Компании', journal:'Журнал генераций', ai:'ИИгорь Оформитель'};
   document.getElementById('page-title').textContent = titles[page] || page;
   if(el) el.classList.add('active');
 
@@ -1171,7 +1171,9 @@ function aiRenderCard(data) {
     html += '<div class="ai-sec">Сотрудники</div>';
     const rl = {director:'Директор',auditor:'Аудитор',responsible:'Ответств. ФНПА',itr:'ИТР'};
     staff.forEach(p => {
-      html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${(p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase()}</div><div><div class="ai-pname">${p.fio||''}</div><div class="ai-prole">${p.position||''}${p.role?' · '+(rl[p.role]||p.role):''}${p.ot_certificate?' · 🛡 '+p.ot_certificate_date:''}</div></div></div>`;
+      const otBadge = p.ot_certificate ? (' · 🛡' + (p.ot_certificate_date && p.ot_certificate_date!=='undefined' ? ' '+p.ot_certificate_date : '')) : '';
+      const roleBadge = p.role ? (' · '+(rl[p.role]||p.role)) : '';
+      html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${(p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase()}</div><div><div class="ai-pname">${p.fio||''}</div><div class="ai-prole">${p.position||''}${roleBadge}${otBadge}</div></div></div>`;
     });
   }
 
@@ -1351,6 +1353,10 @@ async function aiGenerate() {
   if(!c || !c.name) { aiAddMsg('ai','Для генерации нужны данные компании.'); return; }
 
   // Передаём ai_data в существующий endpoint /api/generate
+  // Определяем продукт из данных Игоря
+  const certStd = aiCurrentData.certification?.standard || 'iso';
+  const product = certStd; // iso | suot | iso_suot | spk_stroy | spk_bisp
+
   const payload = {
     orgName: c.name,
     orgForm: c.form || 'ООО',
@@ -1360,8 +1366,9 @@ async function aiGenerate() {
     startDate: aiCurrentData.dates?.development_date || '',
     dirSurname: (c.director_fio||'').split(' ')[0] || '',
     dirInitials: (c.director_fio||'').split(' ').slice(1).map(x=>x[0]||'').join('.') + '.' || '',
+    product: product,
     ai_data: aiCurrentData,
-    itrList: (aiCurrentData.staff||[]).filter(s=>s.role==='itr'||s.is_itr).map(s=>s.fio).join('\n'),
+    itrList: (aiCurrentData.staff||[]).filter(s=>!s.is_worker).map(s=>s.fio).join('\n'),
   };
 
   // Показываем прогресс
@@ -1401,34 +1408,76 @@ async function aiGenerate() {
   btn.disabled = true; btn.textContent = '⏳ Генерирую...';
 
   try {
+    // Запускаем генерацию асинхронно
     const resp = await fetch('/api/generate', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(payload)
     });
     const r = await resp.json();
-    clearInterval(interval);
-    document.getElementById(progressId + '-bar').style.width = '100%';
-    document.getElementById(progressId + '-pct').textContent = '100%';
-    
-    await new Promise(res => setTimeout(res, 400));
-    progDiv.remove();
 
-    if(r.success) {
-      const docCount = r.fileCount;
-      aiAddMsg('ai', `✅ Готово, Игорь всё оформил! Сформировано <strong>${docCount} документов</strong>.<br><br>
-        <a href="/api/download/${r.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">
-          📥 Скачать пакет документов
-        </a>`);
+    if(!r.success) {
+      clearInterval(interval);
+      progDiv.remove();
+      aiAddMsg('ai', '❌ Ошибка: ' + (r.error||'неизвестная ошибка'));
+      btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+      return;
+    }
+
+    // Если асинхронный режим — опрашиваем статус
+    if(r.async && r.task_id) {
+      const taskId = r.task_id;
+      const msgLines = [steps[0]];
+
+      const poll = setInterval(async () => {
+        try {
+          const tr = await fetch('/api/task/' + taskId).then(x=>x.json());
+          const pct = tr.total ? Math.round((tr.step/tr.total)*95) : 20;
+          const lastMsg = tr.progress && tr.progress.length ? tr.progress[tr.progress.length-1] : steps[stepIdx];
+          
+          document.getElementById(progressId+'-text').textContent = lastMsg;
+          document.getElementById(progressId+'-bar').style.width = pct+'%';
+          document.getElementById(progressId+'-pct').textContent = pct+'%';
+
+          if(tr.status === 'done') {
+            clearInterval(poll);
+            clearInterval(interval);
+            document.getElementById(progressId+'-bar').style.width = '100%';
+            document.getElementById(progressId+'-pct').textContent = '100%';
+            await new Promise(res=>setTimeout(res,400));
+            progDiv.remove();
+            aiAddMsg('ai', \`✅ Готово! Игорь оформил <strong>\${tr.fileCount} документов</strong>.<br><br>
+              <a href="/api/download/\${tr.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">
+                📥 Скачать пакет документов
+              </a>\`);
+            btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+          } else if(tr.status === 'error') {
+            clearInterval(poll);
+            clearInterval(interval);
+            progDiv.remove();
+            aiAddMsg('ai', '❌ Ошибка генерации: ' + (tr.error||''));
+            btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+          }
+        } catch(pollErr) {
+          // Сеть временно недоступна — продолжаем опрос
+          console.warn('Poll error:', pollErr);
+        }
+      }, 3000); // опрашиваем каждые 3 сек
     } else {
-      aiAddMsg('ai', '❌ Ошибка генерации: ' + r.error);
+      // Синхронный ответ (старый режим)
+      clearInterval(interval);
+      progDiv.remove();
+      if(r.success && r.journalId) {
+        aiAddMsg('ai', \`✅ Готово! <strong>\${r.fileCount} документов</strong>.<br><br>
+          <a href="/api/download/\${r.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">📥 Скачать</a>\`);
+      }
+      btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
     }
   } catch(e) {
     clearInterval(interval);
     progDiv.remove();
-    aiAddMsg('ai', '❌ Ошибка: ' + e.message);
+    aiAddMsg('ai', '❌ Ошибка соединения: ' + e.message);
+    btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
   }
-
-  btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
 }
 </script>
 </body>

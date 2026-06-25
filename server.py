@@ -27,12 +27,16 @@ PORT = int(os.environ.get("PORT", 8766))
 
 for d in [JOURNAL_DIR, CO_DIR, OUT_DIR]: d.mkdir(parents=True, exist_ok=True)
 
+# Хранилище фоновых задач генерации
+import threading
+TASKS = {}  # task_id -> {status, progress, result, error}
+
 # ── Vibe Code AI ─────────────────────────────────────────────
 VIBE_URL   = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
 VIBE_MODEL = "bitrix/bitrixgpt-5.5"
 VIBE_MODEL_VISION = "bitrix/bitrixgpt-5.5-thinking"  # vision + reasoning для анализа документов
 
-AI_SYSTEM = """Ты — Игорь, ИИ-оформитель документов ИСО/СУОТ/СПК (Mavis Group, Беларусь).
+AI_SYSTEM = """Ты — ИИгорь, оформитель документов ИСО/СУОТ/СПК (Mavis Group, Беларусь).
 
 ПРОДУКТЫ: ISO 9001, ISO 45001/СУОТ, ISO 9001+45001, СПК Строй Комплекс, СПК БИСП, Периодика.
 
@@ -547,16 +551,46 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
             return '[docx: не удалось прочитать]'
 
         elif ext == 'pdf':
-            text = file_bytes.decode('latin-1', errors='replace')
-            import re as _re
-            blocks = _re.findall(r'BT(.*?)ET', text, _re.DOTALL)
-            result = []
-            for b in blocks:
-                strings = _re.findall(r'\(([^)]{2,})\)', b)
-                result.extend(strings)
-            if result:
-                return ' '.join(result)[:8000]
-            return '[PDF: не удалось извлечь текст]'
+            # Метод 1: PyMuPDF — лучший парсер для текстовых PDF
+            try:
+                import fitz as _fitz
+                doc = _fitz.open(stream=file_bytes, filetype='pdf')
+                pages = [page.get_text() for page in doc]
+                doc.close()
+                text = '\n'.join(pages).strip()
+                if text and len(text) > 30:
+                    return text[:8000]
+            except ImportError:
+                pass
+            except Exception:
+                pass
+            # Метод 2: pdfplumber
+            try:
+                import pdfplumber as _plumber, io as _io3
+                with _plumber.open(_io3.BytesIO(file_bytes)) as pdf:
+                    pages = [p.extract_text() or '' for p in pdf.pages]
+                text = '\n'.join(pages).strip()
+                if text and len(text) > 30:
+                    return text[:8000]
+            except ImportError:
+                pass
+            except Exception:
+                pass
+            # Метод 3: BT/ET поток (для простых PDF)
+            try:
+                import re as _re
+                raw = file_bytes.decode('latin-1', errors='replace')
+                blocks = _re.findall(r'BT(.*?)ET', raw, _re.DOTALL)
+                result = []
+                for b in blocks:
+                    strings = _re.findall(r'\(([^)]{2,})\)', b)
+                    result.extend(strings)
+                if result:
+                    return ' '.join(result)[:8000]
+            except Exception:
+                pass
+            # PDF не читается как текст — скорее всего скан
+            return '[PDF_SCAN: файл является сканом — отправьте через кнопку анализа изображений]'
 
         elif ext in ('xlsx', 'xls'):
             import io, re as _re2
@@ -950,38 +984,50 @@ class H(http.server.BaseHTTPRequestHandler):
                         progress_log.append({'step': step, 'total': total, 'msg': msg})
                         print(f"  [{step}/{total}] {msg}")
                     
-                    try:
-                        result = generate_package(ai_data, api_key, product, on_progress)
-                        docs = result['docs']
-                        
-                        # Создаём ZIP
-                        org = re.sub(r'[^\w\-]', '_', ai_data.get('company', {}).get('name', 'org'))
-                        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                        zp = str(OUT_DIR / f'{org}_{ts}.zip')
-                        
-                        with zipfile.ZipFile(zp, 'w', zipfile.ZIP_DEFLATED) as zf:
-                            for doc in docs:
-                                zf.writestr(doc['name'], doc['bytes'])
-                        
-                        zb = base64.b64encode(open(zp, 'rb').read()).decode()
-                        eid = save_journal({
-                            'orgName': ai_data.get('company', {}).get('name', ''),
-                            'implDate': result['dates'].get('goals', ''),
-                            'fileCount': len(docs),
-                            'zipPath': zp,
-                            'product': product,
-                            'generator': 'smart'
-                        })
-                        self._json({'success': True, 'fileCount': len(docs), 
-                                   'journalId': eid, 'zip': zb,
-                                   'dates': result['dates'],
-                                   'progress': progress_log})
-                        return
-                    except Exception as e:
-                        import traceback
-                        print(f"Smart generator error: {e}")
-                        traceback.print_exc()
-                        # Fallback на старый генератор
+                    import uuid as _uuid
+                    task_id = str(_uuid.uuid4())[:8]
+                    TASKS[task_id] = {'status': 'running', 'progress': [], 'step': 0}
+
+                    def run_gen():
+                        try:
+                            def on_prog(step, total, msg):
+                                TASKS[task_id]['progress'].append(msg)
+                                TASKS[task_id]['step'] = step
+                                TASKS[task_id]['total'] = total
+                                print(f"  [{step}] {msg}")
+
+                            result = generate_package(ai_data, api_key, product, on_prog)
+                            docs = result['docs']
+                            org2 = re.sub(r'[^\w\-]', '_', ai_data.get('company', {}).get('name', 'org'))
+                            ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            zp2 = str(OUT_DIR / f'{org2}_{ts2}.zip')
+                            with zipfile.ZipFile(zp2, 'w', zipfile.ZIP_DEFLATED) as zf:
+                                for doc in docs:
+                                    zf.writestr(doc['name'], doc['bytes'])
+                            eid2 = save_journal({
+                                'orgName': ai_data.get('company', {}).get('name', ''),
+                                'implDate': result['dates'].get('goals', ''),
+                                'fileCount': len(docs),
+                                'zipPath': zp2,
+                                'product': product,
+                                'generator': 'smart'
+                            })
+                            TASKS[task_id]['status'] = 'done'
+                            TASKS[task_id]['journalId'] = eid2
+                            TASKS[task_id]['fileCount'] = len(docs)
+                            TASKS[task_id]['dates'] = result['dates']
+                        except Exception as ex:
+                            import traceback
+                            traceback.print_exc()
+                            TASKS[task_id]['status'] = 'error'
+                            TASKS[task_id]['error'] = str(ex)
+
+                    t = threading.Thread(target=run_gen, daemon=True)
+                    t.start()
+                    self._json({'success': True, 'async': True, 'task_id': task_id})
+                    return
+                    if False:  # старый fallback — недостижимо, но оставляем структуру
+                        pass
                 
                 # Старый генератор (замена в шаблонах) — fallback
 
