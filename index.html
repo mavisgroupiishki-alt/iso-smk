@@ -438,7 +438,7 @@ input::placeholder{color:#C4BDB2}
                 style="width:36px;height:36px;border-radius:8px;background:#1B2B45;border:none;cursor:pointer;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s">➤</button>
             </div>
             <input type="file" id="ai-file-input" multiple
-              accept=".txt,.docx,.pdf,.xlsx,.csv,.doc,.zip,.rar"
+              accept=".txt,.docx,.pdf,.xlsx,.xls,.csv,.doc,.zip,.rar,.png,.jpg,.jpeg"
               style="display:none" onchange="aiHandleFiles(this.files)">
           </div>
         </div>
@@ -1305,10 +1305,11 @@ function aiRemoveFile(i) {
 }
 
 async function aiReadFile(file) {
-  // Изображения и PDF — через vision модель, остальное — текст
+  // PNG/JPG — только через vision; PDF — пробует text потом vision (сервер решает)
+  // ZIP/DOC/DOCX/XLS/XLSX — только через extract-text
   const ext = file.name.split('.').pop().toLowerCase();
-  const isVisual = ['pdf','png','jpg','jpeg','webp'].includes(ext);
-  const endpoint = isVisual ? '/api/analyze-image' : '/api/extract-text'; — он умеет читать docx, pdf, xlsx, zip, rar, txt
+  const isVisual = ['png','jpg','jpeg','webp','pdf'].includes(ext);
+  const endpoint = isVisual ? '/api/analyze-image' : '/api/extract-text';
   return new Promise((resolve) => {
     const formData = new FormData();
     formData.append('file', file);

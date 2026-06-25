@@ -559,7 +559,8 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
             return '[PDF: не удалось извлечь текст]'
 
         elif ext in ('xlsx', 'xls'):
-            import io
+            import io, re as _re2
+            # Сначала пробуем как XLSX (ZIP-формат)
             try:
                 with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
                     shared = []
@@ -573,8 +574,28 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
                         values = [shared[int(r)] for r in refs if int(r) < len(shared)]
                         if values:
                             return ' | '.join(values[:300])
-            except: pass
-            return '[xlsx: не удалось прочитать]'
+                return '[xlsx: данные не найдены]'
+            except zipfile.BadZipFile:
+                pass
+            except Exception:
+                pass
+            # Старый XLS формат — эвристика
+            try:
+                text_utf16 = file_bytes.decode('utf-16-le', errors='ignore')
+                chunks = _re2.findall(r'[\u0400-\u04ff\w][\u0400-\u04ff\w\s\.\,\-]{3,}', text_utf16)
+                if len(chunks) > 3:
+                    return ' | '.join(c.strip() for c in chunks if len(c.strip()) > 3)[:6000]
+            except Exception:
+                pass
+            try:
+                raw = file_bytes.decode('cp1251', errors='ignore')
+                lines = [l.strip() for l in raw.split('\n') if len(l.strip()) > 5]
+                readable = [l for l in lines if any('а' <= c <= 'я' or 'А' <= c <= 'Я' for c in l)]
+                if readable:
+                    return '\n'.join(readable[:200])
+            except Exception:
+                pass
+            return '[XLS: не удалось прочитать. Пересохраните файл как .xlsx]'
 
         elif ext in ('zip',):
             return _extract_archive_zip(file_bytes, filename, _depth)
@@ -608,7 +629,26 @@ def _extract_archive_zip(file_bytes, filename, _depth=0):
                         texts.append('--- ' + fn + ' ---\n' + inner_text)
                 except: pass
         if texts:
-            return '\n\n'.join(texts)[:12000]
+            # Умная нарезка: сначала ищем приоритетные файлы
+            PRIORITY_KEYWORDS = [
+                'поставщик', 'supplier', 'объект', 'object', 'сотрудник',
+                'штатн', 'персонал', 'список', 'перечень', 'работник'
+            ]
+            priority = []
+            other = []
+            for t in texts:
+                tl = t.lower()
+                if any(kw in tl for kw in PRIORITY_KEYWORDS):
+                    priority.append(t)
+                else:
+                    other.append(t)
+            # Приоритетные идут первыми, потом остальные
+            ordered = priority + other
+            result = '\n\n'.join(ordered)
+            # Лимит 40000 символов
+            if len(result) > 40000:
+                result = result[:40000] + '\n...[обрезано, файл большой]'
+            return result
         return '[zip: читаемых файлов не найдено]'
     except Exception as e:
         return f'[zip ошибка: {e}]'
@@ -743,7 +783,12 @@ class H(http.server.BaseHTTPRequestHandler):
 
                 # Определяем media type
                 if ext == 'pdf':
-                    media_type = 'application/pdf'
+                    # PDF: сначала пробуем текстовый парсер (быстро и точно)
+                    text_from_pdf = extract_text_from_file(file_bytes, filename)
+                    if text_from_pdf and len(text_from_pdf) > 50 and not text_from_pdf.startswith('['):
+                        self._json({'success':True,'text':text_from_pdf,'method':'text'}); return
+                    # PDF не читается как текст (скан-удостоверение) — vision
+                    media_type = 'image/jpeg'  # BitrixGPT лучше принимает как image
                 elif ext in ('jpg','jpeg'):
                     media_type = 'image/jpeg'
                 elif ext == 'png':
@@ -755,8 +800,27 @@ class H(http.server.BaseHTTPRequestHandler):
                     text = extract_text_from_file(file_bytes, filename)
                     self._json({'success':True,'text':text,'method':'text'}); return
 
+                # Для PDF-скана: конвертируем в PNG через PyMuPDF
+                actual_media_type = media_type
+                actual_bytes = file_bytes
+                if ext == 'pdf':
+                    try:
+                        import fitz as _fitz
+                        doc = _fitz.open(stream=file_bytes, filetype='pdf')
+                        page = doc[0]
+                        # Рендерим с увеличением 2x для качества
+                        mat = _fitz.Matrix(2, 2)
+                        pix = page.get_pixmap(matrix=mat)
+                        actual_bytes = pix.tobytes('png')
+                        actual_media_type = 'image/png'
+                        doc.close()
+                    except ImportError:
+                        pass
+                    except Exception:
+                        pass
+
                 # Кодируем в base64
-                b64_data = _b64.b64encode(file_bytes).decode('utf-8')
+                b64_data = _b64.b64encode(actual_bytes).decode('utf-8')
 
                 # Отправляем в BitrixGPT vision
                 prompt = "Извлеки весь текст с этого документа/изображения. Укажи все ФИО, должности, даты, названия организаций, номера документов. Если это удостоверение — укажи кому выдано, должность, организация, дата выдачи, основание (протокол №, дата). Отвечай только извлечёнными данными, без лишних слов."
@@ -770,7 +834,7 @@ class H(http.server.BaseHTTPRequestHandler):
                             {
                                 "type": "image_url",
                                 "image_url": {
-                                    "url": f"data:{media_type};base64,{b64_data}"
+                                    "url": f"data:{actual_media_type};base64,{b64_data}"
                                 }
                             },
                             {"type": "text", "text": prompt}
@@ -790,7 +854,36 @@ class H(http.server.BaseHTTPRequestHandler):
                     text = "".join(c.get("message",{}).get("content","") for c in data.get("choices",[]))
                     self._json({'success':True,'text':text,'method':'vision'})
                 except Exception as e:
-                    # Fallback — пробуем как текст
+                    # Fallback 1 — другой формат vision запроса
+                    try:
+                        vibe_payload2 = {
+                            "model": VIBE_MODEL_VISION,
+                            "max_tokens": 1000,
+                            "messages": [{
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": f"data:{media_type};base64,{b64_data}"}
+                                    }
+                                ]
+                            }]
+                        }
+                        resp2 = req_lib.post(
+                            VIBE_URL,
+                            headers={"Content-Type":"application/json","X-Api-Key":api_key},
+                            json=vibe_payload2,
+                            timeout=60
+                        )
+                        if resp2.status_code == 200:
+                            d2 = resp2.json()
+                            text2 = "".join(c.get("message",{}).get("content","") for c in d2.get("choices",[]))
+                            if text2 and len(text2) > 10:
+                                self._json({'success':True,'text':text2,'method':'vision2'}); return
+                    except Exception:
+                        pass
+                    # Fallback 2 — читаем как текст
                     text = extract_text_from_file(file_bytes, filename)
                     self._json({'success':True,'text':text,'method':'fallback','error':str(e)})
 
