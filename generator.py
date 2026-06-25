@@ -126,16 +126,35 @@ def select_responsible(itr: list) -> dict:
     }
 
 
-def vibe_call(messages, api_key, max_tokens=3000):
-    resp = req_lib.post(
-        VIBE_URL,
-        headers={"Content-Type": "application/json", "X-Api-Key": api_key},
-        json={"model": VIBE_MODEL, "max_tokens": max_tokens, "messages": messages},
-        timeout=120
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return "".join(c.get("message", {}).get("content", "") for c in data.get("choices", []))
+def vibe_call(messages, api_key, max_tokens=3000, retries=3):
+    """Вызов BitrixGPT с retry при таймауте"""
+    import time
+    last_err = None
+    for attempt in range(retries):
+        try:
+            resp = req_lib.post(
+                VIBE_URL,
+                headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+                json={"model": VIBE_MODEL, "max_tokens": max_tokens, "messages": messages},
+                timeout=180  # 3 минуты
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = "".join(c.get("message", {}).get("content", "") for c in data.get("choices", []))
+            if text:
+                return text
+            # Пустой ответ — пробуем ещё раз
+            last_err = "Empty response"
+            time.sleep(2)
+        except req_lib.exceptions.Timeout:
+            last_err = f"Timeout (attempt {attempt+1}/{retries})"
+            print(f"  ⚠️  {last_err}, retrying...")
+            time.sleep(3 * (attempt + 1))
+        except req_lib.exceptions.RequestException as e:
+            last_err = str(e)
+            print(f"  ⚠️  Request error: {e}, retrying...")
+            time.sleep(3 * (attempt + 1))
+    raise Exception(f"BitrixGPT failed after {retries} attempts: {last_err}")
 
 
 def find_di_in_library(position: str):
