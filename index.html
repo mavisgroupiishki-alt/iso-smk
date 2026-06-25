@@ -17,7 +17,7 @@
   --r:6px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Fira Sans',sans-serif;background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden}
+body{font-family:'Fira Sans',sans-serif;background:var(--bg);color:var(--text);display:flex;width:100%;min-width:900px;height:100vh;overflow:hidden}
 
 /* ── SIDEBAR ── */
 #sidebar{
@@ -254,7 +254,7 @@ input::placeholder{color:#C4BDB2}
 <!-- MAIN -->
 <div id="main">
   <div id="topbar">
-    <h2 id="page-title">Документы ИСО</h2>
+    <h2 id="page-title">ИИгорь Оформитель</h2>
     <button class="tb-btn gold" onclick="openGenModal()" id="btn-gen-top" style="display:none">
       ⚡ Сформировать пакет
     </button>
@@ -371,11 +371,11 @@ input::placeholder{color:#C4BDB2}
     </div>
 
     <!-- PAGE: AI ОФОРМИТЕЛЬ -->
-    <div id="page-ai" class="page-content" style="display:none;height:calc(100vh - 52px);margin:-24px -28px;display:none;flex-direction:column">
+    <div id="page-ai" class="page-content" style="display:none;height:calc(100vh - 52px);margin:-24px -28px;flex-direction:column">
 
       <!-- KEY — задаётся через VIBE_API_KEY на сервере, не нужно вводить вручную -->
       <div style="background:#D8F0E5;border-bottom:1px solid #86EFAC;padding:5px 20px;display:flex;align-items:center;gap:8px;flex-shrink:0">
-        <span style="font-size:11px;color:#2D6A4F">✅ Игорь · BitrixGPT 5.5 Thinking · Vision · Бесплатно</span>
+        <span style="font-size:11px;color:#2D6A4F">✅ ИИгорь · BitrixGPT 5.5 Thinking · Vision · Бесплатно</span>
       </div>
 
       <!-- CHAT + CARD LAYOUT -->
@@ -661,10 +661,11 @@ function nav(page, el) {
   document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
   el.classList.add('active');
   document.querySelectorAll('.page-content').forEach(p => p.style.display = 'none');
-  document.getElementById('page-' + page).style.display = 'block';
+  // AI страница должна показываться как flex, остальные как block
+  document.getElementById('page-' + page).style.display = page === 'ai' ? 'flex' : 'block';
   currentPage = page;
 
-  const titles = { docs: 'Документы ИСО', companies: 'Компании', journal: 'Журнал' };
+  const titles = { docs: 'Документы ИСО', companies: 'Компании', journal: 'Журнал генераций', ai:'ИИгорь Оформитель'};
   document.getElementById('page-title').textContent = titles[page] || page;
   document.getElementById('btn-gen-top').style.display = page === 'docs' ? 'flex' : 'none';
 
@@ -1445,7 +1446,7 @@ async function aiGenerate() {
             document.getElementById(progressId+'-pct').textContent = '100%';
             await new Promise(res=>setTimeout(res,400));
             progDiv.remove();
-            aiAddMsg('ai', \`✅ Готово! Игорь оформил <strong>\${tr.fileCount} документов</strong>.<br><br>
+            aiAddMsg('ai', \`✅ Готово! ИИгорь оформил <strong>\${tr.fileCount} документов</strong>.<br><br>
               <a href="/api/download/\${tr.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">
                 📥 Скачать пакет документов
               </a>\`);
@@ -1479,6 +1480,12 @@ async function aiGenerate() {
     btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
   }
 }
+
+// Автозапуск — открываем ИИгорь Оформитель сразу
+document.addEventListener('DOMContentLoaded', () => {
+  const aiItem = document.querySelector('.sb-item[data-page="ai"]');
+  if(aiItem) nav('ai', aiItem);
+});
 </script>
 </body>
 </html>
