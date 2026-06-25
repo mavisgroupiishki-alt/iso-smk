@@ -1447,10 +1447,10 @@ async function aiGenerate() {
             document.getElementById(progressId+'-pct').textContent = '100%';
             await new Promise(res=>setTimeout(res,400));
             progDiv.remove();
-            aiAddMsg('ai', \`✅ Готово! ИИгорь оформил <strong>\${tr.fileCount} документов</strong>.<br><br>
-              <a href="/api/download/\${tr.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">
+            aiAddMsg('ai', `✅ Готово! ИИгорь оформил <strong>${tr.fileCount} документов</strong>.<br><br>
+              <a href="/api/download/${tr.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">
                 📥 Скачать пакет документов
-              </a>\`);
+              </a>`);
             btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
           } else if(tr.status === 'error') {
             clearInterval(poll);
@@ -1469,8 +1469,8 @@ async function aiGenerate() {
       clearInterval(interval);
       progDiv.remove();
       if(r.success && r.journalId) {
-        aiAddMsg('ai', \`✅ Готово! <strong>\${r.fileCount} документов</strong>.<br><br>
-          <a href="/api/download/\${r.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">📥 Скачать</a>\`);
+        aiAddMsg('ai', `✅ Готово! <strong>${r.fileCount} документов</strong>.<br><br>
+          <a href="/api/download/${r.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">📥 Скачать</a>`);
       }
       btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
     }
