@@ -437,9 +437,7 @@ input::placeholder{color:#C4BDB2}
               <button id="ai-send-btn" onclick="aiSend()"
                 style="width:36px;height:36px;border-radius:8px;background:#1B2B45;border:none;cursor:pointer;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s">➤</button>
             </div>
-            <input type="file" id="ai-file-input" multiple
-              accept=".txt,.docx,.pdf,.xlsx,.xls,.csv,.doc,.zip,.rar,.png,.jpg,.jpeg"
-              style="display:none" onchange="aiHandleFiles(this.files)">
+            <!-- file input moved to body -->
           </div>
         </div>
       </div>
@@ -1487,5 +1485,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if(aiItem) nav('ai', aiItem);
 });
 </script>
+<input type="file" id="ai-file-input" multiple
+  accept=".txt,.docx,.pdf,.xlsx,.xls,.csv,.doc,.zip,.rar,.png,.jpg,.jpeg"
+  style="position:fixed;left:-9999px;opacity:0;pointer-events:none"
+  onchange="aiHandleFiles(this.files)">
 </body>
 </html>
