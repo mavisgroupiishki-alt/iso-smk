@@ -993,71 +993,58 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._json({'success':True})
             elif p=='/api/generate':
                 data=json.loads(body)
-                
-                # Если есть умный генератор и данные от ИИ — используем его
-                if SMART_GENERATOR and data.get('ai_data') and data['ai_data'].get('company', {}).get('name'):
-                    api_key = os.environ.get('VIBE_API_KEY', '')
-                    product = data.get('product', 'iso')
-                    ai_data = data['ai_data']
-                    
-                    # Прогресс через список
-                    progress_log = []
-                    def on_progress(step, total, msg):
-                        progress_log.append({'step': step, 'total': total, 'msg': msg})
-                        print(f"  [{step}/{total}] {msg}")
-                    
-                    import uuid as _uuid
-                    task_id = str(_uuid.uuid4())[:8]
-                    TASKS[task_id] = {'status': 'running', 'progress': [], 'step': 0}
+                import uuid as _uuid
+                api_key = os.environ.get('VIBE_API_KEY', '')
+                product = data.get('product', 'iso')
+                ai_data = data.get('ai_data', {})
 
-                    def run_gen():
+                # Умный генератор — запускаем в фоне
+                if SMART_GENERATOR and ai_data.get('company', {}).get('name'):
+                    task_id = str(_uuid.uuid4())[:8]
+                    TASKS[task_id] = {'status': 'running', 'progress': [], 'step': 0, 'total': 100}
+                    save_task(task_id, TASKS[task_id])
+
+                    def run_gen(_tid=task_id, _data=ai_data, _key=api_key, _prod=product):
                         try:
                             def on_prog(step, total, msg):
-                                TASKS[task_id]['progress'] = TASKS[task_id].get('progress',[]) + [msg]
-                                TASKS[task_id]['step'] = step
-                                TASKS[task_id]['total'] = total
-                                save_task(task_id, TASKS[task_id])
-                                print(f"  [{step}] {msg}")
+                                TASKS[_tid]['progress'] = (TASKS[_tid].get('progress') or []) + [msg]
+                                TASKS[_tid]['step'] = step
+                                TASKS[_tid]['total'] = total
+                                save_task(_tid, TASKS[_tid])
+                                print(f"  [{step}/{total}] {msg}")
 
-                            result = generate_package(ai_data, api_key, product, on_prog)
+                            result = generate_package(_data, _key, _prod, on_prog)
                             docs = result['docs']
-                            org2 = re.sub(r'[^\w\-]', '_', ai_data.get('company', {}).get('name', 'org'))
-                            ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
-                            zp2 = str(OUT_DIR / f'{org2}_{ts2}.zip')
-                            with zipfile.ZipFile(zp2, 'w', zipfile.ZIP_DEFLATED) as zf:
+                            _org = re.sub(r'[^\w\-]', '_', _data.get('company', {}).get('name', 'org'))
+                            _ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            _zp = str(OUT_DIR / f'{_org}_{_ts}.zip')
+                            with zipfile.ZipFile(_zp, 'w', zipfile.ZIP_DEFLATED) as _zf:
                                 for doc in docs:
-                                    zf.writestr(doc['name'], doc['bytes'])
-                            eid2 = save_journal({
-                                'orgName': ai_data.get('company', {}).get('name', ''),
+                                    _zf.writestr(doc['name'], doc['bytes'])
+                            _eid = save_journal({
+                                'orgName': _data.get('company', {}).get('name', ''),
                                 'implDate': result['dates'].get('goals', ''),
                                 'fileCount': len(docs),
-                                'zipPath': zp2,
-                                'product': product,
+                                'zipPath': _zp,
+                                'product': _prod,
                                 'generator': 'smart'
                             })
-                            TASKS[task_id]['status'] = 'done'
-                            TASKS[task_id]['journalId'] = eid2
-                            TASKS[task_id]['fileCount'] = len(docs)
-                            TASKS[task_id]['dates'] = result['dates']
-                            save_task(task_id, TASKS[task_id])
-                        except Exception as ex:
-                            import traceback
-                            traceback.print_exc()
-                            TASKS[task_id]['status'] = 'error'
-                            TASKS[task_id]['error'] = str(ex)
-                            save_task(task_id, TASKS[task_id])
+                            TASKS[_tid].update({'status':'done','journalId':_eid,
+                                               'fileCount':len(docs),'dates':result['dates']})
+                            save_task(_tid, TASKS[_tid])
+                            print(f"  ✅ Задача {_tid} завершена: {len(docs)} документов")
+                        except Exception as _ex:
+                            import traceback; traceback.print_exc()
+                            TASKS[_tid].update({'status':'error','error':str(_ex)})
+                            save_task(_tid, TASKS[_tid])
 
-                    t = threading.Thread(target=run_gen, daemon=True)
-                    t.start()
+                    threading.Thread(target=run_gen, daemon=True).start()
                     self._json({'success': True, 'async': True, 'task_id': task_id})
-                    return
-                    if False:  # старый fallback — недостижимо, но оставляем структуру
-                        pass
-                
-                # Старый генератор (замена в шаблонах) — fallback
+                else:
+                # Старый генератор (замена в шаблонах) — если нет данных ИИ
 
-                org=re.sub(r'[^\w\-]','_',
-                    data.get('ai_data',{}).get('company',{}).get('name','') or
+                    org=re.sub(r'[^\w\-]','_',
+                        data.get('ai_data',{}).get('company',{}).get('name','') or
                     data.get('orgName','org'))
                 ts=datetime.now().strftime('%Y%m%d_%H%M%S')
                 out=OUT_DIR/f'{org}_{ts}'
