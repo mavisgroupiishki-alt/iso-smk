@@ -757,6 +757,21 @@ class H(http.server.BaseHTTPRequestHandler):
         if p in('/','//index.html'):          self._html(INDEX)
         elif p=='/api/companies':             self._json(get_companies())
         elif p=='/api/journal':               self._json(get_journal())
+        elif p.startswith('/api/task/'):
+                task_id = p.split('/')[-1]
+                task = TASKS.get(task_id) or load_task(task_id)
+                if task:
+                    TASKS[task_id] = task
+                    self._json({
+                        'status':    task.get('status','running'),
+                        'step':      task.get('step',0),
+                        'total':     task.get('total',100),
+                        'progress':  task.get('progress',[]),
+                        'journalId': task.get('journalId'),
+                        'fileCount': task.get('fileCount',0),
+                        'dates':     task.get('dates',{}),
+                        'error':     task.get('error','')
+                    })
         elif p.startswith('/api/download/'):
             zp=get_zip(p.split('/')[-1])
             if zp:
