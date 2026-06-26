@@ -567,46 +567,19 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
             return '[docx: не удалось прочитать]'
 
         elif ext == 'pdf':
-            # Метод 1: PyMuPDF — лучший парсер для текстовых PDF
+            # BT/ET поток парсер
             try:
-                import fitz as _fitz
-                doc = _fitz.open(stream=file_bytes, filetype='pdf')
-                pages = [page.get_text() for page in doc]
-                doc.close()
-                text = '\n'.join(pages).strip()
-                if text and len(text) > 30:
-                    return text[:8000]
-            except ImportError:
-                pass
-            except Exception:
-                pass
-            # Метод 2: pdfplumber
-            try:
-                import pdfplumber as _plumber, io as _io3
-                with _plumber.open(_io3.BytesIO(file_bytes)) as pdf:
-                    pages = [p.extract_text() or '' for p in pdf.pages]
-                text = '\n'.join(pages).strip()
-                if text and len(text) > 30:
-                    return text[:8000]
-            except ImportError:
-                pass
-            except Exception:
-                pass
-            # Метод 3: BT/ET поток (для простых PDF)
-            try:
-                import re as _re
                 raw = file_bytes.decode('latin-1', errors='replace')
-                blocks = _re.findall(r'BT(.*?)ET', raw, _re.DOTALL)
+                blocks = re.findall(r'BT(.*?)ET', raw, re.DOTALL)
                 result = []
                 for b in blocks:
-                    strings = _re.findall(r'\(([^)]{2,})\)', b)
+                    strings = re.findall(r'\(([^)]{2,})\)', b)
                     result.extend(strings)
                 if result:
                     return ' '.join(result)[:8000]
             except Exception:
                 pass
-            # PDF не читается как текст — скорее всего скан
-            return '[PDF_SCAN: файл является сканом — отправьте через кнопку анализа изображений]'
+            return '[PDF_SCAN: файл является сканом]'
 
         elif ext in ('xlsx', 'xls'):
             import io, re as _re2
@@ -856,26 +829,9 @@ class H(http.server.BaseHTTPRequestHandler):
                     text = extract_text_from_file(file_bytes, filename)
                     self._json({'success':True,'text':text,'method':'text'}); return
 
-                # Для PDF-скана: конвертируем в PNG через PyMuPDF
+                # Кодируем в base64
                 actual_media_type = media_type
                 actual_bytes = file_bytes
-                if ext == 'pdf':
-                    try:
-                        import fitz as _fitz
-                        doc = _fitz.open(stream=file_bytes, filetype='pdf')
-                        page = doc[0]
-                        # Рендерим с увеличением 2x для качества
-                        mat = _fitz.Matrix(2, 2)
-                        pix = page.get_pixmap(matrix=mat)
-                        actual_bytes = pix.tobytes('png')
-                        actual_media_type = 'image/png'
-                        doc.close()
-                    except ImportError:
-                        pass
-                    except Exception:
-                        pass
-
-                # Кодируем в base64
                 b64_data = _b64.b64encode(actual_bytes).decode('utf-8')
 
                 # Отправляем в BitrixGPT vision
