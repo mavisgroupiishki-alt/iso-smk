@@ -6,6 +6,7 @@
 import os, json, re, zipfile, io
 from pathlib import Path
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests as req_lib
 
 BASE_DIR = Path(__file__).parent.resolve()
@@ -836,6 +837,21 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     }
 
 
+def _parallel(tasks, max_workers=4):
+    """Выполняет задачи параллельно. tasks = [(fn, args), ...]"""
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(fn, *args): name for name, fn, args in tasks}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                results[name] = future.result()
+            except Exception as e:
+                print(f"  ⚠️ {name}: {e}")
+                results[name] = f"[Ошибка генерации: {e}]"
+    return results
+
+
 def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p):
     p("Политика в области качества...")
     add(f"{org} - 1 Политика в области качества.docx",
@@ -865,7 +881,7 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
 Отвечай только текстом."""}], api_key)
     add(f"{org} - 3 Номенклатура дел.docx", text)
 
-    # Приказы 1-9
+    # Приказы 1-9 — параллельно
     orders = [
         (1, "О разработке системы менеджмента качества", 'policy',
          f"Разработать СМК в области: {company.get('scope','')}. Ответственный: {_fio(resp.get('director'))}."),
@@ -886,10 +902,15 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
         (9, "О проведении внутреннего обучения специалистов", 'goals',
          f"Обучить: {', '.join(_fio(a)+' ('+_pos(a)+')' for a in resp.get('auditors',[]))}."),
     ]
-    for num, name, date_key, extra in orders:
-        p(f"Приказ {num}: {name[:40]}...")
-        add(f"{org} - 3.{num} Приказ {num} {name[:50]}.docx",
-            gen_order(num, name, company, dates, resp, itr, api_key, extra, date_key))
+    p("Приказы 1-9 (параллельно)...")
+    order_tasks = [
+        (f"{org} - 3.{num} Приказ {num} {name[:50]}.docx",
+         gen_order, (num, name, company, dates, resp, itr, api_key, extra, date_key))
+        for num, name, date_key, extra in orders
+    ]
+    order_results = _parallel(order_tasks, max_workers=4)
+    for fname, text in order_results.items():
+        add(fname, text)
 
     p("Протокол КС...")
     text = vibe_call([{"role":"user","content": f"""Создай ПРОТОКОЛ заседания Координационного совета № 1.
@@ -927,20 +948,28 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
     add(f"{org} - Сводный отчёт по СМК.docx",
         gen_report("Отчёт по анализу функционирования СМК", company, dates, resp, objects, api_key))
 
-    # ДИ для каждого ИТР
+    # ДИ для каждого ИТР — параллельно
+    p(f"Должностные инструкции ({len(itr)} чел., параллельно)...")
+    di_tasks = []
     for person in itr:
         pos = person.get('position','')
         fio = person.get('fio','')
-        p(f"ДИ: {pos} ({fio})...")
         safe = re.sub(r'[^\w\s-]','',pos)[:40]
-        add(f"{org} - ДИ {safe}.docx", gen_di(pos, fio, company, dates, resp, api_key))
+        di_tasks.append((f"{org} - ДИ {safe}.docx", gen_di, (pos, fio, company, dates, resp, api_key)))
+    di_results = _parallel(di_tasks, max_workers=4)
+    for fname, text in di_results.items():
+        add(fname, text)
 
-    # Карточки поставщиков
+    # Карточки поставщиков — параллельно
+    p(f"Карточки поставщиков ({len(suppliers[:6])} шт., параллельно)...")
+    sup_tasks = []
     for i, sup in enumerate(suppliers[:6], 1):
-        p(f"Карточка поставщика {i}: {sup.get('name','')}...")
         safe = re.sub(r'[^\w\s-]','',sup.get('name',f'поставщик_{i}'))[:30]
-        add(f"{org} - Карточка поставщика {i} {safe}.docx",
-            gen_supplier_card(sup, company, dates, resp, api_key))
+        sup_tasks.append((f"{org} - Карточка поставщика {i} {safe}.docx",
+                          gen_supplier_card, (sup, company, dates, resp, api_key)))
+    sup_results = _parallel(sup_tasks, max_workers=4)
+    for fname, text in sup_results.items():
+        add(fname, text)
 
 
 def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add, p):
@@ -1021,12 +1050,16 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
         safe = re.sub(r'[^\w\s-]','',instr_name)[:60]
         add(f"{org} СУОТ - {safe}.docx", text)
 
-    # Инструкции ОТ по профессиям рабочих
+    # Инструкции ОТ по профессиям — параллельно
+    p(f"Инструкции ОТ ({len(professions)} профессий, параллельно)...")
+    ot_tasks = []
     for prof in professions:
-        p(f"Инструкция ОТ: {prof}...")
         safe = re.sub(r'[^\w\s-]','',prof)[:40]
-        add(f"{org} СУОТ - Инструкция ОТ {safe}.docx",
-            gen_ot_instruction(prof, company, dates, resp, api_key))
+        ot_tasks.append((f"{org} СУОТ - Инструкция ОТ {safe}.docx",
+                         gen_ot_instruction, (prof, company, dates, resp, api_key)))
+    ot_results = _parallel(ot_tasks, max_workers=4)
+    for fname, text in ot_results.items():
+        add(fname, text)
 
     # Карты рисков
     p("Карта рисков ИТР (офис)...")
@@ -1039,11 +1072,16 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
     add(f"{org} СУОТ - Карта рисков ИТР производство.docx",
         gen_risk_card('production', [p2.get('position','') for p2 in prod_itr] or ['Главный инженер','Производитель работ'], company, dates, resp, api_key))
 
+    # Карты рисков для рабочих — параллельно
+    p(f"Карты рисков рабочих ({len(professions)} шт., параллельно)...")
+    risk_tasks = []
     for prof in professions:
-        p(f"Карта рисков: {prof}...")
         safe = re.sub(r'[^\w\s-]','',prof)[:40]
-        add(f"{org} СУОТ - Карта рисков {safe}.docx",
-            gen_risk_card('worker', [prof], company, dates, resp, api_key))
+        risk_tasks.append((f"{org} СУОТ - Карта рисков {safe}.docx",
+                           gen_risk_card, ('worker', [prof], company, dates, resp, api_key)))
+    risk_results = _parallel(risk_tasks, max_workers=4)
+    for fname, text in risk_results.items():
+        add(fname, text)
 
     p("Реестр неприемлемых рисков...")
     text = vibe_call([{"role":"user","content": f"""Создай РЕЕСТР НЕПРИЕМЛЕМЫХ РИСКОВ (уровень > 9).
