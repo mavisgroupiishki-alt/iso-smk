@@ -1432,7 +1432,50 @@ async function aiGenerate() {
 
       let pollErrors = 0;
       let lastKnownStep = 0;
+      let pollCount = 0;
+      const MAX_POLLS = 400; // 400 * 3сек = 20 минут максимум
+
+      // Кнопка ручной проверки
+      const checkBtn = document.createElement('button');
+      checkBtn.textContent = '🔄 Проверить статус';
+      checkBtn.style = 'margin-top:8px;padding:4px 10px;border-radius:4px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:11px';
+      checkBtn.onclick = async () => {
+        try {
+          const tr = await fetch('/api/task/' + taskId).then(x=>x.json());
+          if(tr.status === 'done') {
+            clearInterval(poll);
+            clearInterval(interval);
+            progDiv.remove();
+            aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>.<br><br>
+              <a href="/api/download/${tr.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:13px;text-decoration:none">
+                📥 Скачать пакет документов
+              </a>`);
+            btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+          } else {
+            checkBtn.textContent = `Статус: ${tr.status}, шаг ${tr.step}/${tr.total}`;
+            setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000);
+          }
+        } catch(e) { checkBtn.textContent = '❌ ' + e.message; setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000); }
+      };
+      progDiv.appendChild(checkBtn);
+
+      // Ссылка на журнал для ручного скачивания
+      const journalLink = document.createElement('a');
+      journalLink.href = '/api/journal';
+      journalLink.textContent = '📋 Открыть журнал генераций';
+      journalLink.target = '_blank';
+      journalLink.style = 'display:block;margin-top:6px;font-size:10px;color:#706A5E;text-decoration:underline';
+      progDiv.appendChild(journalLink);
+
       const poll = setInterval(async () => {
+        pollCount++;
+        if(pollCount > MAX_POLLS) {
+          clearInterval(poll);
+          clearInterval(interval);
+          document.getElementById(progressId+'-text').textContent = 'Превышено время ожидания. Проверьте журнал.';
+          btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+          return;
+        }
         try {
           const controller = new AbortController();
           const fetchTimeout = setTimeout(() => controller.abort(), 25000);
@@ -1469,7 +1512,6 @@ async function aiGenerate() {
             btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
           }
         } catch(pollErr) {
-          // Сеть временно недоступна — продолжаем опрос, это нормально
           pollErrors++;
           console.warn('Poll error #'+pollErrors+':', pollErr.message);
           // Анимируем прогресс-бар чтобы пользователь видел что идёт работа
