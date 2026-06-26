@@ -27,9 +27,25 @@ PORT = int(os.environ.get("PORT", 8766))
 
 for d in [JOURNAL_DIR, CO_DIR, OUT_DIR]: d.mkdir(parents=True, exist_ok=True)
 
-# Хранилище фоновых задач генерации
+# Хранилище фоновых задач генерации (на диске - переживает перезапуск)
 import threading
 TASKS = {}  # task_id -> {status, progress, result, error}
+TASKS_DIR = BASE_DIR / 'tasks'
+TASKS_DIR.mkdir(exist_ok=True)
+
+def save_task(task_id, data):
+    try:
+        (TASKS_DIR / f'{task_id}.json').write_text(
+            json.dumps(data, ensure_ascii=False), 'utf-8')
+    except: pass
+
+def load_task(task_id):
+    try:
+        f = TASKS_DIR / f'{task_id}.json'
+        if f.exists():
+            return json.loads(f.read_text('utf-8'))
+    except: pass
+    return None
 
 # ── Vibe Code AI ─────────────────────────────────────────────
 VIBE_URL   = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
@@ -757,6 +773,12 @@ INDEX = (BASE_DIR/'index.html').read_text('utf-8')
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
 
+    def do_HEAD(self):
+        """UptimeRobot и браузеры шлют HEAD — отвечаем 200"""
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html')
+        self.end_headers()
+
     def do_GET(self):
         p=self.path.split('?')[0]
         if p in('/','//index.html'):          self._html(INDEX)
@@ -991,9 +1013,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     def run_gen():
                         try:
                             def on_prog(step, total, msg):
-                                TASKS[task_id]['progress'].append(msg)
+                                TASKS[task_id]['progress'] = TASKS[task_id].get('progress',[]) + [msg]
                                 TASKS[task_id]['step'] = step
                                 TASKS[task_id]['total'] = total
+                                save_task(task_id, TASKS[task_id])
                                 print(f"  [{step}] {msg}")
 
                             result = generate_package(ai_data, api_key, product, on_prog)
@@ -1016,11 +1039,13 @@ class H(http.server.BaseHTTPRequestHandler):
                             TASKS[task_id]['journalId'] = eid2
                             TASKS[task_id]['fileCount'] = len(docs)
                             TASKS[task_id]['dates'] = result['dates']
+                            save_task(task_id, TASKS[task_id])
                         except Exception as ex:
                             import traceback
                             traceback.print_exc()
                             TASKS[task_id]['status'] = 'error'
                             TASKS[task_id]['error'] = str(ex)
+                            save_task(task_id, TASKS[task_id])
 
                     t = threading.Thread(target=run_gen, daemon=True)
                     t.start()
