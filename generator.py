@@ -189,7 +189,12 @@ def build_ctx(company, dates, resp, itr=None, workers=None, objects=None, suppli
     dir_fio  = _fio(resp.get('director'))
     dir_pos  = _pos(resp.get('director')) or company.get('director_position', 'Директор')
     dir_init = _initials(dir_fio)
-    full_name = f"{company.get('form','ООО')} \"{company.get('name','')}\""
+    # Убираем форму из названия если она туда попала
+    import re as _re2
+    _raw_name = company.get('name','')
+    _clean_name = _re2.sub(r'^(ООО|ОДО|ЧУП|ЗАО|РУП|ИП|ЧТУП|ЧТУ|ОАО)\\s*[«"\']?\\s*', '', _raw_name).strip().strip('»"\'')
+    if not _clean_name: _clean_name = _raw_name
+    full_name = f"{company.get('form','ООО')} «{_clean_name}»"
 
     aud_lines = '\n'.join(
         f"  - {_fio(a)} ({_pos(a)})" for a in resp.get('auditors', [])
