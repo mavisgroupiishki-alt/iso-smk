@@ -1379,7 +1379,7 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
 
     p("Исходная информация СУОТ + анкета-вопросник...")
     add(f"{org} СУОТ - Исходная информация СУОТ.docx",
-        gen_ishodnaya_smk(company, dates, resp, itr, workers, [], suppliers, api_key))
+        gen_ishodnaya_smk(company, dates, resp, itr, workers, [], [], api_key))
     text = vibe_call([{"role":"user","content":
         f"Создай АНКЕТУ-ВОПРОСНИК для оценки соответствия СУОТ требованиям СТБ ISO 45001-2020.\n"
         f"Компания: {company.get('form','ООО')} «{_clean(company)}»\n"
