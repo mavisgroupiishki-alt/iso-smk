@@ -225,7 +225,7 @@ def build_ctx(company, dates, resp, itr=None, workers=None, objects=None, suppli
 === ДАННЫЕ КОМПАНИИ ===
 Полное название: {full_name}
 Форма: {company.get('form','ООО')}
-Название: {company.get('name','')}
+Название: {_clean(company)}
 УНП: {company.get('unp','')}
 Адрес: {company.get('address','')}
 Город: {company.get('city','Минск')}
@@ -272,7 +272,7 @@ def build_header(doc_title, company, dates, resp, date_key='goals'):
     dir_fio  = _fio(resp.get('director'))
     dir_pos  = _pos(resp.get('director')) or company.get('director_position', 'Директор')
     dir_init = _initials(dir_fio)
-    full = f"{company.get('form','ООО')} \"{company.get('name','')}\""
+    full = f"{company.get('form','ООО')} \"{_clean(company)}\""
     date = dates.get(date_key, dates['goals'])
     return f"""{full}
 
@@ -307,7 +307,7 @@ def gen_policy_iso(company, dates, resp, itr, objects, api_key):
 - Дата: {dates['policy']}
 - Подпись: {dir_p(resp)} _________________ {_initials(_fio(resp.get('director')))}
 
-ПРАВИЛО: в тексте используй название {company.get('form','ООО')} "{company.get('name','')}" без искажений.
+ПРАВИЛО: в тексте используй название {company.get('form','ООО')} "{_clean(company)}" без искажений.
 Отвечай только текстом документа."""
     return vibe_call([{"role":"user","content":prompt}], api_key)
 
@@ -332,7 +332,7 @@ def gen_awareness_list(doc_name, company, dates, resp, itr, date_key, api_key):
 Создай ЛИСТ ОЗНАКОМЛЕНИЯ: {doc_name}
 
 Шапка:
-{company.get('form','ООО')} "{company.get('name','')}"
+{company.get('form','ООО')} "{_clean(company)}"
 
 {doc_name.upper()}
 
@@ -353,7 +353,7 @@ def gen_order(num, name, company, dates, resp, itr, api_key, extra_text='', date
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos  = dir_p(resp)
-    full = f"{company.get('form','ООО')} \"{company.get('name','')}\""
+    full = f"{company.get('form','ООО')} \"{_clean(company)}\""
     city = company.get('city', 'Минск')
     aud_list = '\n'.join(f"- {_fio(a)}, {_pos(a)}" for a in resp.get('auditors',[]))
     ctx = build_ctx(company, dates, resp, itr=itr)
@@ -396,7 +396,7 @@ def gen_di(position, fio, company, dates, resp, api_key):
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos  = dir_p(resp)
-    full = f"{company.get('form','ООО')} \"{company.get('name','')}\""
+    full = f"{company.get('form','ООО')} \"{_clean(company)}\""
 
     di = find_di_in_library(position)
     if di:
@@ -462,7 +462,7 @@ def gen_ot_instruction(profession, company, dates, resp, api_key):
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos  = dir_p(resp)
-    full = f"{company.get('form','ООО')} \"{company.get('name','')}\""
+    full = f"{company.get('form','ООО')} \"{_clean(company)}\""
 
     ri = find_ri_in_library(profession)
     if ri:
@@ -519,7 +519,7 @@ def gen_risk_card(role_type, positions_list, company, dates, resp, api_key):
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos  = dir_p(resp)
-    full = f"{company.get('form','ООО')} \"{company.get('name','')}\""
+    full = f"{company.get('form','ООО')} \"{_clean(company)}\""
     positions_str = ', '.join(positions_list)
     is_office = role_type == 'office'
 
@@ -553,7 +553,7 @@ def gen_risk_card(role_type, positions_list, company, dates, resp, api_key):
 def gen_risk_register(company, dates, resp, itr, api_key):
     """Реестр рисков СМК"""
     ctx = build_ctx(company, dates, resp, itr=itr)
-    header = build_header(f"РЕЕСТР РИСКОВ\nна {dates['year']} г.\n{company.get('form','ООО')} \"{company.get('name','')}\"", 
+    header = build_header(f"РЕЕСТР РИСКОВ\nна {dates['year']} г.\n{company.get('form','ООО')} \"{_clean(company)}\"", 
                           company, dates, resp, 'risks')
     prompt = f"""Ты — оформитель документов ИСО 9001 (Беларусь).
 {ctx}
@@ -619,7 +619,7 @@ def gen_supplier_card(supplier, company, dates, resp, api_key):
     """Карточка оценки поставщика"""
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
-    full = f"{company.get('form','ООО')} \"{company.get('name','')}\""
+    full = f"{company.get('form','ООО')} \"{_clean(company)}\""
     sup_name = supplier.get('name', '')
     sup_type = supplier.get('type', '')
 
@@ -696,7 +696,7 @@ def gen_satisfaction_report(company, dates, resp, objects, api_key):
     has_obj = bool(objects)
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
-    full = f"{company.get('form','ООО')} \"{company.get('name','')}\""
+    full = f"{company.get('form','ООО')} \"{_clean(company)}\""
     obj_rows = '\n'.join(f"| {o.get('name','')} | — | 5 |" for o in objects) if objects else ''
 
     prompt = f"""Ты — оформитель документов ИСО 9001 (Беларусь).
