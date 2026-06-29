@@ -63,6 +63,8 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 - Отчёты = выезд минус 7 дней
 
 ШТАТ: ИТР идут в ИСО, рабочие идут в СУОТ (инструкции ОТ + карты рисков под каждую профессию).
+ВАЖНО: рабочих профессий (штукатур, маляр, сварщик и т.д.) — ставь is_worker:true в staff И добавляй в поле workers списком профессий.
+Например: "workers": ["Штукатур","Маляр","Электрогазосварщик","Облицовщик-плиточник"]
 Для ИСО: аудиторы = 3 чел. с удостоверением ОТ из ИТР.
 Для СУОТ: минимум 3 чел. с удостоверением ОТ.
 
@@ -90,6 +92,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
     "certification": {"standard":"iso|suot|iso_suot|spk_stroy|spk_bisp","scope":"","body":"","audit_date":""},
     "dates": {"audit_date":"","development_date":"","implementation_date":""},
     "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":""}],
+    "workers": ["Штукатур","Маляр","Электрогазосварщик"],
     "objects": [{"name":"","year":"","customer":""}],
     "suppliers": [{"name":"","type":""}],
     "flags": [{"type":"error|warning|ok","text":""}],

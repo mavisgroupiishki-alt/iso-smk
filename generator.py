@@ -787,8 +787,40 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     audit_date = dates_in.get('audit_date', '') or company_data.get('certification', {}).get('audit_date', '')
     dates = calculate_dates(audit_date)
 
-    itr     = [s for s in staff if not s.get('is_worker', False)]
-    workers = [s for s in staff if s.get('is_worker', False)]
+    # Ключевые слова должностей рабочих
+    WORKER_KEYWORDS = [
+        'штукатур','маляр','сварщик','электрогаз','облицовщик','плиточник',
+        'кровельщик','монтажник','электромонтажник','плотник','бетонщик',
+        'каменщик','арматурщик','разнорабочий','подсобный','стропальщик',
+        'водитель','машинист','оператор','слесарь','токарь','фрезеровщик',
+        'сантехник','электрик','тракторист','экскаваторщик','крановщик',
+    ]
+    def _is_worker(p):
+        if p.get('is_worker'): return True
+        pos = p.get('position','').lower()
+        return any(kw in pos for kw in WORKER_KEYWORDS)
+
+    itr     = [s for s in staff if not _is_worker(s)]
+    workers = [s for s in staff if _is_worker(s)]
+
+    # Если рабочих нет в staff — берём из поля workers (список профессий)
+    if not workers and company_data.get('workers'):
+        for w in company_data['workers']:
+            pos = w if isinstance(w, str) else w.get('position','')
+            if pos:
+                workers.append({'fio': '', 'position': pos, 'is_worker': True})
+
+    # Также проверяем company.scope на наличие профессий рабочих
+    if not workers:
+        scope = company.get('scope','').lower()
+        SCOPE_PROFS = {
+            'штукатур': 'Штукатур', 'малярн': 'Маляр',
+            'сварк': 'Электрогазосварщик', 'облицовк': 'Облицовщик-плиточник',
+            'кровельн': 'Кровельщик', 'электромонтаж': 'Электромонтажник по электрооборудованию',
+        }
+        for kw, prof in SCOPE_PROFS.items():
+            if kw in scope:
+                workers.append({'fio':'','position':prof,'is_worker':True})
 
     # Директор может быть задан в company напрямую
     if not any(p.get('role','') == 'director' or 'директор' in p.get('position','').lower() for p in itr):
