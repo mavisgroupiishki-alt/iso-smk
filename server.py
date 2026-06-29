@@ -63,6 +63,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 - Отчёты = выезд минус 7 дней
 
 ШТАТ: ИТР идут в ИСО, рабочие идут в СУОТ (инструкции ОТ + карты рисков под каждую профессию).
+ВАЖНО: если в штате есть электрогазосварщик или сварщик — ставь company.has_welding:true (нужен график валидации).
 ВАЖНО: рабочих профессий (штукатур, маляр, сварщик и т.д.) — ставь is_worker:true в staff И добавляй в поле workers списком профессий.
 Например: "workers": ["Штукатур","Маляр","Электрогазосварщик","Облицовщик-плиточник"]
 Для ИСО: аудиторы = 3 чел. с удостоверением ОТ из ИТР.
@@ -93,6 +94,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
     "dates": {"audit_date":"","development_date":"","implementation_date":""},
     "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":""}],
     "workers": ["Штукатур","Маляр","Электрогазосварщик"],
+    "company": {"has_welding": false, "machinery": ["Автомобиль"]}
     "objects": [{"name":"","year":"","customer":""}],
     "suppliers": [{"name":"","type":""}],
     "flags": [{"type":"error|warning|ok","text":""}],
