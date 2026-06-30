@@ -1120,6 +1120,8 @@ function aiRenderCard(data) {
   if(data.certification) aiCurrentData.certification = {...(aiCurrentData.certification||{}), ...Object.fromEntries(Object.entries(data.certification).filter(([,v])=>v))};
   if(data.dates) aiCurrentData.dates = {...(aiCurrentData.dates||{}), ...Object.fromEntries(Object.entries(data.dates).filter(([,v])=>v))};
   if(data.staff && data.staff.length) aiCurrentData.staff = data.staff;
+  if(data.workers && data.workers.length) aiCurrentData.workers = data.workers;
+  if(data.work_types && data.work_types.length) aiCurrentData.work_types = data.work_types;
   if(data.objects && data.objects.length) aiCurrentData.objects = data.objects;
   if(data.suppliers && data.suppliers.length) aiCurrentData.suppliers = data.suppliers;
   if(data.flags) aiCurrentData.flags = data.flags;
@@ -1177,6 +1179,24 @@ function aiRenderCard(data) {
       const roleBadge = p.role ? (' · '+(rl[p.role]||p.role)) : '';
       html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${(p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase()}</div><div><div class="ai-pname">${p.fio||''}</div><div class="ai-prole">${p.position||''}${roleBadge}${otBadge}</div></div></div>`;
     });
+  }
+
+  // Рабочие профессии (для СУОТ — инструкции ОТ и карты рисков)
+  const workers = aiCurrentData.workers||[];
+  if(workers.length) {
+    html += '<div class="ai-sec">Рабочие профессии (' + workers.length + ')</div><div>';
+    workers.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🦺 ${w}</span></div>`);
+    html += '</div>';
+  } else if(staff.length) {
+    html += '<div class="ai-sec" style="color:#C05C1A">⚠️ Рабочие профессии не указаны</div>';
+  }
+
+  // Виды работ для СПК
+  const workTypes = aiCurrentData.work_types||[];
+  if(workTypes.length) {
+    html += '<div class="ai-sec">Виды работ СПК (' + workTypes.length + ')</div><div>';
+    workTypes.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🏗 ${w}</span></div>`);
+    html += '</div>';
   }
 
   // Объекты
