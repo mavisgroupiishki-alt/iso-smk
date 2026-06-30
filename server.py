@@ -143,12 +143,11 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
   "message": "ответ оформителю (по-русски)",
   "questions": ["вопрос если не хватает данных"],
   "data": {
-    "company": {"name":"","form":"","unp":"","address":"","city":"","director_fio":"","director_position":"","scope":""},
+    "company": {"name":"","form":"","unp":"","address":"","city":"","director_fio":"","director_position":"","scope":"","has_welding": false, "machinery": ["Автомобиль"], "bisp_org": "РУП «СтройМедиаПроект»"},
     "certification": {"standard":"iso|suot|iso_suot|spk_stroy|spk_bisp","scope":"","body":"","audit_date":""},
     "dates": {"audit_date":"","development_date":"","implementation_date":""},
     "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":""}],
     "workers": ["Штукатур","Маляр","Электрогазосварщик"],
-    "company": {"has_welding": false, "machinery": ["Автомобиль"]}
     "objects": [{"name":"","year":"","customer":""}],
     "suppliers": [{"name":"","type":""}],
     "flags": [{"type":"error|warning|ok","text":""}],
