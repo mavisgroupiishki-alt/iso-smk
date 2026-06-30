@@ -17,8 +17,6 @@ LIBS_PATH = BASE_DIR / 'libs.json'
 LIBS = json.loads(LIBS_PATH.read_text('utf-8')) if LIBS_PATH.exists() else {'di': {}, 'ri': {}}
 
 
-# ── Вспомогательные функции ───────────────────────────────────
-
 def _fio(person):
     if not person: return ''
     return person.get('fio', '')
@@ -28,7 +26,6 @@ def _pos(person):
     return person.get('position', '')
 
 def _initials(fio: str) -> str:
-    """Глушинский Олег Иванович → О.И. Глушинский"""
     parts = fio.strip().split()
     if len(parts) >= 2:
         surname = parts[0]
@@ -40,7 +37,6 @@ def _fmt_date(d: datetime) -> str:
     return d.strftime('%d.%m.%Y')
 
 def calculate_dates(audit_date_str: str) -> dict:
-    """Рассчитывает все даты от даты выезда эксперта"""
     audit = None
     for fmt in ('%d.%m.%Y', '%d/%m/%Y', '%Y-%m-%d'):
         try:
@@ -67,13 +63,6 @@ def calculate_dates(audit_date_str: str) -> dict:
 
 
 def select_responsible(itr: list) -> dict:
-    """
-    Выбирает ответственных из ИТР по правилам:
-    - Директор = кто в должности содержит 'директор'
-    - Аудиторы (3 чел) = директор + ИТР с ОТ-удостоверением
-    - За процесс = гл. инженер / прораб / директор
-    - За ДИ = кадровик / бухгалтер / директор
-    """
     def has_kw(p, *kws):
         pos = p.get('position', '').lower()
         return any(k in pos for k in kws)
@@ -91,7 +80,6 @@ def select_responsible(itr: list) -> dict:
         director
     )
 
-    # Аудиторы: директор + 2 ОТ-шника (или просто первые ИТР)
     auditor_pool = [director] if director else []
     for p in with_ot:
         if p not in auditor_pool:
@@ -128,7 +116,6 @@ def select_responsible(itr: list) -> dict:
 
 
 def vibe_call(messages, api_key, max_tokens=3000, retries=3):
-    """Вызов BitrixGPT с retry при таймауте"""
     import time
     last_err = None
     for attempt in range(retries):
@@ -137,14 +124,13 @@ def vibe_call(messages, api_key, max_tokens=3000, retries=3):
                 VIBE_URL,
                 headers={"Content-Type": "application/json", "X-Api-Key": api_key},
                 json={"model": VIBE_MODEL, "max_tokens": max_tokens, "messages": messages},
-                timeout=180  # 3 минуты
+                timeout=180
             )
             resp.raise_for_status()
             data = resp.json()
             text = "".join(c.get("message", {}).get("content", "") for c in data.get("choices", []))
             if text:
                 return text
-            # Пустой ответ — пробуем ещё раз
             last_err = "Empty response"
             time.sleep(2)
         except req_lib.exceptions.Timeout:
@@ -182,19 +168,19 @@ def find_ri_in_library(profession: str):
     return None
 
 
-# ── Контекст для всех промптов ────────────────────────────────
+def _clean(company):
+    """Убирает форму из названия"""
+    import re as _re
+    raw = company.get('name', '')
+    clean = _re.sub(r'^(ООО|ОДО|ЧУП|ЗАО|РУП|ИП|ЧТУП|ЧТУ|ОАО|ЧП)\s*[«"\']?\s*', '', raw).strip().strip('»"\'')
+    return clean if clean else raw
+
 
 def build_ctx(company, dates, resp, itr=None, workers=None, objects=None, suppliers=None):
-    """Строит общий контекстный блок для промптов"""
     dir_fio  = _fio(resp.get('director'))
     dir_pos  = _pos(resp.get('director')) or company.get('director_position', 'Директор')
     dir_init = _initials(dir_fio)
-    # Убираем форму из названия если она туда попала
-    import re as _re2
-    _raw_name = company.get('name','')
-    _clean_name = _re2.sub(r'^(ООО|ОДО|ЧУП|ЗАО|РУП|ИП|ЧТУП|ЧТУ|ОАО)\\s*[«"\']?\\s*', '', _raw_name).strip().strip('»"\'')
-    if not _clean_name: _clean_name = _raw_name
-    full_name = f"{company.get('form','ООО')} «{_clean_name}»"
+    full_name = f"{company.get('form','ООО')} «{_clean(company)}»"
 
     aud_lines = '\n'.join(
         f"  - {_fio(a)} ({_pos(a)})" for a in resp.get('auditors', [])
@@ -268,7 +254,6 @@ def build_ctx(company, dates, resp, itr=None, workers=None, objects=None, suppli
 
 
 def build_header(doc_title, company, dates, resp, date_key='goals'):
-    """Строит стандартную шапку УТВЕРЖДАЮ для документа"""
     dir_fio  = _fio(resp.get('director'))
     dir_pos  = _pos(resp.get('director')) or company.get('director_position', 'Директор')
     dir_init = _initials(dir_fio)
@@ -283,6 +268,12 @@ _____________ {dir_init}
 
 {doc_title}
 """
+
+
+def dir_p(resp):
+    d = resp.get('director')
+    if d: return d.get('position', 'Директор')
+    return 'Директор'
 
 
 # ── Генераторы конкретных документов ─────────────────────────
@@ -313,15 +304,12 @@ def gen_policy_iso(company, dates, resp, itr, objects, api_key):
 
 
 def gen_awareness_list(doc_name, company, dates, resp, itr, date_key, api_key):
-    """Лист ознакомления — все ИТР с правильными датами"""
     ctx = build_ctx(company, dates, resp, itr=itr)
     date = dates.get(date_key, dates['goals'])
 
-    # Строим таблицу ИТР
     rows = []
     for i, p in enumerate(itr, 1):
         hire = p.get('hire_date', '')
-        # Если принят позже даты документа — ставим дату приёма
         person_date = hire if hire and hire > date else date
         rows.append(f"{i}. {p.get('fio','')} — {p.get('position','')} — {person_date}")
     itr_table = '\n'.join(rows)
@@ -348,7 +336,6 @@ def gen_awareness_list(doc_name, company, dates, resp, itr, date_key, api_key):
 
 
 def gen_order(num, name, company, dates, resp, itr, api_key, extra_text='', date_key='goals'):
-    """Генерирует приказ с правильными данными"""
     date = dates.get(date_key, dates['goals'])
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
@@ -392,7 +379,6 @@ def gen_order(num, name, company, dates, resp, itr, api_key, extra_text='', date
 
 
 def gen_di(position, fio, company, dates, resp, api_key):
-    """Должностная инструкция: из библиотеки или новая"""
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos  = dir_p(resp)
@@ -458,7 +444,6 @@ _____________ {dir_init}
 
 
 def gen_ot_instruction(profession, company, dates, resp, api_key):
-    """Инструкция по охране труда для профессии"""
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos  = dir_p(resp)
@@ -515,7 +500,6 @@ def gen_ot_instruction(profession, company, dates, resp, api_key):
 
 
 def gen_risk_card(role_type, positions_list, company, dates, resp, api_key):
-    """Карта рисков для группы должностей"""
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos  = dir_p(resp)
@@ -551,7 +535,6 @@ def gen_risk_card(role_type, positions_list, company, dates, resp, api_key):
 
 
 def gen_risk_register(company, dates, resp, itr, api_key):
-    """Реестр рисков СМК"""
     ctx = build_ctx(company, dates, resp, itr=itr)
     header = build_header(f"РЕЕСТР РИСКОВ\nна {dates['year']} г.\n{company.get('form','ООО')} «{_clean(company)}»", 
                           company, dates, resp, 'risks')
@@ -582,7 +565,6 @@ def gen_risk_register(company, dates, resp, itr, api_key):
 
 
 def gen_report(doc_name, company, dates, resp, objects, api_key, date_key='reports'):
-    """Отчёт по процессу / сводный отчёт"""
     ctx = build_ctx(company, dates, resp, objects=objects)
     has_obj = bool(objects)
     obj_count = len(objects) if objects else 0
@@ -616,7 +598,6 @@ def gen_report(doc_name, company, dates, resp, objects, api_key, date_key='repor
 
 
 def gen_supplier_card(supplier, company, dates, resp, api_key):
-    """Карточка оценки поставщика"""
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
@@ -654,11 +635,9 @@ def gen_supplier_card(supplier, company, dates, resp, api_key):
 
 
 def gen_audit_program(company, dates, resp, itr, api_key):
-    """Программа внутренних аудитов"""
     ctx = build_ctx(company, dates, resp, itr=itr)
     header = build_header("ПРОГРАММА проведения внутренних аудитов СМК", company, dates, resp, 'goals')
 
-    # Критерии по должностям
     prod_criteria = "4.1-4.4, 5.1-5.3, 6.1-6.3, 7.1-7.5, 8.1, 8.2, 8.4-8.7, 9.1-9.3, 10.1-10.3"
     office_criteria = "4.1, 4.2, 5.3, 6.1-6.3, 7.2-7.5, 10.3"
 
@@ -692,7 +671,6 @@ def gen_audit_program(company, dates, resp, itr, api_key):
 
 
 def gen_satisfaction_report(company, dates, resp, objects, api_key):
-    """Отчёт по оценке удовлетворённости заказчиков"""
     has_obj = bool(objects)
     dir_fio  = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
@@ -720,13 +698,6 @@ def gen_satisfaction_report(company, dates, resp, objects, api_key):
 
 Отвечай только текстом документа."""
     return vibe_call([{"role":"user","content":prompt}], api_key)
-
-
-def dir_p(resp):
-    """Должность директора"""
-    d = resp.get('director')
-    if d: return d.get('position', 'Директор')
-    return 'Директор'
 
 
 # ── Создание DOCX из текста ───────────────────────────────────
@@ -784,7 +755,6 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     objects    = company_data.get('objects', []) or []
     suppliers  = company_data.get('suppliers', []) or []
     work_types = company_data.get('work_types', []) or []
-    # Если work_types не переданы — пробуем извлечь из области деятельности
     if not work_types and company.get('scope'):
         scope = company['scope'].lower()
         SCOPE_MAP = {
@@ -825,16 +795,13 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
         for kw, wt in SCOPE_MAP.items():
             if kw in scope and wt not in work_types:
                 work_types.append(wt)
-    # Если всё ещё пусто — ставим базовый
     if not work_types:
         work_types = ['Общестроительные работы']
-    # Добавляем work_types в company для передачи в генераторы
     company['work_types'] = work_types
 
     audit_date = dates_in.get('audit_date', '') or company_data.get('certification', {}).get('audit_date', '')
     dates = calculate_dates(audit_date)
 
-    # Ключевые слова должностей рабочих
     WORKER_KEYWORDS = [
         'штукатур','маляр','сварщик','электрогаз','облицовщик','плиточник',
         'кровельщик','монтажник','электромонтажник','плотник','бетонщик',
@@ -842,8 +809,6 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
         'водитель','машинист','оператор','слесарь','токарь','фрезеровщик',
         'сантехник','электрик','тракторист','экскаваторщик','крановщик',
     ]
-    # Должности ИТР, которые НИКОГДА не должны быть распознаны как рабочие
-    # (защита от ложных срабатываний по подстроке, напр. 'водитель' внутри 'производитель')
     ITR_EXCLUDE = [
         'производитель работ','директор','инженер','прораб','мастер',
         'бухгалтер','техник-программист','заведующий','юрист','кадров',
@@ -855,14 +820,11 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
         pos = p.get('position','').lower().strip()
         if any(excl in pos for excl in ITR_EXCLUDE):
             return False
-        # Проверка по границам слова, а не по произвольной подстроке
         return any(_re_worker.search(r'\b' + kw + r'\w*\b', pos) for kw in WORKER_KEYWORDS)
 
     itr     = [s for s in staff if not _is_worker(s)]
     workers = [s for s in staff if _is_worker(s)]
 
-    # Поле workers от ИИгоря (явный список профессий) ВСЕГДА дополняет staff-рабочих,
-    # а не только подменяет их когда staff пуст — иначе теряются профессии указанные отдельно
     existing_worker_positions = {w.get('position','').strip().lower() for w in workers}
     if company_data.get('workers'):
         for w in company_data['workers']:
@@ -871,7 +833,6 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
                 workers.append({'fio': '', 'position': pos, 'is_worker': True})
                 existing_worker_positions.add(pos.strip().lower())
 
-    # Также проверяем company.scope на наличие профессий рабочих
     if not workers:
         scope = company.get('scope','').lower()
         SCOPE_PROFS = {
@@ -883,7 +844,6 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
             if kw in scope:
                 workers.append({'fio':'','position':prof,'is_worker':True})
 
-    # Директор может быть задан в company напрямую
     if not any(p.get('role','') == 'director' or 'директор' in p.get('position','').lower() for p in itr):
         if company.get('director_fio'):
             itr.insert(0, {
@@ -936,7 +896,6 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
 
 
 def _parallel(tasks, max_workers=4):
-    """Выполняет задачи параллельно. tasks = [(fn, args), ...]"""
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(fn, *args): name for name, fn, args in tasks}
@@ -950,9 +909,7 @@ def _parallel(tasks, max_workers=4):
     return results
 
 
-
 def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p):
-    """Полный пакет ИСО 9001 — 40+ документов"""
     year = dates['year']
     has_welding = company.get('has_welding', False)
     machinery = company.get('machinery', [])
@@ -1166,9 +1123,7 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
     add(f"{org} - Plan повышения квалификации.docx", text)
 
 
-
 def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add, p):
-    """Полный пакет СУОТ ISO 45001 — 77 документов"""
     year = dates['year']
 
     p("Политика ОТ + лист ознакомления...")
@@ -1302,8 +1257,6 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
                 "Глава 3 При выполнении, Глава 4 По окончании, Глава 5 Аварийные ситуации.\n"
                 "Отвечай только текстом."}], api_key))
     )
-    # Параллельно через ThreadPool
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=4) as ex:
         futs = {ex.submit(vibe_call, msgs, key): fname
                 for fname, _, (msgs, key) in instr_tasks}
@@ -1384,7 +1337,6 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
     p("Протоколы проверки знаний (ИТР и рабочие)...")
     add(f"{org} СУОТ - Протокол проверки знаний ИТР.docx",
         gen_protokol_proverki(1, dates["goals"], False, company, dates, resp, itr, workers, api_key))
-    # Протокол 2 — рабочие, дата на 14 дней позже
     from datetime import datetime as _dt, timedelta as _td
     try:
         d2 = _dt.strptime(dates["goals"], "%d.%m.%Y") + _td(days=14)
@@ -1523,28 +1475,22 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
         add(f"{org} СУОТ - Приложение {pnum} {pname[:40]}.docx", text)
 
 
-
 def _gen_spk(org, company, dates, resp, itr, api_key, add, p, variant='spk_stroy'):
-    """Полный пакет СПК Строй (12 докум.) или БИСП (+8 докум.)"""
     bisp = (variant == 'spk_bisp')
     work_types = company.get('work_types', [company.get('scope', 'Строительно-монтажные работы')])
 
-    # Документ 1: Условия в помещениях
     p("СПК: Условия в производственных помещениях...")
     add(f"{org} СПК - 1 Условия в производственных помещениях.docx",
         gen_spk_usloviya(company, dates, resp, api_key))
 
-    # Документ 2: Справка ИТР
     p("СПК: Справка ИТР...")
     add(f"{org} СПК - 2 Справка ИТР.docx",
         gen_spk_spravka_itr(company, dates, resp, itr, api_key))
 
-    # Документ 3: Оргструктура СПК
     p("СПК: Оргструктура...")
     add(f"{org} СПК - 3 Организационная структура СПК.docx",
         gen_spk_orgstruktura(company, dates, resp, itr, api_key))
 
-    # Документы 4.1-4.4: Приказы
     p("СПК: Приказы 1-4 (параллельно)...")
     prikaz_names = [
         (1, "О внесении изменений в систему производственного контроля"),
@@ -1560,7 +1506,6 @@ def _gen_spk(org, company, dates, resp, itr, api_key, add, p, variant='spk_stroy
     for fname, txt in _parallel(spk_prikaz_tasks, max_workers=4).items():
         add(fname, txt)
 
-    # Протокол внутреннего обучения
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get("director")))
     text = vibe_call([{"role":"user","content":
@@ -1572,42 +1517,34 @@ def _gen_spk(org, company, dates, resp, itr, api_key, add, p, variant='spk_stroy
         "Результат: пройдено. Отвечай только текстом."}], api_key)
     add(f"{org} СПК - 4.2.2 Протокол обучения.docx", text)
 
-    # Документ 5: Положение о СПК
     p("СПК: Положение о СПК...")
     add(f"{org} СПК - 5 Положение о системе производственного контроля.docx",
         gen_spk_polozhenie(company, dates, resp, itr, api_key))
 
-    # Документ 6: Паспорт СПК
     p("СПК: Паспорт СПК...")
     add(f"{org} СПК - 6 Паспорт СПК.docx",
         gen_spk_pasport(company, dates, resp, itr, api_key))
 
-    # Документ 7: Справка ТТК
     p("СПК: Справка ТТК...")
     add(f"{org} СПК - 7 Справка ТТК.docx",
         gen_spk_spravka_ttk(company, dates, resp, work_types, api_key))
 
-    # Документ 8: Справка СИ
     p("СПК: Справка СИ...")
     add(f"{org} СПК - 8 Справка СИ.docx",
         gen_spk_spravka_si(company, dates, resp, api_key))
 
-    # Гарантийное письмо 9.1 (ТТК) — для всех
     p("СПК: Гарантийное письмо на ТТК...")
     add(f"{org} СПК - 9.1 Гарантийное письмо на ТТК.docx",
         gen_spk_garantiynoe(1, "гарантийное письмо на ТТК", company, dates, resp, api_key))
 
-    # План внутреннего аудита
     p("СПК: План внутреннего аудита...")
     add(f"{org} СПК - План внутреннего аудита.docx",
         gen_spk_plan_audita(company, dates, resp, api_key))
 
-    # График поверки СИ
     p("СПК: График поверки СИ...")
     add(f"{org} СПК - График периодической поверки СИ.docx",
         gen_spk_grafik_poverki(company, dates, resp, api_key))
 
-    # Технические требования — отдельный файл на каждый вид работ
     p(f"СПК: Технические требования ({len(work_types)} видов, параллельно)...")
     tt_tasks = []
     for wt in work_types[:6]:
@@ -1617,7 +1554,6 @@ def _gen_spk(org, company, dates, resp, itr, api_key, add, p, variant='spk_stroy
     for fname, txt in _parallel(tt_tasks, max_workers=3).items():
         add(fname, txt)
 
-    # Журнал входного контроля — обязателен для ВСЕХ СПК (Строй и БИСП)
     p("СПК: Журнал входного контроля...")
     full_org = f"{company.get('form','ООО')} «{_clean(company)}»"
     journal_text = f"""{full_org}
@@ -1636,7 +1572,6 @@ _____________________________________________
 {dir_p(resp)} _____________ {_initials(_fio(resp.get('director')))}"""
     add(f"{org} СПК - Журнал входного контроля.docx", journal_text)
 
-    # Журнал производства работ (СН 1.03.04-2020) — для операционного и приёмочного контроля
     p("СПК: Журнал производства работ...")
     work_journal_text = f"""{full_org}
 
@@ -1655,7 +1590,6 @@ _____________________________________________
 {dir_p(resp)} _____________ {_initials(_fio(resp.get('director')))}"""
     add(f"{org} СПК - Журнал производства работ.docx", work_journal_text)
 
-    # Журнал учёта ТТК, ТНПА (Приложение Б к Положению о СПК)
     p("СПК: Журнал учёта ТТК, ТНПА...")
     ttk_journal_text = f"""{full_org}
 
@@ -1674,7 +1608,6 @@ _____________________________________________
 {dir_p(resp)} _____________ {_initials(_fio(resp.get('director')))}"""
     add(f"{org} СПК - Журнал учёта ТТК, ТНПА.docx", ttk_journal_text)
 
-    # Журнал учёта рекламаций по качеству СМР (упомянут в приказе 1/СПК)
     p("СПК: Журнал учёта рекламаций по качеству СМР...")
     claims_journal_text = f"""{full_org}
 
@@ -1692,7 +1625,6 @@ _____________________________________________
 {dir_p(resp)} _____________ {_initials(_fio(resp.get('director')))}"""
     add(f"{org} СПК - Журнал учёта рекламаций по качеству СМР.docx", claims_journal_text)
 
-    # Журнал учёта средств измерений и испытательного оборудования (Приложение В)
     p("СПК: Журнал учёта средств измерений и ИО...")
     si_journal_text = f"""{full_org}
 
@@ -1711,7 +1643,6 @@ _____________________________________________
 {dir_p(resp)} _____________ {_initials(_fio(resp.get('director')))}"""
     add(f"{org} СПК - Журнал учёта средств измерений и ИО.docx", si_journal_text)
 
-    # Журнал регистрации внутренних аудитов (Приложение Д)
     p("СПК: Журнал регистрации внутренних аудитов...")
     audit_journal_text = f"""{full_org}
 
@@ -1729,28 +1660,25 @@ _____________________________________________
 {dir_p(resp)} _____________ {_initials(_fio(resp.get('director')))}"""
     add(f"{org} СПК - Журнал регистрации внутренних аудитов.docx", audit_journal_text)
 
-    # 5.2 Положение о входном контроле — обязательно для ВСЕХ СПК (Строй и БИСП)
     p("СПК: Положение о входном контроле...")
     add(f"{org} СПК - 5.2 Положение о входном контроле.docx",
         gen_spk_polozhenie_vhod_kontrol(company, dates, resp, api_key))
 
-    # БИСП — дополнительные документы
     if bisp:
         p("СПК БИСП: дополнительные документы (параллельно)...")
 
-        # Гарантийные письма 9.3 и 9.6
+        bisp_org_letter = company.get('bisp_org', "РУП «СтройМедиаПроект»")
         bisp_tasks = [
             (f"{org} СПК БИСП - 9.3 Гарантийное письмо по лаборатории.docx",
-             gen_spk_garantiynoe, (3, "гарантийное письмо по лаборатории", company, dates, resp, api_key)),
+             gen_spk_garantiynoe, (3, "гарантийное письмо по лаборатории", company, dates, resp, api_key, bisp_org_letter)),
             (f"{org} СПК БИСП - 9.6 Гарантийное письмо об отсутствии рекламаций.docx",
-             gen_spk_garantiynoe, (6, "гарантийное письмо об отсутствии рекламаций", company, dates, resp, api_key)),
+             gen_spk_garantiynoe, (6, "гарантийное письмо об отсутствии рекламаций", company, dates, resp, api_key, bisp_org_letter)),
             (f"{org} СПК БИСП - Перечень продукции входного контроля.docx",
              gen_spk_perech_produkcii, (company, dates, resp, work_types, api_key)),
         ]
         for fname, txt in _parallel(bisp_tasks, max_workers=3).items():
             add(fname, txt)
 
-        # Справка о предприятии
         full2 = f"{company.get('form','ООО')} «{_clean(company)}»"
         dir2 = _initials(_fio(resp.get("director")))
         bisp_org2 = company.get('bisp_org', "РУП «СтройМедиаПроект»")
@@ -1768,11 +1696,10 @@ _____________________________________________
 
 
 # ═══════════════════════════════════════════════════════════════
-# ДОПОЛНИТЕЛЬНЫЕ ГЕНЕРАТОРЫ СУОТ — недостающие 38 документов
+# ДОПОЛНИТЕЛЬНЫЕ ГЕНЕРАТОРЫ СУОТ
 # ═══════════════════════════════════════════════════════════════
 
 def gen_suot_perech(num, title, company, dates, resp, itr, workers, api_key):
-    """Перечень СУОТ (отдельный файл на каждый из 12)"""
     dir_fio = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos = dir_p(resp)
@@ -1780,7 +1707,6 @@ def gen_suot_perech(num, title, company, dates, resp, itr, workers, api_key):
     itr_list = '\n'.join(f"{p.get('position','')} — {p.get('fio','')}" for p in itr)
     worker_list = '\n'.join(set(w.get('position','') for w in workers if w.get('position')))
 
-    # Специфический контент для каждого перечня
     extra = {
         1: f"Аварийные ситуации: пожар, взрыв, обрушение, несчастный случай.\nМероприятия по предупреждению и реагированию.\nИсполнители: {dir_fio}, {_fio(resp.get('process_resp'))}",
         2: f"ИТР, проходящие проверку знаний по ОТ раз в 3 года:\n{itr_list}",
@@ -1811,7 +1737,6 @@ def gen_suot_perech(num, title, company, dates, resp, itr, workers, api_key):
 
 
 def gen_rukovodstvo_suot(company, dates, resp, itr, workers, objects, api_key):
-    """Руководство OH&S (Р OH&S 01) — большой документ"""
     dir_fio = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos = dir_p(resp)
@@ -1869,7 +1794,6 @@ def gen_rukovodstvo_suot(company, dates, resp, itr, workers, objects, api_key):
 
 
 def gen_stp_suot(company, dates, resp, itr, workers, api_key):
-    """СТП OH&S 8.1-02 Управление операциями"""
     dir_fio = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
@@ -1908,7 +1832,6 @@ def gen_stp_suot(company, dates, resp, itr, workers, api_key):
 
 
 def gen_swot_suot(company, dates, resp, api_key):
-    """SWOT-анализ OH&S"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай SWOT-анализ системы менеджмента здоровья и безопасности при профессиональной деятельности OH&S.
@@ -1948,7 +1871,6 @@ SWOT-анализ OH&S
 
 
 def gen_vozmozhnosti_suot(company, dates, resp, api_key):
-    """Оценка возможностей организации в области OH&S"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай ОЦЕНКУ ВОЗМОЖНОСТЕЙ организации в области OH&S.
@@ -1972,7 +1894,6 @@ def gen_vozmozhnosti_suot(company, dates, resp, api_key):
 
 
 def gen_reestr_npa(company, dates, resp, api_key):
-    """Реестр законодательных и других применяемых требований (НПА)"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай РЕЕСТР ЗАКОНОДАТЕЛЬНЫХ И ДРУГИХ ПРИМЕНЯЕМЫХ ТРЕБОВАНИЙ в области охраны труда.
@@ -2000,7 +1921,6 @@ def gen_reestr_npa(company, dates, resp, api_key):
 
 
 def gen_protokol_proverki(num, date_str, is_workers, company, dates, resp, itr, workers, api_key):
-    """Протокол проверки знаний по ОТ"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     aud_list = resp.get('auditors', [])
@@ -2042,7 +1962,6 @@ def gen_protokol_proverki(num, date_str, is_workers, company, dates, resp, itr, 
 
 
 def gen_bilety(is_workers, company, dates, resp, api_key):
-    """Билеты для проверки знаний по ОТ"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     kind = "рабочих" if is_workers else "руководителей и специалистов"
@@ -2073,7 +1992,6 @@ def gen_bilety(is_workers, company, dates, resp, api_key):
 
 
 def gen_voprosy_proverki(company, dates, resp, api_key):
-    """Перечень вопросов для проверки знаний по ОТ"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай ПЕРЕЧЕНЬ ВОПРОСОВ ДЛЯ ОБУЧЕНИЯ И ПРОВЕРКИ ЗНАНИЙ ПО ВОПРОСАМ ОХРАНЫ ТРУДА.
@@ -2103,7 +2021,6 @@ def gen_voprosy_proverki(company, dates, resp, api_key):
 
 
 def gen_akt_utz(num, date_str, tema, company, dates, resp, itr, api_key):
-    """Акт о проведении учебно-тренировочных занятий"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     aud_list = resp.get('auditors', [])
@@ -2129,7 +2046,6 @@ def gen_akt_utz(num, date_str, tema, company, dates, resp, itr, api_key):
 
 
 def gen_grafik_utz(company, dates, resp, api_key):
-    """График учебно-тренировочных занятий"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
@@ -2139,8 +2055,7 @@ def gen_grafik_utz(company, dates, resp, api_key):
 УТВЕРЖДАЮ {dir_p(resp)} {full} _____________ {dir_init} {dates['goals']} г.
 График учебно-тренировочных занятий на {year} г.
 
-Таблица:
-| Имитируемая ситуация | Документ (порядок действий) | Срок | Руководитель | Отметка |
+Таблица: | Имитируемая ситуация | Документ (порядок действий) | Срок | Руководитель | Отметка |
 
 1. Порядок эвакуации при пожаре — План эвакуации — II квартал {year} — Директор
 2. Прекращение подачи электроэнергии — Инструкции по ОТ — IV квартал {year} — Директор
@@ -2151,7 +2066,6 @@ def gen_grafik_utz(company, dates, resp, api_key):
 
 
 def gen_kontrol_list_audit(num, date_str, fio_checked, company, resp, api_key):
-    """Контрольный лист для проведения внутреннего аудита OH&S"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     prompt = f"""Создай КОНТРОЛЬНЫЙ ЛИСТ для проведения внутреннего аудита OH&S № {num}.
 
@@ -2183,7 +2097,6 @@ def gen_kontrol_list_audit(num, date_str, fio_checked, company, resp, api_key):
 
 
 def gen_otchet_audit_suot(num, date_str, company, resp, api_key):
-    """Отчёт по внутреннему аудиту OH&S"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай ОТЧЁТ по внутреннему аудиту OH&S № {num}.
@@ -2207,7 +2120,6 @@ def gen_otchet_audit_suot(num, date_str, company, resp, api_key):
 
 
 def gen_otchet_analiz_suot(company, dates, resp, itr, workers, objects, api_key):
-    """Отчёт для анализа OH&S со стороны руководства"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     obj_str = '; '.join(o.get('name','') for o in objects) if objects else "Объекты в процессе привлечения"
@@ -2237,7 +2149,6 @@ def gen_otchet_analiz_suot(company, dates, resp, itr, workers, objects, api_key)
 
 
 def gen_programa_vvodnogo(company, dates, resp, api_key):
-    """Программа вводного инструктажа по ОТ"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай ПРОГРАММУ вводного инструктажа по охране труда и пожарной безопасности.
@@ -2266,7 +2177,6 @@ def gen_programa_vvodnogo(company, dates, resp, api_key):
 
 
 def gen_programa_pozhar(company, dates, resp, api_key):
-    """Программа обучения пожарной безопасности"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай ПРОГРАММУ для обучения работников по обеспечению пожарной безопасности.
@@ -2288,7 +2198,6 @@ def gen_programa_pozhar(company, dates, resp, api_key):
 
 
 def gen_polozhenie_ot(company, dates, resp, itr, api_key):
-    """Положение о службе охраны труда"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай ПОЛОЖЕНИЕ О СЛУЖБЕ ОХРАНЫ ТРУДА организации.
@@ -2311,7 +2220,6 @@ def gen_polozhenie_ot(company, dates, resp, itr, api_key):
 
 
 def gen_schema_avarii(company, dates, resp, api_key):
-    """Схема прохождения информации при авариях"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай СХЕМУ прохождения информации при возникновении аварий и аварийных ситуаций.
@@ -2341,7 +2249,6 @@ def gen_schema_avarii(company, dates, resp, api_key):
 
 
 def gen_zhurnal_suot(num, name, company, api_key=None):
-    """Журнал СУОТ (пустой шаблон)"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
 
     journal_headers = {
@@ -2369,27 +2276,19 @@ def gen_zhurnal_suot(num, name, company, api_key=None):
 
 {header}
 
+
 _____________________________________________
 В настоящем журнале пронумеровано, прошнуровано и скреплено печатью _____ листов
 
-{dir_p({'director': {'position': company.get('director_position','Директор')}}) if False else 'Директор'} _____________ ({company.get('director_fio','')})"""
+Директор _____________ ({company.get('director_fio','')})"""
     return text
 
 
-def _clean(company):
-    """Убирает форму из названия"""
-    import re as _re
-    raw = company.get('name', '')
-    clean = _re.sub(r'^(ООО|ОДО|ЧУП|ЗАО|РУП|ИП|ЧТУП|ЧТУ|ОАО|ЧП)\s*[«"\']?\s*', '', raw).strip().strip('»"\'')
-    return clean if clean else raw
-
-
 # ═══════════════════════════════════════════════════════════════
-# ДОПОЛНИТЕЛЬНЫЕ ГЕНЕРАТОРЫ ИСО — недостающие документы
+# ДОПОЛНИТЕЛЬНЫЕ ГЕНЕРАТОРЫ ИСО
 # ═══════════════════════════════════════════════════════════════
 
 def gen_rk_smk(company, dates, resp, itr, objects, suppliers, api_key):
-    """РК СМК 01 — Руководство по качеству"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
@@ -2452,7 +2351,6 @@ def gen_rk_smk(company, dates, resp, itr, objects, suppliers, api_key):
 
 
 def gen_stp_smk(num, name, company, dates, resp, itr, api_key):
-    """СТП СМК 02/03/04"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
@@ -2502,7 +2400,6 @@ def gen_stp_smk(num, name, company, dates, resp, itr, api_key):
 
 
 def gen_anket_smk(company, dates, resp, api_key):
-    """Анкета-вопросник СМК"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     prompt = f"""Создай АНКЕТУ-ВОПРОСНИК для оценки соответствия СМК требованиям СТБ ISO 9001-2015.
 
@@ -2533,7 +2430,6 @@ def gen_anket_smk(company, dates, resp, api_key):
 
 
 def gen_ishodnaya_smk(company, dates, resp, itr, workers, objects, suppliers, api_key):
-    """Исходная информация СМК"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     prompt = f"""Создай СОСТАВ ОБЯЗАТЕЛЬНОЙ ИСХОДНОЙ ИНФОРМАЦИИ для разработки СМК.
 
@@ -2565,7 +2461,6 @@ def gen_ishodnaya_smk(company, dates, resp, itr, workers, objects, suppliers, ap
 
 
 def gen_plan_vozmozhnostei(company, dates, resp, objects, api_key):
-    """План мероприятий по реализации возможностей"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
@@ -2589,7 +2484,6 @@ def gen_plan_vozmozhnostei(company, dates, resp, objects, api_key):
 
 
 def gen_plan_ppr(company, dates, resp, machinery, api_key):
-    """График планово-предупредительных ремонтов"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
@@ -2621,7 +2515,6 @@ def gen_plan_ppr(company, dates, resp, machinery, api_key):
 
 
 def gen_grafik_validacii(company, dates, resp, api_key):
-    """График валидации процесса сварки"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
@@ -2640,7 +2533,6 @@ def gen_grafik_validacii(company, dates, resp, api_key):
 
 
 def gen_zhurnal_iso(num, name, company, api_key=None):
-    """Журнал ИСО (пустой шаблон)"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
 
     headers = {
@@ -2677,7 +2569,6 @@ _____________________________________________
 # ═══════════════════════════════════════════════════════════════
 
 def gen_spk_usloviya(company, dates, resp, api_key):
-    """СПК Документ 1: Условия в производственных помещениях"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     prompt = f"""Создай таблицу УСЛОВИЯ В ПРОИЗВОДСТВЕННЫХ ПОМЕЩЕНИЯХ для СПК.
 
@@ -2696,7 +2587,6 @@ def gen_spk_usloviya(company, dates, resp, api_key):
 
 
 def gen_spk_spravka_itr(company, dates, resp, itr, api_key):
-    """СПК Документ 2: Справка специалистов ИТР"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     rows = '\n'.join(
         f"{p.get('fio','')} | {p.get('position','')} | высшее/среднее техническое | входной, операционный, приёмочный контроль | протокол аттестации | стаж в строительстве"
@@ -2715,22 +2605,21 @@ def gen_spk_spravka_itr(company, dates, resp, itr, api_key):
 
 
 def gen_spk_orgstruktura(company, dates, resp, itr, api_key):
-    """СПК Документ 3: Оргструктура СПК — по формату КастомИнвест/ЮПротех"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     dir_fio = _fio(resp.get('director'))
-    
+
     itr_spk = [p for p in itr if any(k in p.get('position','').lower() for k in
                ['инженер','прораб','мастер','производитель'])]
     if not itr_spk:
         itr_spk = [p for p in itr if p != resp.get('director')][:1]
-    
+
     FUNC_TEXT = "Входной, операционный, приёмочный контроль; обеспечение и содержание в рабочем состоянии машин и механизмов; учёт, хранение, актуализация, выдача ТНПА, ТК; метрологическое обеспечение"
     spk_member_list = []
     for p in itr_spk[:2]:
         spk_member_list.append(p.get('position','') + ' ' + p.get('fio','') + '\n' + FUNC_TEXT)
     spk_members = '\n\n'.join(spk_member_list)
-    
+
     text = f"""Организационная структура системы производственного контроля {full}
 
 Система производственного контроля
@@ -2745,7 +2634,6 @@ def gen_spk_orgstruktura(company, dates, resp, itr, api_key):
 
 
 def gen_spk_prikaz(num, name, company, dates, resp, itr, api_key):
-    """СПК: Приказ"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     city = company.get('city', 'Минск')
@@ -2785,7 +2673,6 @@ def gen_spk_prikaz(num, name, company, dates, resp, itr, api_key):
 
 
 def gen_spk_polozhenie(company, dates, resp, itr, api_key):
-    """СПК Документ 5: Положение о системе производственного контроля — по реальной структуре КастомИнвест"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     dir_fio = _fio(resp.get('director'))
@@ -2867,20 +2754,16 @@ def gen_spk_polozhenie(company, dates, resp, itr, api_key):
 
 
 def gen_spk_pasport(company, dates, resp, itr, api_key):
-    """СПК Документ 6: Паспорт СПК — строго по формату КастомИнвест/ЮПротех"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_fio = _fio(resp.get('director'))
     dir_init = _initials(dir_fio)
     dir_pos = dir_p(resp)
     dir_phone = company.get('phone', '')
-    
-    # Специалисты СПК — только строители (не бухгалтеры)
+
     itr_spk = [p for p in itr if any(k in p.get('position','').lower() for k in
                ['директор','инженер','прораб','мастер','производитель','начальник'])]
-    
-    spk_names = '; '.join(p.get('position','') + ' ' + p.get('fio','') for p in itr_spk[:3])
+
     spk_positions = '; '.join(p.get('position','') for p in itr_spk[:3])
-    
     itr_rows = '\n'.join(p.get('fio','') + ' , ' + p.get('position','') for p in itr_spk[:3])
 
     work_types = company.get('work_types', ['Общестроительные работы'])
@@ -2932,16 +2815,14 @@ def gen_spk_pasport(company, dates, resp, itr, api_key):
 
 
 def gen_spk_spravka_ttk(company, dates, resp, work_types, api_key):
-    """СПК Документ 7: Справка ТТК — по формату КастомИнвест/ЮПротех"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
     expire = str(int(year) + 2)
-    
+
     if not work_types:
         work_types = [company.get('scope', 'Общестроительные работы')]
 
-    # База ТТК — реальные номера из примеров
     TTK_DB = {
         'штукатурн': ('ТТК-191271612.6-2022', 'ТК на выполнение штукатурных работ из материала «АКСАМИТА»', 'ООО «Эксперт Маркет»'),
         'малярн': ('ТТК-191271613.7-2022', 'ТК на выполнение малярных работ', 'ГП «СтройМедиаПроект»'),
@@ -2995,43 +2876,35 @@ def _select_si_for_work_types(work_types, has_welding, year):
     work_str = ' '.join(work_types).lower()
     si_list = []
 
-    # Базовый набор для линейных измерений — нужен почти всегда
     si_list.append("Рулетка измерительная | Диапазон измерений: (0-3000) мм")
     si_list.append("Линейка измерительная | Диапазон измерений: (0-1000) мм")
 
-    # Геодезия / земляные / фундамент / общестрой с разбивкой осей
     if any(k in work_str for k in ['земляны', 'фундамент', 'геодез', 'общестрои', 'бетон', 'монолит', 'каменн', 'кладк']):
         si_list.append(f"Нивелир ATLAS KL24 | Класс точности: 2,5 мм/км")
         si_list.append("Рейка нивелирная телескопическая | Диапазон измерений: (0-5000) мм")
         si_list.append("Теодолит электронный 4Т30П | Диапазон измерений: (0-360)°")
         si_list.append("Уровень строительный | ГОСТ 9416, I группа точности")
 
-    # Отделочные работы (штукатурка, малярка, плитка, полы) — контрольные рейки, гигрометр
     if any(k in work_str for k in ['штукатур', 'малярн', 'покраск', 'облицов', 'плиточн', 'полов', 'стяжк', 'обойн']):
         si_list.append("Уровень строительный | ГОСТ 9416, I группа точности")
         si_list.append("Контрольная рейка 2м | ГОСТ 25099")
         si_list.append("Термогигрометр | Диапазон температуры -10..+50°C, влажности 0-100%")
 
-    # Сварка
     if has_welding or 'сварк' in work_str:
         si_list.append("Шаблон сварщика УШС-2 | Диапазон измерений: 4-14 мм")
         si_list.append("Штангенциркуль ШЦ-1 | Диапазон измерений: (0-125) мм")
         si_list.append("Лупа измерительная ЛИ-3-10 | Диапазон 0-15 мм")
 
-    # Окна/двери — контроль угловых соединений
     if any(k in work_str for k in ['окон', 'дверн', 'проём']):
         si_list.append("Угольник поверочный | 250×160 мм")
         si_list.append("Набор щупов №4 | Пределы (0,10-1,00) мм, класс точности 2")
 
-    # Деревянные конструкции / столярка
     if any(k in work_str for k in ['дерев', 'столяр']):
         si_list.append("Влагомер testo 606-1 | Диапазон влажности древесины (2-45) %")
 
-    # Сантехника / отопление — манометр
     if any(k in work_str for k in ['сантехник', 'водопровод', 'отоплен', 'трубопровод']):
         si_list.append("Манометр | Диапазон 0-60 МПа (уточнить по факту)")
 
-    # Убираем дубли, сохраняя порядок
     seen = set()
     unique_si = []
     for s in si_list:
@@ -3044,7 +2917,6 @@ def _select_si_for_work_types(work_types, has_welding, year):
 
 
 def gen_spk_spravka_si(company, dates, resp, api_key):
-    """СПК Документ 8: Справка СИ — набор приборов подобран под реальные виды работ"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
@@ -3084,9 +2956,12 @@ def gen_spk_garantiynoe(num, name, company, dates, resp, api_key, bisp_org=None)
         6: f"сообщает, что в адрес {full} не поступали письменные рекламации (претензии) от заказчиков к качеству выполненных строительно-монтажных работ за отчётный период.",
     }
 
-    # Адресат единый для всех писем одной компании — зависит от выбранного БИСП-органа клиента, не от номера письма
+    # Адресат единый для всех писем одной компании — зависит от выбранного БИСП-органа клиента,
+    # не от номера письма. ВАЖНО: явно подставляем готовую строку адресата в шапку письма,
+    # а не просим ИИ её придумать — раньше ИИ иногда писал общую заглушку вроде "В СПК"
+    # вместо реального названия органа.
     bisp_addr = bisp_org or company.get('bisp_org', "РУП «СтройМедиаПроект»")
-    prompt = f"""Создай ГАРАНТИЙНОЕ ПИСЬМО для СПК.
+    prompt = f"""Создай ГАРАНТИЙНОЕ ПИСЬМО для СПК строго в этом формате — НЕ меняй и НЕ сокращай строку адресата.
 
 {full}
 {iskhod}
@@ -3098,12 +2973,13 @@ def gen_spk_garantiynoe(num, name, company, dates, resp, api_key, bisp_org=None)
 
 Директор _____________ {dir_init}
 М.П.
+
+ВАЖНО: третья строка документа (адресат) должна быть СКОПИРОВАНА ДОСЛОВНО: "{bisp_addr}" — не заменяй её на "В СПК", "В орган" или любую другую формулировку.
 Отвечай только текстом документа."""
     return vibe_call([{"role":"user","content":prompt}], api_key)
 
 
 def gen_spk_plan_audita(company, dates, resp, api_key):
-    """СПК: План внутреннего аудита"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     prompt = f"""Создай ПЛАН ВНУТРЕННЕГО АУДИТА системы производственного контроля.
@@ -3124,7 +3000,6 @@ def gen_spk_plan_audita(company, dates, resp, api_key):
 
 
 def gen_spk_grafik_poverki(company, dates, resp, api_key):
-    """СПК: График периодической поверки СИ — набор приборов под реальные виды работ"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
@@ -3152,11 +3027,9 @@ def gen_spk_grafik_poverki(company, dates, resp, api_key):
 
 
 def gen_spk_perech_produkcii(company, dates, resp, work_types, api_key):
-    """СПК БИСП: Перечень продукции подлежащей входному контролю"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
 
-    # Типовые материалы для СМР
     materials = [
         ("Шурупы с потайной головкой", "ГОСТ 1144-80", "Вид, размер, покрытие", "Входной/каждая партия"),
         ("Цемент ПЦ 500", "СТБ 1183-99", "Прочность, сроки схватывания", "Входной/каждая партия"),
@@ -3185,7 +3058,6 @@ def gen_spk_perech_produkcii(company, dates, resp, work_types, api_key):
 
 
 def gen_spk_polozhenie_vhod_kontrol(company, dates, resp, api_key):
-    """СПК: Положение о входном контроле — по СТБ 1306-2002 (формат КастомИнвест/ЮПротех)"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
@@ -3243,16 +3115,11 @@ def gen_spk_polozhenie_vhod_kontrol(company, dates, resp, api_key):
 
 
 def gen_tech_trebovaniya(work_type, company, dates, resp, api_key):
-    """Технические требования к виду работ для СПК"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
     year = dates['year']
-    # ВАЖНО: has_welding относится ко ВСЕЙ компании, но сюда передаём только если
-    # ИМЕННО ЭТОТ вид работ — сварочный. Иначе шаблон сварщика попадает в требования
-    # к окнам/дверям/полам и т.д., что неправильно (баг, исправлено).
     is_this_work_welding = 'сварк' in work_type.lower() or 'сварн' in work_type.lower()
 
-    # Библиотека ТНПА для типовых видов СМР
     tnpa_library = {
         'штукатурн': ('СП 1.03.01-2019', 'СП 1.03.07-2023', 'Отделочные работы', 'Отклонение от вертикали: не более 3 мм/м; ровность: не более 4 мм; температура: не ниже +10°С'),
         'малярн': ('СП 1.03.01-2019', 'СП 1.03.07-2023', 'Отделочные работы', 'Температура: не ниже +10°С; влажность не более 60%; ровность покрытия по 2м рейке ≤ 2мм'),
@@ -3275,7 +3142,6 @@ def gen_tech_trebovaniya(work_type, company, dates, resp, api_key):
             tnpa = val
             break
 
-    # Подбираем СИ конкретно под этот вид работ (та же логика что в Паспорте/Справке СИ)
     si_for_this_work = _select_si_for_work_types([work_type], is_this_work_welding, year)
     si_names = ', '.join(s.split('|')[0].strip() for s in si_for_this_work)
 
@@ -3311,5 +3177,3 @@ def gen_tech_trebovaniya(work_type, company, dates, resp, api_key):
 Минимум 5-8 строк параметров.
 Отвечай только текстом документа."""
     return vibe_call([{"role":"user","content":prompt}], api_key)
-
-
