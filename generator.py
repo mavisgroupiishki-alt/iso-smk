@@ -3246,8 +3246,11 @@ def gen_tech_trebovaniya(work_type, company, dates, resp, api_key):
     """Технические требования к виду работ для СПК"""
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
     dir_init = _initials(_fio(resp.get('director')))
-    has_welding = company.get('has_welding', False)
     year = dates['year']
+    # ВАЖНО: has_welding относится ко ВСЕЙ компании, но сюда передаём только если
+    # ИМЕННО ЭТОТ вид работ — сварочный. Иначе шаблон сварщика попадает в требования
+    # к окнам/дверям/полам и т.д., что неправильно (баг, исправлено).
+    is_this_work_welding = 'сварк' in work_type.lower() or 'сварн' in work_type.lower()
 
     # Библиотека ТНПА для типовых видов СМР
     tnpa_library = {
@@ -3273,7 +3276,7 @@ def gen_tech_trebovaniya(work_type, company, dates, resp, api_key):
             break
 
     # Подбираем СИ конкретно под этот вид работ (та же логика что в Паспорте/Справке СИ)
-    si_for_this_work = _select_si_for_work_types([work_type], has_welding, year)
+    si_for_this_work = _select_si_for_work_types([work_type], is_this_work_welding, year)
     si_names = ', '.join(s.split('|')[0].strip() for s in si_for_this_work)
 
     if tnpa:
