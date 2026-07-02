@@ -802,6 +802,43 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     audit_date = dates_in.get('audit_date', '') or company_data.get('certification', {}).get('audit_date', '')
     dates = calculate_dates(audit_date)
 
+    # ── Аттестация специалистов — отдельная ветка, без штата/рисков/ISO-логики ──
+    if product == 'att':
+        try:
+            from generator_att import generate_attestation_package
+        except Exception as e:
+            return {'docs': [], 'dates': dates, 'responsible': {}, 'itr_count': 0,
+                    'workers_count': 0, 'professions': [], 'error': f'Модуль аттестации не загружен: {e}'}
+
+        att_docs = []
+        persons = company_data.get('attestation', {}).get('persons', [])
+        step_att = [0]
+        total_att = sum(len(p.get('requests', [])) for p in persons) * 2 or 1
+
+        def p_att(msg):
+            step_att[0] += 1
+            if progress_cb:
+                progress_cb(step_att[0], total_att, msg)
+            print(f"  [{step_att[0]}] {msg}")
+
+        for person in persons:
+            reqs = person.get('requests', [])
+            if not reqs:
+                continue
+            att_docs += generate_attestation_package(
+                company, person, reqs, api_key, vibe_call, progress_cb=lambda s, t, m: p_att(m)
+            )
+
+        return {
+            'docs': att_docs,
+            'dates': dates,
+            'responsible': {},
+            'itr_count': 0,
+            'workers_count': 0,
+            'professions': [],
+            'persons_count': len(persons),
+        }
+
     WORKER_KEYWORDS = [
         'штукатур','маляр','сварщик','электрогаз','облицовщик','плиточник',
         'кровельщик','монтажник','электромонтажник','плотник','бетонщик',

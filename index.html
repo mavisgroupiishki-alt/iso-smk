@@ -1392,6 +1392,7 @@ function aiRenderCard(data) {
   if(data.suppliers && data.suppliers.length) aiCurrentData.suppliers = data.suppliers;
   if(data.flags) aiCurrentData.flags = data.flags;
   if(data.readiness) aiCurrentData.readiness = data.readiness;
+  if(data.attestation && data.attestation.persons) aiCurrentData.attestation = data.attestation;
 
   // Автосохранение в постоянное хранилище — не блокируем рендер, ошибки молча логируем
   aiSaveCurrentCompany().catch(e => console.warn('autosave failed:', e));
@@ -1465,6 +1466,20 @@ function aiRenderCard(data) {
   if(workTypes.length) {
     html += '<div class="ai-sec">Виды работ СПК (' + workTypes.length + ')</div><div>';
     workTypes.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🏗 ${w}</span></div>`);
+    html += '</div>';
+  }
+
+  // Аттестация специалистов
+  const attPersons = (aiCurrentData.attestation && aiCurrentData.attestation.persons) || [];
+  if(attPersons.length) {
+    const reqCount = attPersons.reduce((s,p)=>s+((p.requests||[]).length),0);
+    html += '<div class="ai-sec">🎓 Аттестация (' + attPersons.length + ' чел., ' + reqCount + ' заявл.)</div><div>';
+    attPersons.forEach(pp => {
+      (pp.requests||[]).forEach(r => {
+        const gradeShort = r.grade || (r.stage_months ? '(грейд по стажу)' : '?');
+        html += `<div class="ai-df"><span class="ai-dv">${pp.fio||'?'} — ${gradeShort} (${r.specialization||'?'})${r.need_spravka?' · 📄 нужна справка':''}</span></div>`;
+      });
+    });
     html += '</div>';
   }
 
