@@ -30,6 +30,22 @@ for d in [JOURNAL_DIR, CO_DIR, OUT_DIR]: d.mkdir(parents=True, exist_ok=True)
 # Хранилище фоновых задач генерации (на диске - переживает перезапуск)
 import threading
 TASKS = {}  # task_id -> {status, progress, result, error}
+
+def _prune_tasks(keep=2):
+    """
+    Каждая завершённая задача несёт готовый ZIP в base64 (десятки МБ).
+    Без очистки TASKS растёт неограниченно за сессию сервера и рано или поздно
+    выедает всю память Render (512 МБ на Free) — сервер падает в OOM и Render
+    его перезапускает без traceback (просто 'Instance restarted').
+    Держим в памяти только последние `keep` ЗАВЕРШЁННЫХ задач — активные ('running') не трогаем.
+    """
+    try:
+        finished_ids = [tid for tid, t in TASKS.items() if t.get('status') in ('done', 'error')]
+        if len(finished_ids) > keep:
+            for old_id in finished_ids[:-keep]:
+                TASKS.pop(old_id, None)
+    except Exception:
+        pass
 TASKS_DIR = BASE_DIR / 'tasks'
 TASKS_DIR.mkdir(exist_ok=True)
 
@@ -859,6 +875,7 @@ class H(http.server.BaseHTTPRequestHandler):
             task = TASKS.get(task_id) or load_task(task_id)
             if task:
                 TASKS[task_id] = task
+                _prune_tasks()
                 self._json({
                     'status':    task.get('status','running'),
                     'step':      task.get('step',0),
@@ -1099,6 +1116,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if SMART_GENERATOR and ai_data.get('company', {}).get('name'):
                     task_id = str(_uuid.uuid4())[:8]
                     TASKS[task_id] = {'status': 'running', 'progress': [], 'step': 0, 'total': 100}
+                    _prune_tasks()
                     save_task(task_id, TASKS[task_id])
 
                     def run_gen(_tid=task_id, _data=ai_data, _key=api_key, _prod=product):
@@ -1137,6 +1155,7 @@ class H(http.server.BaseHTTPRequestHandler):
                             TASKS[_tid].update({'status':'done','journalId':_eid,
                                                'fileCount':len(docs),'dates':result['dates'],
                                                'zipB64': _zip_b64, 'orgName': _data.get('company', {}).get('name', '')})
+                            _prune_tasks()
                             save_task(_tid, TASKS[_tid])
                             print(f"  ✅ Задача {_tid} завершена: {len(docs)} документов")
                         except Exception as _ex:
