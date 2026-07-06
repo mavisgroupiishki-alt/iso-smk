@@ -924,6 +924,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not file_bytes:
                     self._json({'success':False,'error':'Файл не найден'},400); return
 
+                MAX_FILE_MB = 12
+                if len(file_bytes) > MAX_FILE_MB * 1024 * 1024:
+                    self._json({'success': False,
+                                 'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ), лимит {MAX_FILE_MB} МБ на Render Free.'},
+                                413)
+                    return
+
                 ext = filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
 
                 # Определяем media type
@@ -1045,7 +1052,25 @@ class H(http.server.BaseHTTPRequestHandler):
                     break
                 if not filename or file_bytes is None:
                     self._json({'success':False,'error':'Файл не найден в запросе'},400); return
-                text = extract_text_from_file(file_bytes, filename)
+                # Защита от падения сервера (OOM) на Render Free (512 МБ RAM) —
+                # большие архивы с рекурсивной распаковкой могут выедать всю память и убивать процесс.
+                MAX_FILE_MB = 12
+                if len(file_bytes) > MAX_FILE_MB * 1024 * 1024:
+                    self._json({'success': False,
+                                 'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ). '
+                                          f'Лимит {MAX_FILE_MB} МБ на Render Free — сервер может упасть от нехватки памяти. '
+                                          f'Разбейте архив на несколько частей поменьше или пришлите файлы по отдельности.'},
+                                413)
+                    return
+                try:
+                    text = extract_text_from_file(file_bytes, filename)
+                except MemoryError:
+                    self._json({'success': False,
+                                 'error': 'Не хватило памяти на обработку файла. Разбейте архив на части поменьше.'}, 500)
+                    return
+                except Exception as e:
+                    self._json({'success': False, 'error': f'Ошибка обработки файла: {e}'}, 500)
+                    return
                 self._json({'success':True,'text':text,'filename':filename})
 
             elif p=='/api/ai/chat':
