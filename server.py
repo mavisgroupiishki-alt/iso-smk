@@ -29,6 +29,11 @@ for d in [JOURNAL_DIR, CO_DIR, OUT_DIR]: d.mkdir(parents=True, exist_ok=True)
 
 # Хранилище фоновых задач генерации (на диске - переживает перезапуск)
 import threading
+# Render Free = 512 МБ RAM. Генерация пакета (параллельные запросы к BitrixGPT + сборка ZIP)
+# сама по себе близка к лимиту. Если запустить вторую генерацию одновременно с первой —
+# гарантированный OOM. Не даём двум генерациям идти параллельно.
+GENERATION_LOCK = threading.Lock()
+GENERATION_IN_PROGRESS = {'active': False}
 TASKS = {}  # task_id -> {status, progress, result, error}
 
 def _prune_tasks(keep=2):
@@ -215,21 +220,42 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 
 
 def call_ai(messages, api_key):
-    """Вызов BitrixGPT через Vibe Code API"""
-    resp = req_lib.post(
-        VIBE_URL,
-        headers={"Content-Type":"application/json","X-Api-Key":api_key},
-        json={"model":VIBE_MODEL,"max_tokens":3000,"messages":[
-            {"role":"system","content":AI_SYSTEM},
-            *messages[-10:]
-        ]},
-        timeout=60
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    if "error" in data:
-        raise RuntimeError(data["error"])
-    return "".join(c.get("message",{}).get("content","") for c in data.get("choices",[]))
+    """Вызов BitrixGPT через Vibe Code API — с повторными попытками при таймауте.
+    Чат с Игорем может обрабатывать сразу несколько файлов/специалистов за раз (например,
+    аттестация 3 человек одним сообщением) — 60 сек не всегда хватает, особенно если
+    системный промпт большой (ИСО+СУОТ+СПК+АТТ правила сразу)."""
+    import time
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = req_lib.post(
+                VIBE_URL,
+                headers={"Content-Type":"application/json","X-Api-Key":api_key},
+                json={"model":VIBE_MODEL,"max_tokens":3000,"messages":[
+                    {"role":"system","content":AI_SYSTEM},
+                    *messages[-10:]
+                ]},
+                timeout=150
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if "error" in data:
+                raise RuntimeError(data["error"])
+            text = "".join(c.get("message",{}).get("content","") for c in data.get("choices",[]))
+            if text:
+                return text
+            last_err = "Пустой ответ от модели"
+            time.sleep(2)
+        except req_lib.exceptions.Timeout:
+            last_err = "Timeout"
+            print(f"  ⚠️  Таймаут чата (попытка {attempt+1}/3), повтор...")
+            time.sleep(3 * (attempt + 1))
+        except req_lib.exceptions.RequestException as e:
+            last_err = str(e)
+            print(f"  ⚠️  Ошибка запроса: {e}, повтор...")
+            time.sleep(3 * (attempt + 1))
+    raise RuntimeError(f"BitrixGPT не ответил после 3 попыток: {last_err}. "
+                        f"Попробуйте прислать меньше файлов за раз (например по одному специалисту).")
 
 
 # ── Дата-утилиты (без изменений) ─────────────────────────────
@@ -681,8 +707,12 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
 
         elif ext == 'pdf':
             # BT/ET поток парсер
+            # ВАЖНО: сканируем только начало файла, а не весь файл целиком.
+            # Большие PDF (десятки МБ) почти всегда — сканы без текстового слоя (BT/ET там нет вообще),
+            # а decode()+regex по всем байтам такого файла — верный способ упасть в OOM на Render Free.
+            PDF_SCAN_LIMIT = 800 * 1024  # 800 КБ хватает с запасом для обычных текстовых PDF
             try:
-                raw = file_bytes.decode('latin-1', errors='replace')
+                raw = file_bytes[:PDF_SCAN_LIMIT].decode('latin-1', errors='replace')
                 blocks = re.findall(r'BT(.*?)ET', raw, re.DOTALL)
                 result = []
                 for b in blocks:
@@ -749,22 +779,37 @@ def _extract_archive_zip(file_bytes, filename, _depth=0):
     """Рекурсивно распаковывает ZIP включая вложенные архивы"""
     import io
     texts = []
+    skipped = []
     READABLE = ('docx','doc','txt','csv','xlsx','pdf','zip','rar')
+    # Файлы крупнее этого — почти всегда сканы актов/договоров/ОПЗ без полезного текста.
+    # Читать их целиком (decode+regex) на Render Free (512 МБ) — верный способ упасть в OOM.
+    # Пропускаем такие файлы, а не весь архив — так реальные объёмные папки клиента (сотни МБ
+    # со сканами объектов) можно грузить одним архивом, не разбирая вручную.
+    INNER_FILE_LIMIT = 4 * 1024 * 1024  # 4 МБ на один файл внутри архива
+    MAX_FILES = 400  # защита от zip-бомб (архив с миллионом крошечных файлов)
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-            for name in z.namelist():
+            processed = 0
+            for info in z.infolist():
+                name = info.filename
                 if name.endswith('/'): continue
                 inner_ext = name.rsplit('.',1)[-1].lower() if '.' in name else ''
                 if inner_ext not in READABLE: continue
+                fn = name.split('/')[-1].split('\\')[-1]
+                if info.file_size > INNER_FILE_LIMIT:
+                    skipped.append(f"{fn} ({info.file_size//1024//1024} МБ)")
+                    continue
+                if processed >= MAX_FILES:
+                    break
                 try:
                     inner_bytes = z.read(name)
-                    fn = name.split('/')[-1].split('\\')[-1]
+                    processed += 1
                     # Рекурсия для вложенных архивов
                     inner_text = extract_text_from_file(inner_bytes, fn, _depth+1)
                     if inner_text and len(inner_text) > 10 and not inner_text.startswith('['):
                         texts.append('--- ' + fn + ' ---\n' + inner_text)
                 except: pass
-        if texts:
+        if texts or skipped:
             # Умная нарезка: сначала ищем приоритетные файлы
             PRIORITY_KEYWORDS = [
                 'поставщик', 'supplier', 'объект', 'object', 'сотрудник',
@@ -784,6 +829,9 @@ def _extract_archive_zip(file_bytes, filename, _depth=0):
             # Лимит 40000 символов
             if len(result) > 40000:
                 result = result[:40000] + '\n...[обрезано, файл большой]'
+            if skipped:
+                result += ('\n\n[Пропущены крупные файлы без анализа (не читаются для извлечения данных, '
+                           'но остаются в исходном архиве для подачи в орган): ' + ', '.join(skipped[:20]) + ']')
             return result
         return '[zip: читаемых файлов не найдено]'
     except Exception as e:
@@ -795,12 +843,15 @@ def _extract_archive_rar(file_bytes, filename, _depth=0):
     import io
     texts = []
     READABLE = ('docx','doc','txt','csv','xlsx','pdf','zip','rar')
+    INNER_FILE_LIMIT = 4 * 1024 * 1024
     try:
         import rarfile as _rar
         rf = _rar.RarFile(io.BytesIO(file_bytes))
-        for name in rf.namelist():
+        for info in rf.infolist():
+            name = info.filename
             inner_ext = name.rsplit('.',1)[-1].lower() if '.' in name else ''
             if inner_ext not in READABLE: continue
+            if getattr(info, 'file_size', 0) > INNER_FILE_LIMIT: continue
             try:
                 inner_bytes = rf.read(name)
                 fn = name.split('/')[-1].split('\\')[-1]
@@ -836,7 +887,9 @@ def _extract_archive_rar(file_bytes, filename, _depth=0):
                             inner_ext = fn.rsplit('.',1)[-1].lower() if '.' in fn else ''
                             if inner_ext not in READABLE: continue
                             try:
-                                with open(_os.path.join(root, fn), 'rb') as f_in:
+                                fpath = _os.path.join(root, fn)
+                                if _os.path.getsize(fpath) > INNER_FILE_LIMIT: continue
+                                with open(fpath, 'rb') as f_in:
                                     inner_bytes = f_in.read()
                                 inner_text = extract_text_from_file(inner_bytes, fn, _depth+1)
                                 if inner_text and len(inner_text) > 10 and not inner_text.startswith('['):
@@ -941,7 +994,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not file_bytes:
                     self._json({'success':False,'error':'Файл не найден'},400); return
 
-                MAX_FILE_MB = 12
+                MAX_FILE_MB = 6
                 if len(file_bytes) > MAX_FILE_MB * 1024 * 1024:
                     self._json({'success': False,
                                  'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ), лимит {MAX_FILE_MB} МБ на Render Free.'},
@@ -999,7 +1052,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         VIBE_URL,
                         headers={"Content-Type":"application/json","X-Api-Key":api_key},
                         json=vibe_payload,
-                        timeout=60
+                        timeout=90
                     )
                     resp.raise_for_status()
                     data = resp.json()
@@ -1026,7 +1079,7 @@ class H(http.server.BaseHTTPRequestHandler):
                             VIBE_URL,
                             headers={"Content-Type":"application/json","X-Api-Key":api_key},
                             json=vibe_payload2,
-                            timeout=60
+                            timeout=90
                         )
                         if resp2.status_code == 200:
                             d2 = resp2.json()
@@ -1069,9 +1122,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     break
                 if not filename or file_bytes is None:
                     self._json({'success':False,'error':'Файл не найден в запросе'},400); return
-                # Защита от падения сервера (OOM) на Render Free (512 МБ RAM) —
-                # большие архивы с рекурсивной распаковкой могут выедать всю память и убивать процесс.
-                MAX_FILE_MB = 12
+                # Защита от падения сервера (OOM) на Render Free (512 МБ RAM).
+                # Для zip/rar лимит выше, потому что теперь ОГРОМНЫЕ файлы ВНУТРИ архива
+                # (сканы актов/ОПЗ по 50-80 МБ) пропускаются на этапе распаковки и не читаются
+                # целиком — опасность там обезврежена, поэтому сам контейнер может быть крупнее.
+                _ext_check = filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
+                MAX_FILE_MB = 60 if _ext_check in ('zip','rar') else 6
                 if len(file_bytes) > MAX_FILE_MB * 1024 * 1024:
                     self._json({'success': False,
                                  'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ). '
@@ -1114,12 +1170,20 @@ class H(http.server.BaseHTTPRequestHandler):
 
                 # Умный генератор — запускаем в фоне
                 if SMART_GENERATOR and ai_data.get('company', {}).get('name'):
+                    if GENERATION_IN_PROGRESS['active']:
+                        self._json({'success': False,
+                                     'error': 'Уже идёт другая генерация. На Render Free одновременно можно '
+                                               'выполнять только одну — дождитесь её завершения и попробуйте снова.'},
+                                    429)
+                        return
+
                     task_id = str(_uuid.uuid4())[:8]
                     TASKS[task_id] = {'status': 'running', 'progress': [], 'step': 0, 'total': 100}
                     _prune_tasks()
                     save_task(task_id, TASKS[task_id])
 
                     def run_gen(_tid=task_id, _data=ai_data, _key=api_key, _prod=product):
+                        GENERATION_IN_PROGRESS['active'] = True
                         try:
                             def on_prog(step, total, msg):
                                 TASKS[_tid]['progress'] = (TASKS[_tid].get('progress') or []) + [msg]
@@ -1162,6 +1226,8 @@ class H(http.server.BaseHTTPRequestHandler):
                             import traceback; traceback.print_exc()
                             TASKS[_tid].update({'status':'error','error':str(_ex)})
                             save_task(_tid, TASKS[_tid])
+                        finally:
+                            GENERATION_IN_PROGRESS['active'] = False
 
                     threading.Thread(target=run_gen, daemon=True).start()
                     self._json({'success': True, 'async': True, 'task_id': task_id})
