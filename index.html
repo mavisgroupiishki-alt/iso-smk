@@ -1587,11 +1587,25 @@ async function aiSend() {
     console.warn('aiDetectCompanyLookupQuery error:', e);
   }
 
-  // Читаем файлы
+  // Читаем файлы — ПАЧКАМИ по 2, а не все разом (сервер на Render Free не тянет
+  // 4+ одновременных запросов к медленной vision-модели — падает по памяти/времени,
+  // и вместо JSON приходит HTML-страница ошибки от Render)
   let filesContent = '';
   if(aiAttachedFiles.length > 0) {
-    aiAddMsg('ai', '⏳ Читаю файлы...');
-    const fileData = await Promise.all(aiAttachedFiles.map(aiReadFile));
+    const total = aiAttachedFiles.length;
+    const BATCH = 2;
+    const fileData = [];
+    const typingMsg = document.getElementById('ai-messages').lastElementChild;
+    for(let i = 0; i < total; i += BATCH) {
+      const batch = aiAttachedFiles.slice(i, i + BATCH);
+      aiAddMsg('ai', `⏳ Читаю файлы ${i+1}-${Math.min(i+BATCH,total)} из ${total}...`);
+      const results = await Promise.all(batch.map(aiReadFile));
+      fileData.push(...results);
+      // убираем промежуточное сообщение о прогрессе
+      const msgs2 = document.getElementById('ai-messages');
+      const lastProgress = msgs2.lastElementChild;
+      if(lastProgress && lastProgress.textContent.includes('Читаю файлы')) lastProgress.remove();
+    }
     aiAttachedFiles = [];
     aiRenderFileList();
     // Удаляем сообщение "Читаю файлы"

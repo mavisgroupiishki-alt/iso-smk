@@ -34,6 +34,9 @@ import threading
 # гарантированный OOM. Не даём двум генерациям идти параллельно.
 GENERATION_LOCK = threading.Lock()
 GENERATION_IN_PROGRESS = {'active': False}
+# Не более 2 одновременных vision-запросов — на Render Free (512 МБ) 4+ параллельных
+# тяжёлых запроса к медленной модели гарантированно роняют инстанс.
+VISION_SEMAPHORE = threading.Semaphore(2)
 TASKS = {}  # task_id -> {status, progress, result, error}
 
 def _prune_tasks(keep=2):
@@ -1047,6 +1050,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     }]
                 }
 
+                # Не более 2 таких тяжёлых запросов одновременно — иначе Render Free падает
+                VISION_SEMAPHORE.acquire()
                 try:
                     resp = req_lib.post(
                         VIBE_URL,
@@ -1059,7 +1064,17 @@ class H(http.server.BaseHTTPRequestHandler):
                     text = "".join(c.get("message",{}).get("content","") for c in data.get("choices",[]))
                     self._json({'success':True,'text':text,'method':'vision'})
                 except Exception as e:
-                    # Fallback 1 — другой формат vision запроса
+                    was_timeout = isinstance(e, req_lib.exceptions.Timeout)
+                    if was_timeout:
+                        # Модель сама медленная (thinking-режим) — повтор другим форматом JSON
+                        # ничего не ускорит, только удвоит ожидание (было до ~3 мин на файл).
+                        # Сразу идём в текстовый fallback.
+                        text = extract_text_from_file(file_bytes, filename)
+                        self._json({'success':True,'text':text,'method':'fallback_timeout',
+                                     'error':'BitrixGPT vision не ответил за 90 сек'})
+                        return
+                    # Fallback 1 — другой формат vision запроса (только если проблема НЕ в скорости,
+                    # например неверный формат запроса/4xx — тогда другая структура JSON может помочь)
                     try:
                         vibe_payload2 = {
                             "model": VIBE_MODEL_VISION,
@@ -1091,6 +1106,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     # Fallback 2 — читаем как текст
                     text = extract_text_from_file(file_bytes, filename)
                     self._json({'success':True,'text':text,'method':'fallback','error':str(e)})
+                finally:
+                    VISION_SEMAPHORE.release()
 
             elif p=='/api/extract-text':
                 import io, re as _re
