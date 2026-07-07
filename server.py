@@ -685,6 +685,80 @@ def get_zip(eid):
 
 
 
+# ── Vision: распознавание фото/скана через BitrixGPT (переиспользуется и для одиночной
+#    загрузки, и для фото внутри архивов) ─────────────────────────────────────────────
+VISION_PROMPT = ("Извлеки весь текст с этого документа/изображения. Укажи все ФИО, должности, даты, "
+                  "названия организаций, номера документов. Если это удостоверение — укажи кому выдано, "
+                  "должность, организация, дата выдачи, основание (протокол №, дата). "
+                  "Отвечай только извлечёнными данными, без лишних слов.")
+
+def _downscale_image(file_bytes, max_dim=1600, quality=72):
+    """Уменьшает фото перед отправкой в vision — камера даёт 3-6 МБ на файл,
+    а для распознавания текста хватает гораздо меньшего разрешения.
+    Ускоряет запрос и снижает риск OOM при пакетной обработке."""
+    try:
+        from PIL import Image
+        import io as _io2
+        img = Image.open(_io2.BytesIO(file_bytes))
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
+            img = img.resize((int(img.size[0]*ratio), int(img.size[1]*ratio)), Image.LANCZOS)
+        buf = _io2.BytesIO()
+        img.save(buf, 'JPEG', quality=quality, optimize=True)
+        return buf.getvalue(), 'image/jpeg'
+    except Exception:
+        return file_bytes, None
+
+
+def vision_extract(file_bytes, filename, api_key, media_type=None):
+    """Синхронный вызов vision для одного файла (фото/скан). Уменьшает изображение
+    перед отправкой. Ограничивает параллелизм через VISION_SEMAPHORE (не более 2 разом
+    на весь сервер — иначе Render Free падает по памяти)."""
+    import base64 as _b64
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if ext in ('jpg', 'jpeg', 'png', 'webp'):
+        small_bytes, mt = _downscale_image(file_bytes)
+        file_bytes = small_bytes
+        media_type = mt or (media_type or 'image/jpeg')
+    elif not media_type:
+        media_type = 'application/pdf' if ext == 'pdf' else 'image/jpeg'
+
+    b64_data = _b64.b64encode(file_bytes).decode('utf-8')
+    vibe_payload = {
+        "model": VIBE_MODEL_VISION,
+        "max_tokens": 1000,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64_data}"}},
+                {"type": "text", "text": VISION_PROMPT}
+            ]
+        }]
+    }
+    VISION_SEMAPHORE.acquire()
+    try:
+        resp = req_lib.post(
+            VIBE_URL, headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+            json=vibe_payload, timeout=90
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = "".join(c.get("message", {}).get("content", "") for c in data.get("choices", []))
+        return text or '[vision: пустой ответ]'
+    except req_lib.exceptions.Timeout:
+        # Не повторяем тем же медленным способом — сразу быстрый текстовый фоллбэк
+        return extract_text_from_file(file_bytes, filename)
+    except Exception as e:
+        try:
+            return extract_text_from_file(file_bytes, filename)
+        except Exception:
+            return f'[vision ошибка: {e}]'
+    finally:
+        VISION_SEMAPHORE.release()
+
+
 # ── Извлечение текста из файлов (рекурсивно) ────────────────
 def extract_text_from_file(file_bytes, filename, _depth=0):
     """Рекурсивно читает файлы и архивы внутри архивов (до 3 уровней)"""
@@ -776,6 +850,125 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
         return f'[Ошибка чтения {filename}: {e}]'
 
     return '[Неизвестный формат файла]'
+
+
+def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None):
+    """
+    Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
+    - текстовые файлы (docx/pdf/txt/csv/xlsx) читаются как раньше, быстро
+    - ФОТО (jpg/jpeg/png/webp) теперь тоже читаются — через vision, по одному,
+      с уменьшением размера перед отправкой
+    Раньше картинки внутри zip вообще пропускались (не было привязки к vision) —
+    это и была причина, почему данные людей с одними фото (не PDF) не попадали в карточку.
+    """
+    import io
+    TEXT_EXTS = ('docx', 'doc', 'txt', 'csv', 'xlsx', 'pdf')
+    IMAGE_EXTS = ('jpg', 'jpeg', 'png', 'webp')
+    TEXT_INNER_LIMIT = 4 * 1024 * 1024     # текстовые файлы — как раньше, 4 МБ
+    IMAGE_INNER_LIMIT = 15 * 1024 * 1024   # фото крупнее (сами уменьшаются перед отправкой)
+    MAX_ITEMS = 60  # защита от архивов с сотнями фото — вышло бы на часы обработки
+
+    def p(msg):
+        if progress_cb: progress_cb(msg)
+
+    # Собираем список читаемых записей заранее, чтобы знать общее количество для прогресса
+    entries = []  # (name, size, kind)
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+            for info in z.infolist():
+                name = info.filename
+                if name.endswith('/'): continue
+                try:
+                    fixed = name.encode('cp437').decode('utf-8')
+                except Exception:
+                    fixed = name
+                if '__MACOSX' in fixed or fixed.endswith('.DS_Store'): continue
+                ext = fixed.rsplit('.', 1)[-1].lower() if '.' in fixed else ''
+                if ext in TEXT_EXTS and info.file_size <= TEXT_INNER_LIMIT:
+                    entries.append((name, fixed, info.file_size, 'text'))
+                elif ext in IMAGE_EXTS and info.file_size <= IMAGE_INNER_LIMIT:
+                    entries.append((name, fixed, info.file_size, 'image'))
+                elif ext in TEXT_EXTS or ext in IMAGE_EXTS:
+                    entries.append((name, fixed, info.file_size, 'skip_size'))
+    except Exception as e:
+        return f'[Ошибка открытия архива: {e}]'
+
+    # Сначала текстовые (быстро), потом фото (медленно) — чтобы данные из docx/pdf
+    # были в карточке даже если распознавание фото ещё не закончилось при частичном сбое
+    entries.sort(key=lambda e: 0 if e[3] == 'text' else (1 if e[3] == 'image' else 2))
+
+    to_process = [e for e in entries if e[3] in ('text', 'image')][:MAX_ITEMS]
+    skipped = [e for e in entries if e[3] == 'skip_size']
+    total = len(to_process)
+
+    texts = []
+    skipped_notes = [f"{fn.split('/')[-1]} ({sz//1024//1024} МБ)" for _, fn, sz, _ in skipped]
+
+    text_entries = [e for e in to_process if e[3] == 'text']
+    image_entries = [e for e in to_process if e[3] == 'image']
+    done_count = [0]
+
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+        # Текстовые файлы — быстро, по очереди
+        for raw_name, fixed_name, size, kind in text_entries:
+            short = fixed_name.split('/')[-1]
+            folder = '/'.join(fixed_name.split('/')[:-1])
+            done_count[0] += 1
+            p(f"Читаю {done_count[0]}/{total}: {short}")
+            try:
+                data = z.read(raw_name)
+                txt = extract_text_from_file(data, short)
+                if txt and len(txt) > 10 and not txt.startswith('['):
+                    texts.append(f"--- {folder + '/' if folder else ''}{short} ---\n" + txt)
+            except Exception as e:
+                texts.append(f"--- {short} --- [ошибка: {e}]")
+
+        # Фото — медленно (vision), поэтому по 2 одновременно вместо строго по одному.
+        # VISION_SEMAPHORE всё равно не даст больше 2 разом на весь сервер.
+        # Каждый файл читаем из архива только в момент обработки (не грузим все фото
+        # в память разом — на 121-мегабайтном архиве это была бы лишняя сотня МБ).
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def process_image(entry):
+            raw_name, fixed_name, size, kind = entry
+            short = fixed_name.split('/')[-1]
+            folder = '/'.join(fixed_name.split('/')[:-1])
+            try:
+                with zipfile.ZipFile(io.BytesIO(file_bytes)) as z2:
+                    data = z2.read(raw_name)
+            except Exception:
+                return None
+            txt = vision_extract(data, short, api_key)
+            if txt and len(txt) > 10 and not txt.startswith('['):
+                return f"--- {folder + '/' if folder else ''}{short} ---\n" + txt
+            return None
+
+        if image_entries:
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                futures = {ex.submit(process_image, e): e for e in image_entries}
+                for fut in as_completed(futures):
+                    e = futures[fut]
+                    done_count[0] += 1
+                    short = e[1].split('/')[-1]
+                    p(f"Распознано фото {done_count[0]}/{total}: {short}")
+                    try:
+                        r = fut.result()
+                        if r: texts.append(r)
+                    except Exception as ex2:
+                        texts.append(f"--- {short} --- [ошибка: {ex2}]")
+
+    PRIORITY_KEYWORDS = ['поставщик', 'объект', 'сотрудник', 'штатн', 'персонал',
+                          'список', 'перечень', 'работник', 'паспорт', 'диплом', 'трудов']
+    priority = [t for t in texts if any(k in t.lower() for k in PRIORITY_KEYWORDS)]
+    other = [t for t in texts if t not in priority]
+    result = '\n\n'.join(priority + other)
+    if len(result) > 60000:
+        result = result[:60000] + '\n...[обрезано, слишком много данных]'
+    if skipped_notes:
+        result += ('\n\n[Пропущены файлы крупнее лимита: ' + ', '.join(skipped_notes[:20]) + ']')
+    if len(entries) > MAX_ITEMS:
+        result += f'\n\n[В архиве {len(entries)} файлов, обработаны первые {MAX_ITEMS} — пришлите остальных отдельным заходом]'
+    return result or '[Архив: читаемых данных не найдено]'
 
 
 def _extract_archive_zip(file_bytes, filename, _depth=0):
@@ -934,6 +1127,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 _prune_tasks()
                 self._json({
                     'status':    task.get('status','running'),
+                    'kind':      task.get('kind','generation'),
                     'step':      task.get('step',0),
                     'total':     task.get('total',100),
                     'progress':  task.get('progress',[]),
@@ -942,7 +1136,9 @@ class H(http.server.BaseHTTPRequestHandler):
                     'dates':     task.get('dates',{}),
                     'error':     task.get('error',''),
                     'zipB64':    task.get('zipB64'),
-                    'orgName':   task.get('orgName','')
+                    'orgName':   task.get('orgName',''),
+                    'text':      task.get('text'),
+                    'filename':  task.get('filename','')
                 })
             else:
                 self._json({'status':'not_found'})
@@ -1162,6 +1358,67 @@ class H(http.server.BaseHTTPRequestHandler):
                     self._json({'success': False, 'error': f'Ошибка обработки файла: {e}'}, 500)
                     return
                 self._json({'success':True,'text':text,'filename':filename})
+
+            elif p=='/api/extract-archive-async':
+                # Асинхронный разбор архива с поддержкой распознавания фото внутри (не только docx/pdf).
+                # Не блокирует HTTP-запрос — работает фоном, фронт опрашивает /api/task/<id>.
+                # Благодаря этому можно грузить архивы гораздо крупнее, чем раньше.
+                import re as _re3
+                api_key = os.environ.get('VIBE_API_KEY','')
+                if not api_key:
+                    self._json({'success':False,'error':'VIBE_API_KEY не задан'},500); return
+                content_type = self.headers.get('Content-Type','')
+                boundary = None
+                for part in content_type.split(';'):
+                    part = part.strip()
+                    if part.startswith('boundary='):
+                        boundary = part[9:].strip().encode(); break
+                if not boundary:
+                    self._json({'success':False,'error':'Нет boundary в запросе'},400); return
+                parts = body.split(b'--' + boundary)
+                filename = None
+                file_bytes = None
+                for part in parts:
+                    if b'Content-Disposition' not in part: continue
+                    if b'filename=' not in part: continue
+                    header_end = part.find(b'\r\n\r\n')
+                    if header_end == -1: continue
+                    header = part[:header_end].decode('utf-8','replace')
+                    m = _re3.search(r'filename="([^"]+)"', header)
+                    if not m: continue
+                    filename = m.group(1)
+                    file_bytes = part[header_end+4:].rstrip(b'\r\n--')
+                    break
+                if not filename or file_bytes is None:
+                    self._json({'success':False,'error':'Файл не найден в запросе'},400); return
+
+                # Асинхронный режим не привязан к таймауту одного HTTP-запроса, поэтому лимит
+                # щедрее — реальный потолок теперь скорее у самого Render на приём тела запроса.
+                MAX_ARCHIVE_MB = 200
+                if len(file_bytes) > MAX_ARCHIVE_MB * 1024 * 1024:
+                    self._json({'success': False,
+                                 'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ), лимит {MAX_ARCHIVE_MB} МБ.'},
+                                413)
+                    return
+
+                task_id = str(_uuid.uuid4())[:8]
+                TASKS[task_id] = {'status':'running','kind':'archive','progress':[],'step':0,'total':100}
+                _prune_tasks()
+
+                def run_archive(_tid=task_id, _bytes=file_bytes, _fn=filename, _key=api_key):
+                    try:
+                        def on_prog(msg):
+                            TASKS[_tid]['progress'] = (TASKS[_tid].get('progress') or [])[-30:] + [msg]
+                            print(f"  [archive {_tid}] {msg}")
+                        result_text = extract_archive_with_vision(_bytes, _fn, _key, progress_cb=on_prog)
+                        TASKS[_tid].update({'status':'done','kind':'archive','text':result_text,'filename':_fn})
+                        _prune_tasks()
+                    except Exception as _ex:
+                        import traceback; traceback.print_exc()
+                        TASKS[_tid].update({'status':'error','kind':'archive','error':str(_ex)})
+
+                threading.Thread(target=run_archive, daemon=True).start()
+                self._json({'success': True, 'async': True, 'task_id': task_id})
 
             elif p=='/api/ai/chat':
                 req=json.loads(body)

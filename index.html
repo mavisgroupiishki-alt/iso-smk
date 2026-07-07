@@ -1345,10 +1345,11 @@ function nav(page, el) {
 
 // Ключ задаётся через VIBE_API_KEY на сервере
 
-function aiAddMsg(role, text, questions) {
+function aiAddMsg(role, text, questions, id) {
   const box = document.getElementById('ai-messages');
   const d = document.createElement('div');
   d.className = role==='ai' ? 'ai-msg-ai' : 'ai-msg-user';
+  if(id) d.id = id;
   let qHtml = '';
   if(questions && questions.length) {
     qHtml = `<div class="ai-q-block"><div class="ai-q-title">❓ Нужна информация</div>${questions.map((q,i)=>`<div class="ai-q-item"><span style="font-weight:700;color:#B8891A;flex-shrink:0">${i+1}.</span><span>${q}</span></div>`).join('')}</div>`;
@@ -1357,6 +1358,15 @@ function aiAddMsg(role, text, questions) {
   d.innerHTML = `<div class="ai-avatar" style="${avatarStyle}">${role==='ai'?'ИГ':'ОФ'}</div><div class="${role==='ai'?'ai-bubble-ai':'ai-bubble-user'}">${text}${qHtml}</div>`;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
+}
+
+function aiUpdateMsg(id, text) {
+  const d = document.getElementById(id);
+  if(!d) return;
+  const bubble = d.querySelector('.ai-bubble-ai, .ai-bubble-user');
+  if(bubble) bubble.innerHTML = text;
+  const box = document.getElementById('ai-messages');
+  if(box) box.scrollTop = box.scrollHeight;
 }
 
 function aiShowTyping() {
@@ -1681,8 +1691,12 @@ function aiRemoveFile(i) {
 
 async function aiReadFile(file) {
   // PNG/JPG — только через vision; PDF — пробует text потом vision (сервер решает)
-  // ZIP/DOC/DOCX/XLS/XLSX — только через extract-text
+  // ZIP/RAR — асинхронно, с распознаванием фото внутри (фон + прогресс, не блокирует запрос)
+  // DOC/DOCX/XLS/XLSX — только через extract-text
   const ext = file.name.split('.').pop().toLowerCase();
+  if(ext === 'zip' || ext === 'rar') {
+    return aiReadArchiveAsync(file);
+  }
   const isVisual = ['png','jpg','jpeg','webp','pdf'].includes(ext);
   const endpoint = isVisual ? '/api/analyze-image' : '/api/extract-text';
   return new Promise((resolve) => {
@@ -1699,6 +1713,56 @@ async function aiReadFile(file) {
         content: '[Ошибка загрузки файла: ' + err.message + ']'
       }));
   });
+}
+
+async function aiReadArchiveAsync(file) {
+  // Архив (zip/rar) обрабатывается в фоне на сервере: текстовые файлы читаются как раньше,
+  // а ФОТО внутри теперь тоже распознаются через vision (раньше пропускались молча).
+  // Не блокирует один HTTP-запрос — можно грузить архивы гораздо крупнее.
+  const progressMsgId = 'archive-prog-' + Date.now();
+  aiAddMsg('ai', `⏳ Разбираю архив «${file.name}»...`, null, progressMsgId);
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const startResp = await fetch('/api/extract-archive-async', {method:'POST', body: formData}).then(r=>r.json());
+    if(!startResp.success) {
+      aiUpdateMsg(progressMsgId, `❌ ${file.name}: ${startResp.error || 'не удалось начать обработку'}`);
+      return {name: file.name, content: '[Ошибка: ' + (startResp.error||'не удалось начать обработку') + ']'};
+    }
+    const taskId = startResp.task_id;
+    const MAX_POLLS = 200; // архив с 50-60 фото может обрабатываться долго
+    let pollCount = 0;
+
+    while(pollCount < MAX_POLLS) {
+      await new Promise(res => setTimeout(res, 3000));
+      pollCount++;
+      let tr;
+      try {
+        const raw = await fetch('/api/task/' + taskId).then(x=>x.text());
+        tr = JSON.parse(raw);
+      } catch(e) { continue; } // временная сетевая заминка — пробуем на следующем опросе
+
+      if(tr.status === 'running') {
+        const lastMsg = tr.progress && tr.progress.length ? tr.progress[tr.progress.length-1] : 'обрабатываю...';
+        aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ${lastMsg}`);
+      } else if(tr.status === 'done') {
+        aiUpdateMsg(progressMsgId, `✅ Архив «${file.name}» разобран`);
+        return {name: file.name, content: tr.text || '[Архив: данные не найдены]'};
+      } else if(tr.status === 'error') {
+        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${tr.error || 'ошибка обработки'}`);
+        return {name: file.name, content: '[Ошибка обработки архива: ' + (tr.error||'') + ']'};
+      } else if(tr.status === 'not_found') {
+        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: задача потерялась (сервер перезапустился?)`);
+        return {name: file.name, content: '[Задача обработки архива потерялась — попробуйте ещё раз]'};
+      }
+    }
+    aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: превышено время ожидания`);
+    return {name: file.name, content: '[Превышено время ожидания обработки архива]'};
+  } catch(err) {
+    aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${err.message}`);
+    return {name: file.name, content: '[Ошибка: ' + err.message + ']'};
+  }
 }
 
 function aiHandleKey(e) {
