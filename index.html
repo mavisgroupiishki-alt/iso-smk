@@ -216,6 +216,7 @@ input::placeholder{color:#C4BDB2}
   #content{padding:16px}
 }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 
@@ -1715,6 +1716,61 @@ async function aiReadFile(file) {
   });
 }
 
+async function aiCompressImageBlob(blob, maxDim, quality) {
+  // Уменьшает фото прямо в браузере через canvas — до отправки на сервер.
+  // Это единственный надёжный способ обойти непредсказуемый лимит на размер
+  // тела запроса у Render (он не документирован и отклоняет запрос ДО нашего кода —
+  // никакая серверная защита тут не поможет, раз байты даже не долетают).
+  try {
+    const bitmap = await createImageBitmap(blob);
+    let {width, height} = bitmap;
+    if(Math.max(width, height) > maxDim) {
+      const ratio = maxDim / Math.max(width, height);
+      width = Math.round(width * ratio);
+      height = Math.round(height * ratio);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    return await new Promise(res => canvas.toBlob(res, 'image/jpeg', quality));
+  } catch(e) {
+    return blob; // не смогли сжать — отправляем как есть
+  }
+}
+
+async function aiCompressArchiveClientSide(file, onProgress) {
+  // Распаковывает zip в браузере, уменьшает фото внутри, запаковывает обратно.
+  // Реальные архивы клиентов (сканы + фото с телефона) обычно весят 100+ МБ из-за
+  // необработанных фотографий по 3-6 МБ каждая — после сжатия остаётся 15-25% от размера.
+  if(typeof JSZip === 'undefined') return file; // библиотека не загрузилась — шлём как есть
+
+  const IMAGE_EXT = ['jpg','jpeg','png','webp'];
+  const zip = await JSZip.loadAsync(file);
+  const outZip = new JSZip();
+  const entries = Object.values(zip.files).filter(f => !f.dir && !f.name.includes('__MACOSX') && !f.name.endsWith('.DS_Store'));
+
+  let done = 0;
+  for(const entry of entries) {
+    const ext = entry.name.split('.').pop().toLowerCase();
+    done++;
+    if(onProgress) onProgress(done, entries.length, entry.name.split('/').pop());
+    if(IMAGE_EXT.includes(ext)) {
+      try {
+        const blob = await entry.async('blob');
+        const compressed = await aiCompressImageBlob(blob, 1600, 0.72);
+        outZip.file(entry.name, compressed);
+      } catch(e) {
+        outZip.file(entry.name, await entry.async('blob'));
+      }
+    } else {
+      outZip.file(entry.name, await entry.async('blob'));
+    }
+  }
+  const outBlob = await outZip.generateAsync({type: 'blob', compression: 'DEFLATE', compressionOptions: {level: 6}});
+  return new File([outBlob], file.name, {type: 'application/zip'});
+}
+
 async function aiReadArchiveAsync(file) {
   // Архив (zip/rar) обрабатывается в фоне на сервере: текстовые файлы читаются как раньше,
   // а ФОТО внутри теперь тоже распознаются через vision (раньше пропускались молча).
@@ -1722,9 +1778,29 @@ async function aiReadArchiveAsync(file) {
   const progressMsgId = 'archive-prog-' + Date.now();
   aiAddMsg('ai', `⏳ Разбираю архив «${file.name}»...`, null, progressMsgId);
 
+  let uploadFile = file;
+  const ext = file.name.split('.').pop().toLowerCase();
+  // Сжимаем фото внутри ДО отправки — иначе тело запроса может вообще не долететь
+  // до сервера (Render отклоняет слишком большие запросы ещё на своей стороне, без
+  // объяснений — это выглядит как "Unexpected token '<'"). RAR так сжать не можем
+  // (нет библиотеки в браузере) — для него просто пробуем отправить как есть.
+  if(ext === 'zip' && file.size > 15 * 1024 * 1024) {
+    aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: сжимаю фото перед загрузкой (${(file.size/1024/1024).toFixed(0)} МБ)...`);
+    try {
+      uploadFile = await aiCompressArchiveClientSide(file, (done, total, name) => {
+        aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: сжимаю ${done}/${total} — ${name}`);
+      });
+      aiUpdateMsg(progressMsgId,
+        `⏳ «${file.name}»: сжато с ${(file.size/1024/1024).toFixed(0)} МБ до ${(uploadFile.size/1024/1024).toFixed(0)} МБ, загружаю...`);
+    } catch(e) {
+      console.warn('Сжатие архива не удалось, отправляю как есть:', e);
+      uploadFile = file;
+    }
+  }
+
   try {
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', uploadFile);
     const startResp = await fetch('/api/extract-archive-async', {method:'POST', body: formData}).then(r=>r.json());
     if(!startResp.success) {
       aiUpdateMsg(progressMsgId, `❌ ${file.name}: ${startResp.error || 'не удалось начать обработку'}`);
