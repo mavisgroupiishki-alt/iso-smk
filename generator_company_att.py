@@ -11,7 +11,14 @@ import json, re, io, zipfile
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.resolve()
-CLASSIFIER = json.loads((BASE_DIR / 'classifier_company_att.json').read_text('utf-8'))
+_CLASSIFIER_PATH = BASE_DIR / 'classifier_company_att.json'
+if not _CLASSIFIER_PATH.exists():
+    raise FileNotFoundError(
+        f"Не найден classifier_company_att.json по пути {_CLASSIFIER_PATH}. "
+        f"Файл должен лежать в той же папке репозитория, что и server.py/generator.py — "
+        f"проверьте что он реально загружен в GitHub (не только сам .py файл)."
+    )
+CLASSIFIER = json.loads(_CLASSIFIER_PATH.read_text('utf-8'))
 
 
 def find_work_items(query: str, max_items=10):

@@ -1524,6 +1524,9 @@ class H(http.server.BaseHTTPRequestHandler):
 
                             result = generate_package(_data, _key, _prod, on_prog)
                             docs = result['docs']
+                            if result.get('error') or not docs:
+                                err_msg = result.get('error') or 'Генератор не вернул ни одного документа (0 файлов) — данные не подошли под продукт или модуль не смог отработать.'
+                                raise RuntimeError(err_msg)
                             _org = re.sub(r'[^\w\-]', '_', _data.get('company', {}).get('name', 'org'))
                             _ts = datetime.now().strftime('%Y%m%d_%H%M%S')
                             _zp = str(OUT_DIR / f'{_org}_{_ts}.zip')
