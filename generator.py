@@ -638,15 +638,20 @@ def gen_audit_program(company, dates, resp, itr, api_key):
     ctx = build_ctx(company, dates, resp, itr=itr)
     header = build_header("ПРОГРАММА проведения внутренних аудитов СМК", company, dates, resp, 'goals')
 
-    prod_criteria = "4.1-4.4, 5.1-5.3, 6.1-6.3, 7.1-7.5, 8.1, 8.2, 8.4-8.7, 9.1-9.3, 10.1-10.3"
-    office_criteria = "4.1, 4.2, 5.3, 6.1-6.3, 7.2-7.5, 10.3"
+    prod_criteria = "4.1-4.4, 5.1-5.3, 6.1-6.3, 7.1-7.5, 8.1, 8.2, 8.3-8.7, 9.1-9.3, 10.1-10.3"
+    office_criteria = "4.1, 4.2, 7.2, 7.5, 8.3, 10.3"
 
     rows = []
+    seen_positions = set()
     for i, p in enumerate(itr, 1):
         pos = p.get('position','').lower()
+        pos_key = pos.strip()
+        if pos_key in seen_positions:
+            continue  # "если должности повторяются, то вносим один раз только"
+        seen_positions.add(pos_key)
         is_office = any(k in pos for k in ['бухгалтер', 'кадр', 'юрис', 'делопроиз'])
         criteria = office_criteria if is_office else prod_criteria
-        rows.append(f"{i}. {p.get('fio','')} ({p.get('position','')}) — {criteria}")
+        rows.append(f"{len(rows)+1}. {p.get('fio','')} ({p.get('position','')}) — {criteria}")
     rows_text = '\n'.join(rows)
 
     prompt = f"""Ты — оформитель документов ИСО 9001 (Беларусь).
@@ -839,6 +844,34 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
             'persons_count': len(persons),
         }
 
+    if product == 'company_att':
+        try:
+            from generator_company_att import generate_company_attestation_package
+        except Exception as e:
+            return {'docs': [], 'dates': dates, 'responsible': {}, 'itr_count': 0,
+                    'workers_count': 0, 'professions': [], 'error': f'Модуль аттестации компании не загружен: {e}'}
+
+        att_data = company_data.get('company_attestation', {})
+        step_ca = [0]
+
+        def p_ca(step, total, msg):
+            step_ca[0] += 1
+            if progress_cb:
+                progress_cb(step_ca[0], max(total, 1), msg)
+            print(f"  [company_att {step_ca[0]}] {msg}")
+
+        result_ca = generate_company_attestation_package(company, att_data, api_key, vibe_call, progress_cb=p_ca)
+
+        return {
+            'docs': result_ca['docs'],
+            'dates': dates,
+            'responsible': {},
+            'itr_count': len(att_data.get('itr', [])),
+            'workers_count': 0,
+            'professions': [],
+            'warnings': result_ca.get('warnings', []),
+        }
+
     WORKER_KEYWORDS = [
         'штукатур','маляр','сварщик','электрогаз','облицовщик','плиточник',
         'кровельщик','монтажник','электромонтажник','плотник','бетонщик',
@@ -932,7 +965,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     }
 
 
-def _parallel(tasks, max_workers=4):
+def _parallel(tasks, max_workers=2):
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(fn, *args): name for name, fn, args in tasks}
@@ -1017,7 +1050,7 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
          gen_order, (num, name, company, dates, resp, itr, api_key, extra, date_key))
         for num, name, date_key, extra in orders
     ]
-    for fname, txt in _parallel(order_tasks, max_workers=4).items():
+    for fname, txt in _parallel(order_tasks, max_workers=2).items():
         add(fname, txt)
 
     p("Протокол КС...")
@@ -1033,11 +1066,27 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
 
     p("Программа и протокол обучения...")
     aud_str2 = ", ".join(_fio(a)+" ("+_pos(a)+")" for a in resp.get("auditors",[]))
+    date_goals = dates['goals']
+
+    def _surname_initials(fio):
+        parts = fio.strip().split()
+        if len(parts) >= 2:
+            return f"{parts[0]} {'.'.join(p[0] for p in parts[1:] if p)}."
+        return fio
+
+    attendance_rows = '\n'.join(
+        f"| {_surname_initials(_fio(a))} | {date_goals} г. |" for a in resp.get("auditors", [])
+    )
     text = vibe_call([{"role":"user","content":
         f"Создай ПРОГРАММУ ВНУТРЕННЕГО ОБУЧЕНИЯ по теме СМК.\n"
         f"{build_header('Программа семинара Документальное оформление и порядок разработки СМК. Внутренний аудит', company, dates, resp, 'goals')}\n"
         f"Продолжительность: 1 день (8 часов). Темы: ISO 9001, аудит, документация.\n"
-        f"Список обучаемых: {aud_str2}.\nОтвечай только текстом."}], api_key)
+        f"Список обучаемых: {aud_str2}.\n\n"
+        f"В КОНЦЕ документа обязательно добавь таблицу «Лист присутствия на семинаре» строго в этом формате:\n"
+        f"Лист присутствия на семинаре:\n"
+        f"| ФИО | Подпись, дата |\n"
+        f"{attendance_rows}\n\n"
+        f"Отвечай только текстом."}], api_key)
     add(f"{org} - 3.9.3 Программа внутреннего обучения.docx", text)
 
     text = vibe_call([{"role":"user","content":
@@ -1066,7 +1115,7 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
         (f"{org} - Сводный отчёт по СМК.docx",
          gen_report, ("Отчёт по анализу функционирования СМК", company, dates, resp, objects, api_key)),
     ]
-    for fname, txt in _parallel(report_tasks, max_workers=3).items():
+    for fname, txt in _parallel(report_tasks, max_workers=2).items():
         add(fname, txt)
 
     p("Анкета СМК + исходная информация...")
@@ -1088,7 +1137,7 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
         (f"{org} - СТП СМК 04-{year}.docx", gen_stp_smk,
          (4, "Процесс производства СМР", company, dates, resp, itr, api_key)),
     ]
-    for fname, txt in _parallel(stp_tasks, max_workers=3).items():
+    for fname, txt in _parallel(stp_tasks, max_workers=2).items():
         add(fname, txt)
 
     p(f"ДИ ({len(itr)} чел., параллельно)...")
@@ -1098,7 +1147,7 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
         fio = person.get("fio","")
         safe = re.sub(r"[^\w\s-]","",pos)[:40]
         di_tasks.append((f"{org} - ДИ {safe}.docx", gen_di, (pos, fio, company, dates, resp, api_key)))
-    for fname, txt in _parallel(di_tasks, max_workers=4).items():
+    for fname, txt in _parallel(di_tasks, max_workers=2).items():
         add(fname, txt)
 
     p(f"Карточки поставщиков ({len(suppliers[:6])} шт., параллельно)...")
@@ -1107,7 +1156,7 @@ def _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p
         safe = re.sub(r"[^\w\s-]","",sup.get("name",f"поставщик_{i}"))[:30]
         sup_tasks.append((f"{org} - Карточка поставщика {i} {safe}.docx",
                           gen_supplier_card, (sup, company, dates, resp, api_key)))
-    for fname, txt in _parallel(sup_tasks, max_workers=4).items():
+    for fname, txt in _parallel(sup_tasks, max_workers=2).items():
         add(fname, txt)
 
     p("Перечень продукции входного контроля + приказ...")
@@ -1223,7 +1272,7 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
          gen_order, (num, name, company, dates, resp, itr, api_key, extra, dk))
         for num, name, dk, extra in suot_orders
     ]
-    for fname, txt in _parallel(suot_order_tasks, max_workers=4).items():
+    for fname, txt in _parallel(suot_order_tasks, max_workers=2).items():
         add(fname, txt)
 
     p("Перечни 1-12 (отдельными файлами, параллельно)...")
@@ -1246,7 +1295,7 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
          gen_suot_perech, (num, title, company, dates, resp, itr, workers, api_key))
         for num, title in perech_titles.items()
     ]
-    for fname, txt in _parallel(perech_tasks, max_workers=4).items():
+    for fname, txt in _parallel(perech_tasks, max_workers=2).items():
         add(fname, txt)
 
     p("Перечень инструкций по ОТ...")
@@ -1294,7 +1343,7 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
                 "Глава 3 При выполнении, Глава 4 По окончании, Глава 5 Аварийные ситуации.\n"
                 "Отвечай только текстом."}], api_key))
     )
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:
         futs = {ex.submit(vibe_call, msgs, key): fname
                 for fname, _, (msgs, key) in instr_tasks}
         for fut in as_completed(futs):
@@ -1310,7 +1359,7 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
         safe = re.sub(r"[^\w\s-]","",prof)[:40]
         ot_tasks.append((f"{org} СУОТ - Инструкция ОТ {safe}.docx",
                          gen_ot_instruction, (prof, company, dates, resp, api_key)))
-    for fname, txt in _parallel(ot_tasks, max_workers=4).items():
+    for fname, txt in _parallel(ot_tasks, max_workers=2).items():
         add(fname, txt)
 
     p("Карты рисков (параллельно)...")
@@ -1337,7 +1386,7 @@ def _gen_suot(org, company, dates, resp, itr, workers, professions, api_key, add
         safe = re.sub(r"[^\w\s-]","",prof)[:40]
         risk_tasks.append((f"{org} СУОТ - Карта рисков {safe}.docx",
                            gen_risk_card, ("worker", [prof], company, dates, resp, api_key)))
-    for fname, txt in _parallel(risk_tasks, max_workers=4).items():
+    for fname, txt in _parallel(risk_tasks, max_workers=2).items():
         add(fname, txt)
 
     p("Реестр неприемлемых рисков + программа управления ОТ...")
@@ -1540,7 +1589,7 @@ def _gen_spk(org, company, dates, resp, itr, api_key, add, p, variant='spk_stroy
          gen_spk_prikaz, (num, name, company, dates, resp, itr, api_key))
         for num, name in prikaz_names
     ]
-    for fname, txt in _parallel(spk_prikaz_tasks, max_workers=4).items():
+    for fname, txt in _parallel(spk_prikaz_tasks, max_workers=2).items():
         add(fname, txt)
 
     full = f"{company.get('form','ООО')} «{_clean(company)}»"
@@ -1588,7 +1637,7 @@ def _gen_spk(org, company, dates, resp, itr, api_key, add, p, variant='spk_stroy
         safe = re.sub(r"[^\w\s-]","",wt)[:50]
         tt_tasks.append((f"{org} СПК - Тех.требования {safe}.docx",
                          gen_tech_trebovaniya, (wt, company, dates, resp, api_key)))
-    for fname, txt in _parallel(tt_tasks, max_workers=3).items():
+    for fname, txt in _parallel(tt_tasks, max_workers=2).items():
         add(fname, txt)
 
     p("СПК: Журнал входного контроля...")
@@ -1713,7 +1762,7 @@ _____________________________________________
             (f"{org} СПК БИСП - Перечень продукции входного контроля.docx",
              gen_spk_perech_produkcii, (company, dates, resp, work_types, api_key)),
         ]
-        for fname, txt in _parallel(bisp_tasks, max_workers=3).items():
+        for fname, txt in _parallel(bisp_tasks, max_workers=2).items():
             add(fname, txt)
 
         full2 = f"{company.get('form','ООО')} «{_clean(company)}»"
@@ -2370,6 +2419,13 @@ def gen_rk_smk(company, dates, resp, itr, objects, suppliers, api_key):
 8. Операционная деятельность:
    8.1 Планирование и управление
    8.2 Требования к продукции/услугам
+   8.3 Проектирование и разработка:
+      {("Требование п. 8.3 не может быть применимо к разработанной системе менеджмента качества организации, "
+        "что не влияет на способность или ответственность организации выполнять работы, отвечающие требованиям "
+        "потребителя и соответствующим законодательным и другим обязательным требованиям. Если необходимость такой "
+        "деятельности будет определена, организация разработает процесс или процедуру по п.8.3 СТБ ISO 9001-2015."
+        if 'проектир' not in company.get('scope','').lower() else
+        "Проектирование выполняется в соответствии с областью деятельности организации.")}
    8.4 Управление поставщиками:
       {sup_list}
    8.5 Производство: {company.get('scope','')}
@@ -2383,7 +2439,15 @@ def gen_rk_smk(company, dates, resp, itr, objects, suppliers, api_key):
 10. Улучшение
 
 Лист согласований. Лист регистрации изменений.
-Напиши полный текст руководства. Отвечай только текстом документа."""
+
+Приложение А — Организационная структура (в соответствии со штатным расписанием):
+{itr_list}
+
+Приложение В — Область применения СМК: {company.get('scope','')}
+
+Приложение Ж — Перечень видов деятельности (как в заявке на СПК): {company.get('scope','')}
+
+Напиши полный текст руководства, включая приложения А, В, Ж. Отвечай только текстом документа."""
     return vibe_call([{"role":"user","content":prompt}], api_key, max_tokens=4000)
 
 
