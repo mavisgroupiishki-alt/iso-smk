@@ -518,10 +518,32 @@ def generate_company_attestation_package(company: dict, attestation_data: dict, 
     has_smetchik = attestation_data.get('has_smetchik', False)
     experience_objects = attestation_data.get('experience_objects', [])
     prior_years = attestation_data.get('prior_category_years', 0)
+    workers = attestation_data.get('workers', [])
 
     warnings = []
     if category:
         warnings = check_category_requirements(category, staff_total, has_smetchik, experience_objects, prior_years)
+
+    # Защита от "пустых" пакетов — если Игорь наобещал в чате данные, но не перенёс их в JSON,
+    # документы выйдут формально правильными, но фактически пустым скелетом. Явно предупреждаем,
+    # а не отдаём тихо готовый ZIP с прочерками.
+    if len(itr_list) <= 1 and staff_total > 1:
+        warnings.append(
+            f"В данных только {len(itr_list)} человек в ИТР, хотя штат указан как {staff_total} — "
+            f"похоже часть людей потерялась при разборе. Проверьте пакет перед подачей."
+        )
+    empty_itr = [p.get('fio', f'#{i+1}') for i, p in enumerate(itr_list)
+                 if not p.get('diploma_number') and not p.get('stage_years') and not p.get('trudovaya_number')]
+    if empty_itr:
+        warnings.append(
+            f"У этих людей не заполнены диплом/стаж/трудовая (в документе будут прочерки, дозаполните вручную): "
+            f"{', '.join(empty_itr)}."
+        )
+    if workers and all(not w.get('count') for w in workers):
+        warnings.append(
+            "В «Сведениях о рабочих» не указано количество человек по профессиям — список профессий "
+            "подобран автоматически под вид работ, но реальных чисел нет. Уточните у клиента."
+        )
 
     if attestation_data.get('is_cancellation'):
         p("Заявление на отмену/исключение")
@@ -554,7 +576,6 @@ def generate_company_attestation_package(company: dict, attestation_data: dict, 
     text = gen_form2_itr(company, itr_list, work_scope_text, api_key, vibe_call_fn)
     docs.append({'name': f"{org} - 3. ИТР.docx", 'bytes': create_docx_from_text(text)})
 
-    workers = attestation_data.get('workers', [])
     p("4. Сведения о рабочих")
     text = gen_svedeniya_o_rabochih(company, workers, work_scope_text, api_key, vibe_call_fn)
     docs.append({'name': f"{org} - 4. Сведения о рабочих.docx", 'bytes': create_docx_from_text(text)})

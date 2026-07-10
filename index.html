@@ -1404,6 +1404,7 @@ function aiRenderCard(data) {
   if(data.flags) aiCurrentData.flags = data.flags;
   if(data.readiness) aiCurrentData.readiness = data.readiness;
   if(data.attestation && data.attestation.persons) aiCurrentData.attestation = data.attestation;
+  if(data.company_attestation) aiCurrentData.company_attestation = data.company_attestation;
 
   // Автосохранение в постоянное хранилище — не блокируем рендер, ошибки молча логируем
   aiSaveCurrentCompany().catch(e => console.warn('autosave failed:', e));
@@ -1491,6 +1492,18 @@ function aiRenderCard(data) {
         html += `<div class="ai-df"><span class="ai-dv">${pp.fio||'?'} — ${gradeShort} (${r.specialization||'?'})${r.need_spravka?' · 📄 нужна справка':''}</span></div>`;
       });
     });
+    html += '</div>';
+  }
+
+  // Аттестация компании (юрлица)
+  const compAtt = aiCurrentData.company_attestation;
+  if(compAtt && (compAtt.work_items?.length || compAtt.category || compAtt.is_cancellation)) {
+    const catLabel = compAtt.category ? `Генподряд, категория ${compAtt.category} (ГС)` : 'Подряд (СТ, без генподряда)';
+    html += `<div class="ai-sec">🏢 Аттестация компании — ${compAtt.is_cancellation ? 'заявление на отмену' : catLabel}</div><div>`;
+    if(!compAtt.is_cancellation) {
+      html += `<div class="ai-df"><span class="ai-dv">Видов работ (п.7): ${(compAtt.work_items||[]).length}</span></div>`;
+      html += `<div class="ai-df"><span class="ai-dv">Штат: ${compAtt.staff_total||'?'} чел., ИТР: ${(compAtt.itr||[]).length}, сметчик: ${compAtt.has_smetchik ? 'есть' : 'нет'}</span></div>`;
+    }
     html += '</div>';
   }
 
@@ -1960,15 +1973,19 @@ async function aiGenerate() {
             progDiv.remove();
             await aiSaveToPersistentJournal(tr.orgName, tr.fileCount, tr.dates, tr.zipB64);
             const safeOrg = (tr.orgName||'documents').replace(/[^\wа-яё\s-]/gi,'');
+            const warnBlock = (tr.warnings && tr.warnings.length)
+              ? `<div style="margin-top:10px;padding:10px 12px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:12.5px;color:#9A3412">
+                   <b>⚠️ Проверьте перед подачей:</b><ul style="margin:6px 0 0 18px;padding:0">${tr.warnings.map(w=>`<li>${w}</li>`).join('')}</ul>
+                 </div>` : '';
             if(tr.zipB64) {
               const blob = aiBase64ToBlob(tr.zipB64, 'application/zip');
               const url = URL.createObjectURL(blob);
               aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Файл сохранён в журнале.<br><br>
                 <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:13px;text-decoration:none">
                   📥 Скачать пакет документов
-                </a>`);
+                </a>${warnBlock}`);
             } else {
-              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Проверьте журнал.`);
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Проверьте журнал.${warnBlock}`);
             }
             btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
           } else {
@@ -2025,15 +2042,19 @@ async function aiGenerate() {
             progDiv.remove();
             await aiSaveToPersistentJournal(tr.orgName, tr.fileCount, tr.dates, tr.zipB64);
             const safeOrg = (tr.orgName||'documents').replace(/[^\wа-яё\s-]/gi,'');
+            const warnBlock = (tr.warnings && tr.warnings.length)
+              ? `<div style="margin-top:10px;padding:10px 12px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:12.5px;color:#9A3412">
+                   <b>⚠️ Проверьте перед подачей:</b><ul style="margin:6px 0 0 18px;padding:0">${tr.warnings.map(w=>`<li>${w}</li>`).join('')}</ul>
+                 </div>` : '';
             if(tr.zipB64) {
               const blob = aiBase64ToBlob(tr.zipB64, 'application/zip');
               const url = URL.createObjectURL(blob);
               aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Файл сохранён в журнале.<br><br>
                 <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:13px;text-decoration:none">
                   📥 Скачать пакет документов
-                </a>`);
+                </a>${warnBlock}`);
             } else {
-              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Проверьте журнал.`);
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Проверьте журнал.${warnBlock}`);
             }
             btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
           } else if(tr.status === 'error') {
