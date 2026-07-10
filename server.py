@@ -917,10 +917,11 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
     это и была причина, почему данные людей с одними фото (не PDF) не попадали в карточку.
     """
     import io
-    TEXT_EXTS = ('docx', 'doc', 'txt', 'csv', 'xlsx', 'pdf')
+    TEXT_EXTS = ('docx', 'doc', 'txt', 'csv', 'xlsx')  # без pdf — у него своя ветка ниже
     IMAGE_EXTS = ('jpg', 'jpeg', 'png', 'webp')
     TEXT_INNER_LIMIT = 4 * 1024 * 1024     # текстовые файлы — как раньше, 4 МБ
     IMAGE_INNER_LIMIT = 15 * 1024 * 1024   # фото крупнее (сами уменьшаются перед отправкой)
+    PDF_INNER_LIMIT = 20 * 1024 * 1024     # PDF-сканы (паспорта/трудовые) часто крупнее — до 20 МБ
     MAX_ITEMS = 60  # защита от архивов с сотнями фото — вышло бы на часы обработки
 
     def p(msg):
@@ -939,20 +940,22 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                     fixed = name
                 if '__MACOSX' in fixed or fixed.endswith('.DS_Store'): continue
                 ext = fixed.rsplit('.', 1)[-1].lower() if '.' in fixed else ''
-                if ext in TEXT_EXTS and info.file_size <= TEXT_INNER_LIMIT:
+                if ext == 'pdf' and info.file_size <= PDF_INNER_LIMIT:
+                    entries.append((name, fixed, info.file_size, 'pdf'))
+                elif ext in TEXT_EXTS and info.file_size <= TEXT_INNER_LIMIT:
                     entries.append((name, fixed, info.file_size, 'text'))
                 elif ext in IMAGE_EXTS and info.file_size <= IMAGE_INNER_LIMIT:
                     entries.append((name, fixed, info.file_size, 'image'))
-                elif ext in TEXT_EXTS or ext in IMAGE_EXTS:
+                elif ext == 'pdf' or ext in TEXT_EXTS or ext in IMAGE_EXTS:
                     entries.append((name, fixed, info.file_size, 'skip_size'))
     except Exception as e:
         return f'[Ошибка открытия архива: {e}]'
 
-    # Сначала текстовые (быстро), потом фото (медленно) — чтобы данные из docx/pdf
-    # были в карточке даже если распознавание фото ещё не закончилось при частичном сбое
-    entries.sort(key=lambda e: 0 if e[3] == 'text' else (1 if e[3] == 'image' else 2))
+    # Сначала текстовые (быстро), потом PDF и фото (медленно, vision) — чтобы данные из
+    # docx были в карточке даже если распознавание сканов ещё не закончилось
+    entries.sort(key=lambda e: 0 if e[3] == 'text' else (1 if e[3] in ('image', 'pdf') else 2))
 
-    to_process = [e for e in entries if e[3] in ('text', 'image')][:MAX_ITEMS]
+    to_process = [e for e in entries if e[3] in ('text', 'image', 'pdf')][:MAX_ITEMS]
     skipped = [e for e in entries if e[3] == 'skip_size']
     total = len(to_process)
 
@@ -960,7 +963,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
     skipped_notes = [f"{fn.split('/')[-1]} ({sz//1024//1024} МБ)" for _, fn, sz, _ in skipped]
 
     text_entries = [e for e in to_process if e[3] == 'text']
-    image_entries = [e for e in to_process if e[3] == 'image']
+    image_entries = [e for e in to_process if e[3] in ('image', 'pdf')]  # оба идут через vision-путь ниже
     done_count = [0]
 
     with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
@@ -978,7 +981,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
             except Exception as e:
                 texts.append(f"--- {short} --- [ошибка: {e}]")
 
-        # Фото — медленно (vision), поэтому по 2 одновременно вместо строго по одному.
+        # PDF и фото — медленно (vision), поэтому по 2 одновременно вместо строго по одному.
         # VISION_SEMAPHORE всё равно не даст больше 2 разом на весь сервер.
         # Каждый файл читаем из архива только в момент обработки (не грузим все фото
         # в память разом — на 121-мегабайтном архиве это была бы лишняя сотня МБ).
@@ -993,7 +996,25 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                     data = z2.read(raw_name)
             except Exception:
                 return None
-            txt = vision_extract(data, short, api_key)
+
+            if kind == 'pdf':
+                # Сначала быстрая попытка вытащить текстовый слой (мгновенно, бесплатно).
+                # Если это скан (нет текстового слоя) — падаем в vision, как с фото.
+                fast_txt = extract_text_from_file(data, short)
+                if fast_txt and len(fast_txt) > 10 and not fast_txt.startswith('['):
+                    return f"--- {folder + '/' if folder else ''}{short} ---\n" + fast_txt
+                # PDF отправляется в vision целиком (страница не рендерится отдельно — такой
+                # возможности сейчас нет), поэтому очень большие сканы намеренно не шлём —
+                # рискованно по времени/памяти. Лучше явно попросить переснять по страницам.
+                PDF_VISION_LIMIT = 8 * 1024 * 1024
+                if len(data) > PDF_VISION_LIMIT:
+                    return (f"--- {folder + '/' if folder else ''}{short} ---\n"
+                            f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания целиком — "
+                            f"пришлите этот документ отдельными фото по 1-2 страницы вместо одного большого PDF]")
+                txt = vision_extract(data, short, api_key)
+            else:
+                txt = vision_extract(data, short, api_key)
+
             if txt and len(txt) > 10 and not txt.startswith('['):
                 return f"--- {folder + '/' if folder else ''}{short} ---\n" + txt
             return None
@@ -1005,7 +1026,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                     e = futures[fut]
                     done_count[0] += 1
                     short = e[1].split('/')[-1]
-                    p(f"Распознано фото {done_count[0]}/{total}: {short}")
+                    p(f"Распознано {done_count[0]}/{total}: {short}")
                     try:
                         r = fut.result()
                         if r: texts.append(r)
