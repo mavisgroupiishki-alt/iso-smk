@@ -23,9 +23,47 @@ _DATA = Path('/data') if Path('/data').exists() else BASE_DIR/'_data'
 JOURNAL_DIR = _DATA/'journal'
 CO_DIR      = _DATA/'companies'
 OUT_DIR     = _DATA/'output'
+KV_DIR      = _DATA/'kv'
 PORT = int(os.environ.get("PORT", 8766))
 
-for d in [JOURNAL_DIR, CO_DIR, OUT_DIR]: d.mkdir(parents=True, exist_ok=True)
+for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR]: d.mkdir(parents=True, exist_ok=True)
+
+def _kv_safe_filename(key: str) -> str:
+    """window.storage работает только внутри артефактов Claude.ai — на обычном сайте
+    (наш случай, отдельный деплой на Render) его просто нет, и любой вызов падает.
+    Это простое файловое key-value хранилище на сервере — замена."""
+    import hashlib
+    safe = re.sub(r'[^a-zA-Zа-яА-Я0-9_-]', '_', key)[:80]
+    h = hashlib.md5(key.encode('utf-8')).hexdigest()[:8]
+    return f"{safe}__{h}.json"
+
+def kv_set(key: str, value: str):
+    (KV_DIR / _kv_safe_filename(key)).write_text(
+        json.dumps({'key': key, 'value': value}, ensure_ascii=False), 'utf-8')
+
+def kv_get(key: str):
+    fp = KV_DIR / _kv_safe_filename(key)
+    if not fp.exists(): return None
+    try:
+        return json.loads(fp.read_text('utf-8'))
+    except Exception:
+        return None
+
+def kv_delete(key: str):
+    fp = KV_DIR / _kv_safe_filename(key)
+    if fp.exists(): fp.unlink()
+
+def kv_list(prefix: str = ''):
+    keys = []
+    for fp in KV_DIR.glob('*.json'):
+        try:
+            data = json.loads(fp.read_text('utf-8'))
+            k = data.get('key', '')
+            if k.startswith(prefix):
+                keys.append(k)
+        except Exception:
+            continue
+    return keys
 
 # Хранилище фоновых задач генерации (на диске - переживает перезапуск)
 import threading
@@ -1205,6 +1243,17 @@ class H(http.server.BaseHTTPRequestHandler):
         if p in('/','//index.html'):          self._html(INDEX)
         elif p=='/api/companies':             self._json(get_companies())
         elif p=='/api/journal':               self._json(get_journal())
+        elif p=='/api/kv/get':
+            import urllib.parse as _urlparse
+            qs = _urlparse.parse_qs(_urlparse.urlsplit(self.path).query)
+            key = (qs.get('key') or [''])[0]
+            row = kv_get(key) if key else None
+            self._json(row if row else {'key': key, 'value': None})
+        elif p=='/api/kv/list':
+            import urllib.parse as _urlparse
+            qs = _urlparse.parse_qs(_urlparse.urlsplit(self.path).query)
+            prefix = (qs.get('prefix') or [''])[0]
+            self._json({'keys': kv_list(prefix)})
         elif p.startswith('/api/task/'):
             task_id = p.split('/')[-1]
             task = TASKS.get(task_id) or load_task(task_id)
@@ -1245,6 +1294,22 @@ class H(http.server.BaseHTTPRequestHandler):
         body=self.rfile.read(int(self.headers.get('Content-Length',0)))
         p=self.path.split('?')[0]
         try:
+            if p=='/api/kv/set':
+                data = json.loads(body.decode('utf-8'))
+                key = data.get('key', '')
+                value = data.get('value', '')
+                if not key:
+                    self._json({'success': False, 'error': 'key обязателен'}, 400); return
+                kv_set(key, value)
+                self._json({'success': True, 'key': key})
+                return
+            if p=='/api/kv/delete':
+                data = json.loads(body.decode('utf-8'))
+                key = data.get('key', '')
+                if key: kv_delete(key)
+                self._json({'success': True})
+                return
+
             # ── ИИ-чат ──────────────────────────────────────
             if p=='/api/analyze-image':
                 # Анализ изображения/PDF через BitrixGPT vision

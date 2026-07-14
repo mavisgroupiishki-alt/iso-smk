@@ -1065,7 +1065,31 @@ let aiCurrentData = {};
 let aiLoading = false;
 let aiCurrentCompanyKey = null; // ключ текущей компании в storage (генерируется по УНП или имени)
 
-// ── Постоянное хранилище данных ИИгоря (window.storage, shared между сотрудниками) ──
+// ── Постоянное хранилище данных ИИгоря (СВОЙ сервер — window.storage существует только
+//    внутри артефактов Claude.ai, на обычном сайте (наш случай) его нет вообще, и любой
+//    вызов сразу падал с ошибкой) ──
+async function kvSet(key, value) {
+  const r = await fetch('/api/kv/set', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({key, value})
+  }).then(r => r.json());
+  return r;
+}
+async function kvGet(key) {
+  const r = await fetch('/api/kv/get?key=' + encodeURIComponent(key)).then(r => r.json());
+  return (r && r.value != null) ? r : null;
+}
+async function kvList(prefix) {
+  const r = await fetch('/api/kv/list?prefix=' + encodeURIComponent(prefix || '')).then(r => r.json());
+  return (r && r.keys) || [];
+}
+async function kvDelete(key) {
+  await fetch('/api/kv/delete', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({key})
+  });
+}
+
 function aiCompanyStorageKey(data) {
   const unp = (data?.company?.unp || '').trim();
   const name = (data?.company?.name || '').trim();
@@ -1086,16 +1110,11 @@ async function aiSaveCurrentCompany() {
       savedAt: new Date().toISOString(),
       label: `${aiCurrentData.company?.form || 'ООО'} «${aiCurrentData.company?.name || '?'}»`,
     };
-    await window.storage.set(key, JSON.stringify(payload), true);
+    await kvSet(key, JSON.stringify(payload));
     // Поддерживаем общий индекс всех компаний для списка
-    let idx = [];
-    try {
-      const idxRes = await window.storage.get('igor:companies_index', true);
-      idx = idxRes ? JSON.parse(idxRes.value) : [];
-    } catch (e) { idx = []; }
-    if (!idx.includes(key)) {
-      idx.push(key);
-      await window.storage.set('igor:companies_index', JSON.stringify(idx), true);
+    const keys = await kvList('igor:company:');
+    if (!keys.includes(key)) {
+      // индекс не нужен отдельно — kvList уже даёт реальные ключи по префиксу
     }
   } catch (e) {
     console.warn('aiSaveCurrentCompany error:', e);
@@ -1104,12 +1123,11 @@ async function aiSaveCurrentCompany() {
 
 async function aiListSavedCompanies() {
   try {
-    const idxRes = await window.storage.get('igor:companies_index', true);
-    const idx = idxRes ? JSON.parse(idxRes.value) : [];
+    const keys = await kvList('igor:company:');
     const results = [];
-    for (const key of idx) {
+    for (const key of keys) {
       try {
-        const r = await window.storage.get(key, true);
+        const r = await kvGet(key);
         if (r) results.push({ key, ...JSON.parse(r.value) });
       } catch (e) { /* пропускаем повреждённые записи */ }
     }
@@ -1123,7 +1141,7 @@ async function aiListSavedCompanies() {
 
 async function aiLoadCompany(key) {
   try {
-    const r = await window.storage.get(key, true);
+    const r = await kvGet(key);
     if (!r) return false;
     const payload = JSON.parse(r.value);
     aiCurrentData = payload.data || {};
@@ -1136,7 +1154,7 @@ async function aiLoadCompany(key) {
   }
 }
 
-// ── Постоянный журнал генераций (window.storage, переживает перезапуск Render) ──
+// ── Постоянный журнал генераций (свой сервер, переживает перезапуск Render) ──
 async function aiSaveToPersistentJournal(orgName, fileCount, dates, zipB64) {
   if (!zipB64) return;
   try {
@@ -1149,14 +1167,7 @@ async function aiSaveToPersistentJournal(orgName, fileCount, dates, zipB64) {
       zipB64,
     };
     const key = 'igor:journal:' + id;
-    await window.storage.set(key, JSON.stringify(entry), true);
-    let idx = [];
-    try {
-      const idxRes = await window.storage.get('igor:journal_index', true);
-      idx = idxRes ? JSON.parse(idxRes.value) : [];
-    } catch (e) { idx = []; }
-    idx.push(key);
-    await window.storage.set('igor:journal_index', JSON.stringify(idx), true);
+    await kvSet(key, JSON.stringify(entry));
   } catch (e) {
     console.warn('aiSaveToPersistentJournal error:', e);
   }
@@ -1164,12 +1175,11 @@ async function aiSaveToPersistentJournal(orgName, fileCount, dates, zipB64) {
 
 async function aiListPersistentJournal() {
   try {
-    const idxRes = await window.storage.get('igor:journal_index', true);
-    const idx = idxRes ? JSON.parse(idxRes.value) : [];
+    const keys = await kvList('igor:journal:');
     const results = [];
-    for (const key of idx) {
+    for (const key of keys) {
       try {
-        const r = await window.storage.get(key, true);
+        const r = await kvGet(key);
         if (r) {
           const entry = JSON.parse(r.value);
           // Не тащим тяжёлый base64 в список — только метаданные
@@ -1194,7 +1204,7 @@ function aiBase64ToBlob(base64, mime) {
 
 async function aiDownloadFromJournal(key, orgName) {
   try {
-    const r = await window.storage.get(key, true);
+    const r = await kvGet(key);
     if (!r) { alert('Файл не найден в хранилище'); return; }
     const entry = JSON.parse(r.value);
     const blob = aiBase64ToBlob(entry.zipB64, 'application/zip');
@@ -1214,14 +1224,7 @@ async function aiDownloadFromJournal(key, orgName) {
 async function aiDeleteFromJournal(key) {
   if (!confirm('Удалить запись из журнала?')) return;
   try {
-    await window.storage.delete(key, true);
-    let idx = [];
-    try {
-      const idxRes = await window.storage.get('igor:journal_index', true);
-      idx = idxRes ? JSON.parse(idxRes.value) : [];
-    } catch (e) { idx = []; }
-    idx = idx.filter(k => k !== key);
-    await window.storage.set('igor:journal_index', JSON.stringify(idx), true);
+    await kvDelete(key);
     loadJournal();
   } catch (e) {
     alert('Ошибка удаления: ' + e.message);
@@ -1543,7 +1546,7 @@ function aiParseResponse(raw) {
   } catch(e) { return {message: raw}; }
 }
 
-// Ищет сохранённую компанию по части названия среди window.storage (для запросов вида "загрузи ОмиТрейд")
+// Ищет сохранённую компанию по части названия среди сохранённых на сервере (для запросов вида "загрузи ОмиТрейд")
 async function aiFindSavedCompanyByName(query) {
   const q = query.toLowerCase();
   const list = await aiListSavedCompanies();
@@ -1595,7 +1598,7 @@ async function aiSend() {
     if (foundName) {
       const found = await aiFindSavedCompanyByName(foundName);
       if (found) {
-        const r = await window.storage.get(found.key, true);
+        const r = await kvGet(found.key);
         if (r) {
           const payload = JSON.parse(r.value);
           savedCompanyContext = 'НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ «' + foundName + '» (используй как базу, пользователь будет вносить корректировки поверх этих данных, например для периодики — обнови даты, штат, объекты по новым вводным):\n'
