@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Установка ИИ-ассистента эксперта</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="//api.bitrix24.com/api/v1/"></script>
+</head>
+<body>
+  <main class="install-card">
+    <h1>ИИ-ассистент эксперта MAVIS GROUP</h1>
+    <p>Завершаем установку локального приложения в Bitrix24.</p>
+    <button id="finish-install" class="primary">Завершить установку</button>
+    <p id="status" class="muted"></p>
+  </main>
+  <script>
+    function finish() {
+      const status = document.getElementById('status');
+      status.textContent = 'Регистрируем вкладку “ИИ-ассистент” в карточке сделки...';
+      BX24.init(function () {
+        const handler = window.location.origin + '/deal';
+        BX24.callMethod('placement.bind', {
+          PLACEMENT: 'CRM_DEAL_DETAIL_TAB',
+          HANDLER: handler,
+          TITLE: 'ИИ-ассистент',
+          DESCRIPTION: 'ИИ-ассистент эксперта внутри карточки сделки MAVIS GROUP'
+        }, function (res) {
+          if (res && res.error && res.error()) {
+            status.textContent = 'Не удалось зарегистрировать вкладку: ' + res.error() + '. Проверьте права приложения: crm и placement.';
+            return;
+          }
+          status.textContent = 'Завершаем установку приложения...';
+          BX24.installFinish();
+          status.textContent = 'Установка завершена. В карточке сделки должна появиться вкладка “ИИ-ассистент”.';
+        });
+      });
+    }
+    document.getElementById('finish-install').addEventListener('click', finish);
+    window.addEventListener('load', () => setTimeout(finish, 600));
+  </script>
+</body>
+</html>

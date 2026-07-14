@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ИИ-ассистент Игорь · MAVIS GROUP</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="//api.bitrix24.com/api/v1/"></script>
+  <script src="/config.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div>
+        <h1>ИИ-ассистент Игорь</h1>
+        <p id="user-line" class="muted">Подключаемся к Bitrix24...</p>
+        <p id="category-note" class="muted small-note"></p>
+      </div>
+      <div class="actions">
+        <button id="register-deal-tab" class="secondary">Добавить вкладку в сделку</button>
+        <button id="reload" class="secondary">Обновить</button>
+      </div>
+    </header>
+
+    <section class="summary-grid">
+      <div class="summary-card"><span id="label-count-all">Активные открытые сделки</span><strong id="count-all">0</strong></div>
+      <div class="summary-card"><span>Без следующего шага</span><strong id="count-no-activity">0</strong></div>
+      <div class="summary-card"><span>Без рабочей активности 2+ дня</span><strong id="count-stale">0</strong></div>
+      <div class="summary-card"><span id="label-count-check">Не проверено</span><strong id="count-check">0</strong></div>
+    </section>
+
+
+    <section id="manager-dashboard" class="panel manager-dashboard hidden">
+      <div class="panel-header">
+        <div>
+          <h2>Кабинет руководителя / РОП</h2>
+          <p class="muted small-note">Проблемный обзор по производственным сделкам: ошибки передачи, просрочки, сделки без следующего шага и без активности.</p>
+        </div>
+        <div class="dashboard-actions">
+          <button id="load-dashboard-meta" class="secondary">Загрузить счётчики / журнал</button>
+          <button id="generate-manager-report" class="primary">Сформировать отчёт</button>
+          <button id="create-escalations" class="secondary">Создать эскалации</button>
+          <button id="run-manager-ai" class="secondary">ИИ-анализ проблемных</button>
+          <button id="generate-ai-quality-report" class="secondary">Сводка качества ИИ</button>
+        </div>
+        <div class="dashboard-filters">
+          <button class="secondary" data-dashboard-filter="all">Все</button>
+          <button class="secondary" data-dashboard-filter="handoffErrors">Ошибки передачи</button>
+          <button class="secondary" data-dashboard-filter="noNext">Без шага</button>
+          <button class="secondary" data-dashboard-filter="stale">Без активности 2+ дня</button>
+          <button class="secondary" data-dashboard-filter="overdue">Просрочено</button>
+          <button class="secondary" data-dashboard-filter="today">Сегодня</button>
+        </div>
+      </div>
+      <div id="manager-dashboard-cards" class="dashboard-grid"></div>
+      <div id="manager-dashboard-filter-label" class="muted small-note"></div>
+      <div id="manager-dashboard-owners" class="owner-grid"></div>
+      <div id="manager-report" class="manager-report hidden"></div>
+      <div id="manager-ai-report" class="manager-report hidden"></div>
+
+      <div id="handoff-journal" class="handoff-journal hidden">
+        <div class="journal-header">
+          <div>
+            <h3>Журнал ошибок передачи</h3>
+            <p class="muted small-note">Фиксирует сделки, где передача из продаж требует исправления или подтверждения.</p>
+          </div>
+          <div class="journal-actions">
+            <button id="create-handoff-reminders" class="secondary">Создать задачи по ошибкам</button>
+          </div>
+        </div>
+        <div class="journal-filters">
+          <label><span>Статус</span><select id="journal-status-filter"><option value="all">Все</option><option value="overdue">Просрочено исправление</option><option value="new">Новые ошибки</option><option value="partial">Нужно подтвердить</option></select></label>
+          <label><span>Менеджер</span><select id="journal-manager-filter"><option value="all">Все менеджеры</option></select></label>
+          <label><span>Поиск</span><input id="journal-search" type="search" placeholder="Компания, сделка, ошибка" /></label>
+        </div>
+        <div id="handoff-journal-summary" class="journal-summary"></div>
+        <div class="table-wrap">
+          <table id="handoff-journal-table">
+            <thead>
+              <tr>
+                <th>Дата проверки</th>
+                <th>Сделка</th>
+                <th>Менеджер</th>
+                <th>Эксперт</th>
+                <th>Что не передано / подтвердить</th>
+                <th>Статус</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="deals-list-panel" class="panel">
+      <div class="panel-header">
+        <h2 id="deals-title">Активные сделки</h2>
+        <div class="filters">
+          <label>
+            <span>Поиск</span>
+            <input id="search" type="search" placeholder="Компания, услуга, сделка" />
+          </label>
+        </div>
+      </div>
+      <div id="loading" class="muted">Загружаем сделки...</div>
+      <div id="error" class="error hidden"></div>
+      <div class="table-wrap">
+        <table id="deals-table" class="hidden">
+          <thead>
+            <tr>
+              <th>Компания</th>
+              <th>Сделка</th>
+              <th>Услуга</th>
+              <th>Стадия</th>
+              <th>Воронка ID</th>
+              <th>Сумма</th>
+              <th>Дата начала</th>
+              <th>Ответственный</th>
+              <th>Следующее дело</th>
+              <th>Последняя активность</th>
+              <th>Проверка передачи</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <dialog id="deal-dialog">
+      <div class="dialog-header">
+        <h2 id="dialog-title">Сделка</h2>
+        <button id="close-dialog" class="icon">×</button>
+      </div>
+      <div id="deal-details"></div>
+      <div id="deal-mode-help" class="deal-mode-help hidden">
+        <strong>Режим сделки.</strong> Ассистент работает только с текущей карточкой: анализирует передачу, ход работы, документы, дедлайны и помогает создать задачи после подтверждения эксперта.
+      </div>
+      <div class="dialog-actions workflow-actions">
+        <div class="workflow-group workflow-main">
+          <div class="workflow-title"><span>1</span> Передача из продаж</div>
+          <div class="workflow-buttons">
+            <button id="check-handoff" class="primary">Проверить передачу</button>
+            <button id="ai-handoff" class="secondary">ИИ-проверка передачи</button>
+            <button id="mark-checked" class="secondary hidden">Отметить как проверено</button>
+            <button id="create-manager-task" class="secondary hidden">Создать задачу менеджеру</button>
+          </div>
+        </div>
+
+        <div class="workflow-group">
+          <div class="workflow-title"><span>2</span> Ход работы и ИИ-анализ</div>
+          <div class="workflow-buttons">
+            <button id="ai-analyze" class="secondary">ИИ-анализ сделки</button>
+            <button id="ai-workplan" class="secondary">ИИ-ход работы</button>
+            <button id="executor-autopilot" class="secondary">Автопилот АТТ: звонок → ход работы</button>
+            <button id="find-call-recordings" class="secondary">Найти записи звонков</button>
+            <button id="generate-workplan" class="secondary">Сформировать ход работы</button>
+            <button id="create-ai-tasks" class="secondary hidden">Создать задачи ИИ</button>
+            <button id="create-workplan-tasks" class="secondary hidden">Создать задачи по ходу работы</button>
+          </div>
+        </div>
+
+        <div class="workflow-group">
+          <div class="workflow-title"><span>3</span> Документы и перечни клиенту</div>
+          <div class="workflow-buttons">
+            <button id="generate-checklist" class="secondary">Сформировать чек-лист документов</button>
+            <button id="generate-copy-list" class="secondary">Перечень копий клиенту</button>
+            <button id="send-copy-list-client" class="secondary hidden">Отправить перечень клиенту</button>
+            <button id="ai-documents" class="secondary">ИИ-проверка документов</button>
+            <button id="check-documents" class="secondary">Проверить входящие документы</button>
+          </div>
+        </div>
+
+        <div class="workflow-group">
+          <div class="workflow-title"><span>4</span> Дедлайны, задачи и база знаний</div>
+          <div class="workflow-buttons">
+            <button id="check-deadlines" class="secondary">Проверить дедлайны</button>
+            <button id="create-deadline-tasks" class="secondary hidden">Создать задачи контроля</button>
+            <button id="create-expert-task" class="secondary hidden">Создать задачу эксперту</button>
+            <button id="show-product-knowledge" class="secondary">База знаний по услуге</button>
+            <button id="write-comment" class="secondary hidden">Записать комментарий</button>
+          </div>
+        </div>
+
+        <div class="workflow-group workflow-tech">
+          <div class="workflow-title"><span>i</span> Техническое / тестирование</div>
+          <div class="workflow-buttons">
+            <button id="accept-ai-feedback" class="secondary hidden">ИИ-вывод верный</button>
+            <button id="correct-ai-feedback" class="secondary hidden">Правка к ИИ</button>
+            <button id="show-pilot-checklist" class="secondary">Чек-лист теста</button>
+            <button id="check-wazzup" class="secondary">Проверить Wazzup</button>
+            <button id="show-fields" class="secondary">Показать поля сделки</button>
+          </div>
+        </div>
+      </div>
+      <div id="analysis-result" class="analysis hidden"></div>
+    </dialog>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
