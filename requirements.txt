@@ -2,3 +2,4 @@ requests
 rarfile
 Pillow
 pillow-heif
+python-docx
