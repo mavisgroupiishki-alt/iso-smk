@@ -410,7 +410,7 @@ input::placeholder{color:#C4BDB2}
             <div style="display:flex;gap:8px;align-items:flex-start;max-width:680px">
               <div style="width:28px;height:28px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0">ИГ</div>
               <div style="padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:0.5px solid #E2E0D8;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05)">
-                Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.
+                Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.<br><br>💡 Если людей больше 3-4 или архив большой (много фото) — присылайте по одному человеку за раз (2-3 фото), так меньше риск ошибок при распознавании.
               </div>
             </div>
           </div>
@@ -1237,7 +1237,7 @@ async function aiStartNewCompany() {
   aiCurrentCompanyKey = null;
   aiRenderCard(null);
   document.getElementById('ai-messages').innerHTML = '';
-  aiAddMsg('ai', 'Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.');
+  aiAddMsg('ai', 'Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.<br><br>💡 Если людей больше 3-4 или архив большой (много фото) — присылайте по одному человеку за раз (2-3 фото), так меньше риск ошибок при распознавании.');
 }
 
 async function aiOpenCompanySwitcher() {
@@ -1823,7 +1823,7 @@ async function aiReadArchiveAsync(file) {
       return {name: file.name, content: '[Ошибка: ' + (startResp.error||'не удалось начать обработку') + ']'};
     }
     const taskId = startResp.task_id;
-    const MAX_POLLS = 200; // архив с 50-60 фото может обрабатываться долго
+    const MAX_POLLS = 600; // архив с 25-60 фото может обрабатываться до 30 минут (было 10 — не хватало)
     let pollCount = 0;
 
     while(pollCount < MAX_POLLS) {
@@ -1849,7 +1849,7 @@ async function aiReadArchiveAsync(file) {
         return {name: file.name, content: '[Задача обработки архива потерялась — попробуйте ещё раз]'};
       }
     }
-    aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: превышено время ожидания`);
+    aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: превышено время ожидания в браузере (30 минут). Попробуйте ещё раз — возможно архив слишком большой, разбейте на части поменьше (по 1-2 человека за раз).`);
     return {name: file.name, content: '[Превышено время ожидания обработки архива]'};
   } catch(err) {
     aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${err.message}`);
@@ -2121,6 +2121,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if(ok) {
           aiRestoreChatUI();
           aiRenderCardFromCurrent();
+          // Явно показываем что это восстановленные данные, а не "зависшая" страница —
+          // раньше это происходило молча и выглядело как будто приложение не обновилось.
+          const companyLabel = last.label || (aiCurrentData?.company?.name ? `${aiCurrentData.company.form||'ООО'} «${aiCurrentData.company.name}»` : 'сохранённая компания');
+          aiAddMsg('ai', `🔄 Восстановлена предыдущая работа с ${companyLabel} (сохранено ранее). ` +
+                          `Если хотите начать новый тест с чистого листа — нажмите «➕ Новая компания» слева.`);
         }
       }).catch(e => console.warn('autoload failed:', e));
     }
