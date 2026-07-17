@@ -1068,6 +1068,21 @@ document.addEventListener('DOMContentLoaded', () => {
 let aiKey = 'server'; // ключ хранится на сервере
 let aiHistory = [];
 let aiCurrentData = {};
+let aiPhotoThumbnails = {}; // filename -> base64 миниатюра, для проверки распознанных данных глазами
+
+function aiShowPhotoFull(filename) {
+  const b64 = aiPhotoThumbnails[filename];
+  if(!b64) return;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(74,54,57,.75);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:20px';
+  overlay.onclick = () => overlay.remove();
+  overlay.innerHTML = `
+    <div style="max-width:90vw;max-height:90vh;display:flex;flex-direction:column;align-items:center;gap:10px">
+      <img src="data:image/jpeg;base64,${b64}" style="max-width:100%;max-height:80vh;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.4)" />
+      <div style="color:#FFFBF6;font-size:13px;background:rgba(0,0,0,.3);padding:4px 12px;border-radius:6px">${filename} · нажмите чтобы закрыть</div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
 let aiLoading = false;
 let aiCurrentCompanyKey = null; // ключ текущей компании в storage (генерируется по УНП или имени)
 
@@ -1563,6 +1578,19 @@ function aiRenderCard(data) {
     }
   }
 
+  // Миниатюры загруженных фото — для быстрой проверки глазами, что ИИ прочитал верно
+  const thumbKeys = Object.keys(aiPhotoThumbnails);
+  if(thumbKeys.length) {
+    html += `<div class="ai-sec">📎 Загруженные фото (${thumbKeys.length}) — сверьте с данными</div>`;
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">';
+    thumbKeys.forEach(fn => {
+      html += `<img src="data:image/jpeg;base64,${aiPhotoThumbnails[fn]}" title="${fn}"
+                onclick="aiShowPhotoFull('${fn.replace(/'/g,"\\'")}')"
+                style="width:56px;height:56px;object-fit:cover;border-radius:6px;border:1px solid #E8DCC8;cursor:pointer" />`;
+    });
+    html += '</div>';
+  }
+
   // Объекты
   const objs = aiCurrentData.objects||[];
   if(objs.length) {
@@ -1760,24 +1788,31 @@ function aiRemoveFile(i) {
 }
 
 async function aiReadFile(file) {
-  // PNG/JPG — только через vision; PDF — пробует text потом vision (сервер решает)
+  // PNG/JPG/HEIC — только через vision; PDF — пробует text потом vision (сервер решает)
   // ZIP/RAR — асинхронно, с распознаванием фото внутри (фон + прогресс, не блокирует запрос)
   // DOC/DOCX/XLS/XLSX — только через extract-text
   const ext = file.name.split('.').pop().toLowerCase();
   if(ext === 'zip' || ext === 'rar') {
     return aiReadArchiveAsync(file);
   }
-  const isVisual = ['png','jpg','jpeg','webp','pdf'].includes(ext);
+  const isVisual = ['png','jpg','jpeg','webp','heic','heif','pdf'].includes(ext);
   const endpoint = isVisual ? '/api/analyze-image' : '/api/extract-text';
   return new Promise((resolve) => {
     const formData = new FormData();
     formData.append('file', file);
     fetch(endpoint, {method:'POST', body: formData})
       .then(r => r.json())
-      .then(data => resolve({
-        name: file.name,
-        content: data.text || '[Не удалось извлечь текст из файла]'
-      }))
+      .then(data => {
+        // Сохраняем миниатюру для показа рядом с данными в карточке (проверка человеком)
+        if(data.thumbnail_b64) {
+          aiPhotoThumbnails[file.name] = data.thumbnail_b64;
+        }
+        let content = data.text || '[Не удалось извлечь текст из файла]';
+        if(data.verified_match === false) {
+          content = `⚠️ [Двойная проверка распознавания разошлась — сверьте с оригиналом]\n${content}`;
+        }
+        resolve({ name: file.name, content });
+      })
       .catch(err => resolve({
         name: file.name,
         content: '[Ошибка загрузки файла: ' + err.message + ']'
