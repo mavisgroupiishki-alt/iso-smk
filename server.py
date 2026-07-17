@@ -799,15 +799,17 @@ def _downscale_image(file_bytes, max_dim=1600, quality=72):
     Ускоряет запрос и снижает риск OOM при пакетной обработке.
     Поддерживает HEIC/HEIF (iPhone по умолчанию снимает именно в этом формате,
     без pillow-heif Pillow вообще не может его открыть)."""
+    orig_mb = len(file_bytes) / 1024 / 1024
     try:
         try:
             import pillow_heif
             pillow_heif.register_heif_opener()
-        except ImportError:
-            pass
-        from PIL import Image
+        except ImportError as e:
+            print(f"  ⚠️ pillow_heif недоступен: {e}")
+        from PIL import Image, ImageOps
         import io as _io2
         img = Image.open(_io2.BytesIO(file_bytes))
+        img = ImageOps.exif_transpose(img)  # iPhone часто пишет повёрнутое фото + EXIF-флаг поворота
         if img.mode in ('RGBA', 'P'):
             img = img.convert('RGB')
         if max(img.size) > max_dim:
@@ -815,8 +817,11 @@ def _downscale_image(file_bytes, max_dim=1600, quality=72):
             img = img.resize((int(img.size[0]*ratio), int(img.size[1]*ratio)), Image.LANCZOS)
         buf = _io2.BytesIO()
         img.save(buf, 'JPEG', quality=quality, optimize=True)
+        new_mb = len(buf.getvalue()) / 1024 / 1024
+        print(f"  📉 Фото сжато: {orig_mb:.1f} МБ -> {new_mb:.2f} МБ")
         return buf.getvalue(), 'image/jpeg'
-    except Exception:
+    except Exception as e:
+        print(f"  ❌ Сжатие фото НЕ УДАЛОСЬ ({orig_mb:.1f} МБ отправится как есть): {type(e).__name__}: {e}")
         return file_bytes, None
 
 
@@ -824,7 +829,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None):
     """Синхронный вызов vision для одного файла (фото/скан). Уменьшает изображение
     перед отправкой. Ограничивает параллелизм через VISION_SEMAPHORE (не более 2 разом
     на весь сервер — иначе Render Free падает по памяти)."""
-    import base64 as _b64
+    import base64 as _b64, time as _time
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     if ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'):
         small_bytes, mt = _downscale_image(file_bytes)
@@ -834,6 +839,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None):
         media_type = 'application/pdf' if ext == 'pdf' else 'image/jpeg'
 
     b64_data = _b64.b64encode(file_bytes).decode('utf-8')
+    payload_mb = len(b64_data) / 1024 / 1024
     vibe_payload = {
         "model": VIBE_MODEL_VISION,
         "max_tokens": 1000,
@@ -845,20 +851,28 @@ def vision_extract(file_bytes, filename, api_key, media_type=None):
             ]
         }]
     }
+    print(f"  🔎 vision_extract({filename}): отправляю {payload_mb:.2f} МБ (base64), жду семафор...")
     VISION_SEMAPHORE.acquire()
+    t0 = _time.time()
     try:
         resp = req_lib.post(
             VIBE_URL, headers={"Content-Type": "application/json", "X-Api-Key": api_key},
             json=vibe_payload, timeout=90
         )
+        elapsed = _time.time() - t0
         resp.raise_for_status()
         data = resp.json()
         text = "".join(c.get("message", {}).get("content", "") for c in data.get("choices", []))
+        print(f"  ✅ vision_extract({filename}): успех за {elapsed:.1f} сек, {len(text)} символов ответа")
         return text or '[vision: пустой ответ]'
     except req_lib.exceptions.Timeout:
+        elapsed = _time.time() - t0
+        print(f"  ⏱️ vision_extract({filename}): ТАЙМАУТ через {elapsed:.1f} сек (лимит 90с) — файл {payload_mb:.2f} МБ")
         # Не повторяем тем же медленным способом — сразу быстрый текстовый фоллбэк
         return extract_text_from_file(file_bytes, filename)
     except Exception as e:
+        elapsed = _time.time() - t0
+        print(f"  ❌ vision_extract({filename}): ОШИБКА через {elapsed:.1f} сек — {type(e).__name__}: {e}")
         try:
             return extract_text_from_file(file_bytes, filename)
         except Exception:
