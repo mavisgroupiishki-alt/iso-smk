@@ -1051,7 +1051,10 @@ document.addEventListener('DOMContentLoaded', () => {
 .ai-person-detail summary::-webkit-details-marker{display:none}
 .ai-person-detail summary:hover{background:#F7EFE4}
 .ai-person-detail[open] summary{border-bottom:.5px solid #E8DCC8}
-.ai-person-detail-body{padding:8px 10px 10px 41px;display:flex;flex-direction:column;gap:3px}
+.ai-person-detail-body{padding:8px 10px 10px 41px;display:flex;flex-direction:column;gap:8px}
+.ai-field-row{display:flex;flex-direction:column;gap:1px}
+.ai-field-label{font-size:9px;color:#A6837D;text-transform:uppercase;letter-spacing:.02em}
+.ai-field-val{font-size:11px;font-weight:600;color:#4A3639;line-height:1.4;word-break:normal;overflow-wrap:break-word}
 .ai-flag-err{padding:5px 8px;border-radius:6px;background:#FCE9E7;border:.5px solid #E8B4B0;color:#B5544A;font-size:10.5px;margin-bottom:4px}
 .ai-flag-warn{padding:5px 8px;border-radius:6px;background:#FBEAE0;border:.5px solid #E8B8A0;color:#7A4235;font-size:10.5px;margin-bottom:4px}
 .ai-flag-ok{padding:5px 8px;border-radius:6px;background:#E9EFE0;border:.5px solid #B8C9A8;color:#7D8F6E;font-size:10.5px;margin-bottom:4px}
@@ -1561,7 +1564,7 @@ function aiRenderCard(data) {
             <span style="font-size:11px;color:${emptyCount>3?'#C97A5F':'#A6837D'}">${filledFields.length}/${fields.length} полей</span>
           </summary>
           <div class="ai-person-detail-body">
-            ${filledFields.length ? filledFields.map(([label,val]) => `<div class="ai-df"><span style="color:#A6837D;min-width:170px;display:inline-block">${label}:</span><span class="ai-dv">${val}</span></div>`).join('') : '<div class="ai-df" style="color:#C97A5F">Нет заполненных данных</div>'}
+            ${filledFields.length ? filledFields.map(([label,val]) => `<div class="ai-field-row"><div class="ai-field-label">${label}</div><div class="ai-field-val">${val}</div></div>`).join('') : '<div class="ai-df" style="color:#C97A5F">Нет заполненных данных</div>'}
             ${emptyCount > 0 ? `<div class="ai-df" style="color:#C97A5F;margin-top:6px">⚠️ Не заполнено полей: ${emptyCount}</div>` : ''}
           </div>
         </details>`;
