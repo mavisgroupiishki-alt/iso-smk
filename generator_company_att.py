@@ -2,19 +2,14 @@
 Модуль генерации документов на аттестацию ЮРИДИЧЕСКОГО ЛИЦА (компании) —
 аттестат соответствия (СТ — подряд, ГС — генподряд).
 
-АРХИТЕКТУРА: документы строятся программно через python-docx (реальные таблицы Word,
-не текстовые заглушки), без обращения к ИИ для текста самого документа — только
-подстановка данных в фиксированную структуру. Структура и формулировки выверены
-построчно по реальным поданным и принятым документам (ООО «Асецкий и К» — без
-генподряда, ЧУП «СК76» — с генподрядом). Это даёт гарантированно точный формат
-вместо непредсказуемого результата ИИ-генерации текста.
+АРХИТЕКТУРА: документы строятся программно через РУЧНОЙ OOXML (реальные таблицы Word),
+БЕЗ внешних зависимостей (не python-docx/lxml — они требуют lxml, которая иногда не
+устанавливается на минимальных серверных окружениях и роняла весь модуль ошибкой
+"No module named 'docx'"). Используется только встроенный модуль zipfile — гарантированно
+работает на любом сервере с Python, без риска сбоя установки пакетов.
 """
-import json, re, io
+import json, re, io, zipfile
 from pathlib import Path
-from docx import Document
-from docx.shared import Pt, Cm, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.section import WD_ORIENT
 
 BASE_DIR = Path(__file__).parent.resolve()
 _CLASSIFIER_PATH = BASE_DIR / 'classifier_company_att.json'
@@ -25,8 +20,6 @@ if not _CLASSIFIER_PATH.exists():
     )
 CLASSIFIER = json.loads(_CLASSIFIER_PATH.read_text('utf-8'))
 
-# ── Склонение организационно-правовой формы (именительный/родительный/дательный) ──
-# Небольшой фиксированный список — все формы, которые реально встречаются у клиентов.
 LEGAL_FORMS = {
     'ООО':  {'nom': 'Общество с ограниченной ответственностью',
              'gen': 'Общества с ограниченной ответственностью',
@@ -57,7 +50,6 @@ def _legal(form):
 
 
 def _quoted_name(company, case='nom'):
-    """Полное название с формой собственности в нужном падеже и правильными кавычками."""
     L = _legal(company.get('form'))
     name = company.get('name', '')
     q = L['quote']
@@ -65,8 +57,6 @@ def _quoted_name(company, case='nom'):
 
 
 def _normalize_category(category):
-    """Игорь иногда пишет в JSON текстовую строку "null" вместо настоящего null.
-    Приводим все "пустые" варианты к настоящему None."""
     if category is None:
         return None
     s = str(category).strip().lower()
@@ -76,8 +66,6 @@ def _normalize_category(category):
 
 
 def find_work_items(query: str, max_items=10):
-    """Ищет пункты 7.x классификатора по свободному тексту клиента (по началу слова —
-    русский язык сильно склоняется)."""
     q = query.lower()
     q_stems = {w[:5] for w in re.findall(r'[а-яё]{5,}', q)}
     items = CLASSIFIER['punkt_7_smr']['items']
@@ -92,9 +80,40 @@ def find_work_items(query: str, max_items=10):
     return [(code, text) for _, code, text in found[:max_items]]
 
 
+def calculate_stazh(periods: list, as_of_date: str = None) -> dict:
+    """Календарный расчёт стажа (Приказ №91): 30 дней=месяц, 12 месяцев=год."""
+    from datetime import datetime as _dt
+
+    def _parse(d):
+        if not d:
+            return None
+        for fmt in ('%d.%m.%Y', '%d.%m.%y', '%Y-%m-%d'):
+            try:
+                return _dt.strptime(d.strip(), fmt)
+            except (ValueError, AttributeError):
+                continue
+        return None
+
+    today = _parse(as_of_date) or _dt.now()
+    total_days = 0
+    for period in (periods or []):
+        start = _parse(period.get('start'))
+        end = _parse(period.get('end')) or today
+        if not start or end < start:
+            continue
+        total_days += (end - start).days + 1
+
+    months, days = divmod(total_days, 30)
+    years, months = divmod(months, 12)
+    return {
+        'years': years, 'months': months, 'days': days,
+        'total_years_rounded': round(years + months / 12 + days / 365, 1),
+        'display': f"{years} лет {months} мес. {days} дн." if years or months else f"{days} дн.",
+    }
+
+
 def check_category_requirements(category, staff_total: int, has_smetchik: bool,
                                  experience_objects: list, prior_category_years: int = 0) -> list:
-    """Возвращает список предупреждений (пустой список = всё ок)."""
     category = _normalize_category(category)
     if category is None:
         return []
@@ -126,55 +145,6 @@ def check_category_requirements(category, staff_total: int, has_smetchik: bool,
     return warnings
 
 
-def calculate_stazh(periods: list, as_of_date: str = None) -> dict:
-    """
-    Считает трудовой стаж по календарному методу — та же логика, что использует
-    типовой онлайн-калькулятор стажа (на основе Приказа Минздравсоцразвития РФ
-    от 06.02.2007 № 91): каждые 30 дней = 1 месяц, каждые 12 месяцев = 1 год.
-
-    periods: [{"start": "ДД.ММ.ГГГГ", "end": "ДД.ММ.ГГГГ" или None (по настоящее время)}, ...]
-              — берутся буквально из записей трудовой книжки (даты приёма/увольнения).
-    as_of_date: на какую дату считать (по умолчанию — сегодня).
-
-    Возвращает {'years': int, 'months': int, 'days': int, 'total_years_rounded': float}.
-    Игорю НЕ нужно самому считать стаж в уме — он просто переписывает даты приёма/увольнения
-    из трудовой книжки в periods[], а точный расчёт делает эта функция.
-    """
-    from datetime import datetime as _dt
-
-    def _parse(d):
-        if not d:
-            return None
-        for fmt in ('%d.%m.%Y', '%d.%m.%y', '%Y-%m-%d'):
-            try:
-                return _dt.strptime(d.strip(), fmt)
-            except (ValueError, AttributeError):
-                continue
-        return None
-
-    today = _parse(as_of_date) or _dt.now()
-    total_days = 0
-    for period in (periods or []):
-        start = _parse(period.get('start'))
-        end = _parse(period.get('end')) or today
-        if not start:
-            continue
-        if end < start:
-            continue
-        total_days += (end - start).days + 1  # включительно, как в трудовом законодательстве
-
-    months, days = divmod(total_days, 30)
-    years, months = divmod(months, 12)
-
-    return {
-        'years': years,
-        'months': months,
-        'days': days,
-        'total_years_rounded': round(years + months / 12 + days / 365, 1),
-        'display': f"{years} лет {months} мес. {days} дн." if years or months else f"{days} дн.",
-    }
-
-
 def _dir_init(fio: str) -> str:
     parts = (fio or '').strip().split()
     if len(parts) >= 3:
@@ -182,70 +152,84 @@ def _dir_init(fio: str) -> str:
     return fio or ''
 
 
-# ── Низкоуровневые помощники построения документа ──────────────────────────
-def _new_doc(landscape=False):
-    doc = Document()
-    sec = doc.sections[0]
-    sec.top_margin = Cm(1.5); sec.bottom_margin = Cm(1.5)
-    sec.left_margin = Cm(2.5) if not landscape else Cm(1.5)
-    sec.right_margin = Cm(1.5)
-    style = doc.styles['Normal']
-    style.font.name = 'Times New Roman'
-    style.font.size = Pt(11)
-    if landscape:
-        sec.orientation = WD_ORIENT.LANDSCAPE
-        sec.page_width, sec.page_height = sec.page_height, sec.page_width
-    return doc
+# ═══════════════════ РУЧНОЙ OOXML (без внешних зависимостей) ═══════════════════
+def _esc(s):
+    return (str(s if s not in (None, '') else '—')
+            .replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
 
 
-def _p(doc, text='', align=None, bold=False, size=11, space_after=4):
-    para = doc.add_paragraph()
-    para.paragraph_format.space_after = Pt(space_after)
-    if align == 'center':
-        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    elif align == 'right':
-        para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    elif align == 'justify':
-        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    if text:
-        run = para.add_run(text)
-        run.bold = bold
-        run.font.size = Pt(size)
-    return para
+def _para(text='', align='left', bold=False, size=22, space_after=120):
+    align_xml = {'left': 'left', 'center': 'center', 'right': 'right', 'justify': 'both'}.get(align, 'left')
+    b = '<w:b/>' if bold else ''
+    return (f'<w:p><w:pPr><w:jc w:val="{align_xml}"/><w:spacing w:after="{space_after}" w:line="276" w:lineRule="auto"/></w:pPr>'
+            f'<w:r><w:rPr>{b}<w:sz w:val="{size}"/><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/></w:rPr>'
+            f'<w:t xml:space="preserve">{_esc(text) if text else " "}</w:t></w:r></w:p>')
 
 
-def _table(doc, headers, rows, widths=None):
-    n = len(headers)
-    t = doc.add_table(rows=1, cols=n)
-    t.style = 'Table Grid'
-    hdr = t.rows[0].cells
-    for i, h in enumerate(headers):
-        hdr[i].text = ''
-        run = hdr[i].paragraphs[0].add_run(h)
-        run.bold = True
-        run.font.size = Pt(9)
-        hdr[i].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+def _cell(text, w, bold=False, align='left'):
+    align_xml = {'left': 'left', 'center': 'center'}.get(align, 'left')
+    b = '<w:b/>' if bold else ''
+    return (f'<w:tc><w:tcPr><w:tcW w:w="{w}" w:type="dxa"/><w:vAlign w:val="center"/></w:tcPr>'
+            f'<w:p><w:pPr><w:jc w:val="{align_xml}"/><w:spacing w:after="0"/></w:pPr>'
+            f'<w:r><w:rPr>{b}<w:sz w:val="18"/><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/></w:rPr>'
+            f'<w:t xml:space="preserve">{_esc(text)}</w:t></w:r></w:p></w:tc>')
+
+
+def _table(headers, rows, widths):
+    """widths — относительные веса колонок, сумма пересчитывается в твипы под ширину страницы."""
+    total_w = 9350  # ширина текстовой области A4 portrait минус поля, в твипах (~16.5 см)
+    wsum = sum(widths)
+    widths_tw = [int(total_w * w / wsum) for w in widths]
+    grid = ''.join(f'<w:gridCol w:w="{w}"/>' for w in widths_tw)
+    hdr = '<w:tr>' + ''.join(_cell(h, w, True, 'center') for h, w in zip(headers, widths_tw)) + '</w:tr>'
+    body = ''
     for row in rows:
-        cells = t.add_row().cells
-        for i, val in enumerate(row):
-            cells[i].text = ''
-            run = cells[i].paragraphs[0].add_run(str(val) if val not in (None, '') else '—')
-            run.font.size = Pt(9)
-    if widths:
-        for row in t.rows:
-            for i, w in enumerate(widths):
-                if i < len(row.cells):
-                    row.cells[i].width = Cm(w)
-    return t
+        body += '<w:tr>' + ''.join(_cell(v, w) for v, w in zip(row, widths_tw)) + '</w:tr>'
+    borders = ('<w:tblBorders>'
+               '<w:top w:val="single" w:sz="4" w:color="000000"/>'
+               '<w:left w:val="single" w:sz="4" w:color="000000"/>'
+               '<w:bottom w:val="single" w:sz="4" w:color="000000"/>'
+               '<w:right w:val="single" w:sz="4" w:color="000000"/>'
+               '<w:insideH w:val="single" w:sz="4" w:color="000000"/>'
+               '<w:insideV w:val="single" w:sz="4" w:color="000000"/>'
+               '</w:tblBorders>')
+    return (f'<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>{borders}</w:tblPr>'
+            f'<w:tblGrid>{grid}</w:tblGrid>{hdr}{body}</w:tbl>')
 
 
-def _doc_bytes(doc) -> bytes:
+_CONTENT_TYPES = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                   '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                   '<Default Extension="xml" ContentType="application/xml"/>'
+                   '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                   '</Types>')
+_RELS = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+         '</Relationships>')
+_WORD_RELS = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>')
+
+
+def _build_docx(body_blocks, landscape=False) -> bytes:
+    body = ''.join(body_blocks)
+    if landscape:
+        sect = '<w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:pgMar w:top="850" w:right="850" w:bottom="850" w:left="850"/></w:sectPr>'
+    else:
+        sect = '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="850" w:right="1417" w:bottom="850" w:left="1417"/></w:sectPr>'
+    doc_xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+               '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+               f'<w:body>{body}{sect}</w:body></w:document>')
     buf = io.BytesIO()
-    doc.save(buf)
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('[Content_Types].xml', _CONTENT_TYPES)
+        zf.writestr('_rels/.rels', _RELS)
+        zf.writestr('word/document.xml', doc_xml)
+        zf.writestr('word/_rels/document.xml.rels', _WORD_RELS)
     return buf.getvalue()
 
 
-# ── Документ 1: Заявление ───────────────────────────────────────────────────
+# ═══════════════════ Документ 1: Заявление ═══════════════════
 def gen_zayavlenie_company(company: dict, work_items: list, category: str) -> bytes:
     category = _normalize_category(category)
     L = _legal(company.get('form'))
@@ -255,57 +239,56 @@ def gen_zayavlenie_company(company: dict, work_items: list, category: str) -> by
     dir_pos = company.get('director_position', 'Директор')
     dir_init = _dir_init(company.get('director_fio', ''))
 
-    doc = _new_doc()
-
-    # Шапка заявителя
-    _p(doc, full_nom, bold=True)
-    _p(doc, company.get('address', ''))
-    _p(doc, f"р/с: {company.get('bank_details','')}" if company.get('bank_details') else '')
-    _p(doc, f"УНП {company.get('unp','')}")
-    _p(doc, f"Тел./факс: {company.get('phone','')}")
-    _p(doc, f"e-mail: {company.get('email','')}")
-    _p(doc, "")
-    _p(doc, "Исх. № ___ от ___.___.____ г.", align='right')
-    _p(doc, "")
-    _p(doc, "РУП «БЕЛСТРОЙЦЕНТР»")
-    _p(doc, "ул. Р. Люксембург, 101")
-    _p(doc, "220036, г. Минск")
-    _p(doc, "")
-    _p(doc, full_nom)
-    _p(doc, company.get('address', ''))
-    _p(doc, f"УНП {company.get('unp','')}")
-    _p(doc, f"Тел.: {company.get('phone','')}")
-    _p(doc, f"e-mail: {company.get('email','')}")
-    _p(doc, "")
-
-    _p(doc, "ЗАЯВЛЕНИЕ", align='center', bold=True, size=13)
-    _p(doc, "о получении аттестата соответствия", align='center', bold=True)
-    _p(doc, "")
-
-    _p(doc, f"Прошу провести аттестацию {full_gen} на право осуществления:", align='justify')
+    blocks = []
+    blocks.append(_para(full_nom, bold=True))
+    blocks.append(_para(company.get('address', '')))
+    if company.get('bank_details'):
+        blocks.append(_para(f"р/с: {company.get('bank_details','')}"))
+    blocks.append(_para(f"УНП {company.get('unp','')}"))
+    blocks.append(_para(f"Тел./факс: {company.get('phone','')}"))
+    blocks.append(_para(f"e-mail: {company.get('email','')}"))
+    blocks.append(_para(""))
+    blocks.append(_para("Исх. № ___ от ___.___.____ г.", align='right'))
+    blocks.append(_para(""))
+    blocks.append(_para("РУП «БЕЛСТРОЙЦЕНТР»"))
+    blocks.append(_para("ул. Р. Люксембург, 101"))
+    blocks.append(_para("220036, г. Минск"))
+    blocks.append(_para(""))
+    blocks.append(_para(full_nom))
+    blocks.append(_para(company.get('address', '')))
+    blocks.append(_para(f"УНП {company.get('unp','')}"))
+    blocks.append(_para(f"Тел.: {company.get('phone','')}"))
+    blocks.append(_para(f"e-mail: {company.get('email','')}"))
+    blocks.append(_para(""))
+    blocks.append(_para("ЗАЯВЛЕНИЕ", align='center', bold=True, size=26))
+    blocks.append(_para("о получении аттестата соответствия", align='center', bold=True))
+    blocks.append(_para(""))
+    blocks.append(_para(f"Прошу провести аттестацию {full_gen} на право осуществления:", align='justify'))
 
     if category:
-        _p(doc, f"6. Выполнение функций генерального подрядчика со стоимостью строительства свыше "
-                f"{CLASSIFIER['_meta']['genpodryad_min_cost']}. Соответствующей квалификационным "
-                f"требованиям, предъявляемым для получения аттестата соответствия {category} "
-                f"класса(ов) сложности.", align='justify')
+        blocks.append(_para(
+            f"6. Выполнение функций генерального подрядчика со стоимостью строительства свыше "
+            f"{CLASSIFIER['_meta']['genpodryad_min_cost']}. Соответствующей квалификационным "
+            f"требованиям, предъявляемым для получения аттестата соответствия {category} "
+            f"класса(ов) сложности.", align='justify'))
 
-    _p(doc, "7. Выполнение строительно-монтажных работ:", align='justify')
+    blocks.append(_para("7. Выполнение строительно-монтажных работ:", align='justify'))
     for code in work_items:
         text = CLASSIFIER['punkt_7_smr']['items'].get(code, code)
-        _p(doc, f"{code}. {text};", align='justify')
+        blocks.append(_para(f"{code}. {text};", align='justify'))
 
-    _p(doc, "соответствующей квалификационным требованиям, предъявляемым для получения "
-            "аттестатов(а) соответствия 1-4 классов(а) сложности.", align='justify')
-    _p(doc, "")
-    _p(doc, "Сведения об обособленных подразделениях, в том числе филиалах (при их наличии): нет")
-    _p(doc, "")
-    _p(doc, f"В соответствии с {CLASSIFIER['_meta']['legal_basis']} прошу оформить {full_dat} "
-            f"аттестат соответствия на бумажном носителе. Сведения, изложенные в заявлении и "
-            f"прилагаемых к нему документах, достоверны.", align='justify')
-    _p(doc, "")
+    blocks.append(_para("соответствующей квалификационным требованиям, предъявляемым для получения "
+                         "аттестатов(а) соответствия 1-4 классов(а) сложности.", align='justify'))
+    blocks.append(_para(""))
+    blocks.append(_para("Сведения об обособленных подразделениях, в том числе филиалах (при их наличии): нет"))
+    blocks.append(_para(""))
+    blocks.append(_para(
+        f"В соответствии с {CLASSIFIER['_meta']['legal_basis']} прошу оформить {full_dat} "
+        f"аттестат соответствия на бумажном носителе. Сведения, изложенные в заявлении и "
+        f"прилагаемых к нему документах, достоверны.", align='justify'))
+    blocks.append(_para(""))
+    blocks.append(_para("Приложение:", bold=True))
 
-    _p(doc, "Приложение:", bold=True)
     prilozhenie_rows = [
         ["1", "Легализованная выписка из торгового реестра страны, в которой иностранная "
               "организация учреждена, или иное эквивалентное доказательство юридического статуса "
@@ -326,160 +309,149 @@ def gen_zayavlenie_company(company: dict, work_items: list, category: str) -> by
                   "деятельности в области строительства за последние пять лет в качестве "
                   "генерального подрядчика (форма № 6).", ""]
         )
-    _table(doc, ["№ п/п", "Наименование документа", "Кол-во листов"], prilozhenie_rows,
-           widths=[1.5, 14, 2.5])
-    _p(doc, "")
-    _p(doc, "Всего:")
-    _p(doc, "")
-    _p(doc, f"{dir_pos} _____________ {dir_init}")
+    blocks.append(_table(["№ п/п", "Наименование документа", "Кол-во листов"], prilozhenie_rows,
+                          widths=[1, 8, 1.5]))
+    blocks.append(_para(""))
+    blocks.append(_para("Всего:"))
+    blocks.append(_para(""))
+    blocks.append(_para(f"{dir_pos} _____________ {dir_init}"))
 
-    return _doc_bytes(doc)
+    return _build_docx(blocks)
 
 
-# ── Заявление на отмену ─────────────────────────────────────────────────────
 def gen_zayavlenie_otmena(company: dict, old_attestat_number: str, reason: str) -> bytes:
     full_nom = _quoted_name(company, 'nom')
     dir_init = _dir_init(company.get('director_fio', ''))
-    doc = _new_doc()
-    _p(doc, full_nom, bold=True)
-    _p(doc, company.get('address', ''))
-    _p(doc, f"УНП {company.get('unp','')}")
-    _p(doc, f"Тел.: {company.get('phone','')}")
-    _p(doc, f"e-mail: {company.get('email','')}")
-    _p(doc, "")
-    _p(doc, "Исх. № ___ от ___.___.____ г.", align='right')
-    _p(doc, "")
-    _p(doc, "РУП «БЕЛСТРОЙЦЕНТР»")
-    _p(doc, "ул. Р. Люксембург, 101")
-    _p(doc, "220036, г. Минск")
-    _p(doc, "")
-    _p(doc, full_nom)
-    _p(doc, company.get('address', ''))
-    _p(doc, f"УНП {company.get('unp','')}")
-    _p(doc, "")
-    _p(doc, "ЗАЯВЛЕНИЕ", align='center', bold=True, size=13)
-    _p(doc, "о прекращении действия аттестата соответствия", align='center', bold=True)
-    _p(doc, "")
-    _p(doc, f"{full_nom} просит прекратить действие выданного ранее аттестата соответствия "
-            f"от ___.___.____ г. № {old_attestat_number}.", align='justify')
-    _p(doc, "")
-    _p(doc, f"Причина: {reason}", align='justify')
-    _p(doc, "")
-    _p(doc, "В соответствии со статьёй 36 Кодекса Республики Беларусь об архитектурной, "
-            "градостроительной и строительной деятельности.", align='justify')
-    _p(doc, "")
-    _p(doc, f"Директор _____________ {dir_init}")
-    return _doc_bytes(doc)
+    blocks = [
+        _para(full_nom, bold=True),
+        _para(company.get('address', '')),
+        _para(f"УНП {company.get('unp','')}"),
+        _para(f"Тел.: {company.get('phone','')}"),
+        _para(f"e-mail: {company.get('email','')}"),
+        _para(""),
+        _para("Исх. № ___ от ___.___.____ г.", align='right'),
+        _para(""),
+        _para("РУП «БЕЛСТРОЙЦЕНТР»"),
+        _para("ул. Р. Люксембург, 101"),
+        _para("220036, г. Минск"),
+        _para(""),
+        _para(full_nom),
+        _para(company.get('address', '')),
+        _para(f"УНП {company.get('unp','')}"),
+        _para(""),
+        _para("ЗАЯВЛЕНИЕ", align='center', bold=True, size=26),
+        _para("о прекращении действия аттестата соответствия", align='center', bold=True),
+        _para(""),
+        _para(f"{full_nom} просит прекратить действие выданного ранее аттестата соответствия "
+              f"от ___.___.____ г. № {old_attestat_number}.", align='justify'),
+        _para(""),
+        _para(f"Причина: {reason}", align='justify'),
+        _para(""),
+        _para("В соответствии со статьёй 36 Кодекса Республики Беларусь об архитектурной, "
+              "градостроительной и строительной деятельности.", align='justify'),
+        _para(""),
+        _para(f"Директор _____________ {dir_init}"),
+    ]
+    return _build_docx(blocks)
 
 
-# ── Документ 2: Форма №2 — ИТР + рабочие ────────────────────────────────────
+# ═══════════════════ Документ 2: Форма №2 — ИТР + рабочие (landscape) ═══════════════════
 def gen_form2_itr(company: dict, itr_list: list, workers: list, work_scope_text: str) -> bytes:
-    """Landscape — таблица широкая (7 колонок). Рабочие — второй раздел внутри
-    ЭТОЙ ЖЕ формы (не отдельный документ), как в реальном образце ЧУП «СК76»."""
     full_nom = _quoted_name(company, 'nom')
     dir_init = _dir_init(company.get('director_fio', ''))
     total_staff = company.get('staff_total') or (len(itr_list) + sum(w.get('count', 0) or 0 for w in workers))
     n_itr = len(itr_list)
 
-    doc = _new_doc(landscape=True)
-    _p(doc, full_nom, bold=True)
-    _p(doc, "")
-    _p(doc, "Форма № 2", align='center', bold=True)
-    _p(doc, "СВЕДЕНИЯ о составе и профессиональной квалификации руководящих работников, "
-            "специалистов и рабочих, работающих по основному месту работы", align='center', bold=True)
-    _p(doc, "")
-    _p(doc, f"Общая численность работающих {total_staff} чел., в том числе по заявляемому виду "
-            f"деятельности {total_staff} чел. по состоянию на ___.___.____ ; численность "
-            f"инженерно-технических работников по заявляемому виду деятельности {n_itr} чел.")
-    _p(doc, f"Область деятельности: {work_scope_text}")
-    _p(doc, "")
+    blocks = [
+        _para(full_nom, bold=True),
+        _para(""),
+        _para("Форма № 2", align='center', bold=True),
+        _para("СВЕДЕНИЯ о составе и профессиональной квалификации руководящих работников, "
+              "специалистов и рабочих, работающих по основному месту работы", align='center', bold=True),
+        _para(""),
+        _para(f"Общая численность работающих {total_staff} чел., в том числе по заявляемому виду "
+              f"деятельности {total_staff} чел. по состоянию на ___.___.____ ; численность "
+              f"инженерно-технических работников по заявляемому виду деятельности {n_itr} чел."),
+        _para(f"Область деятельности: {work_scope_text}"),
+        _para(""),
+    ]
 
     itr_rows = []
     for i, p_ in enumerate(itr_list, 1):
         obrazovanie = (f"{p_.get('education_level','')}, диплом {p_.get('diploma_number') or '—'} "
-                       f"выдан {p_.get('diploma_date') or '—'}, {p_.get('diploma_institution','')}, "
-                       f"{p_.get('diploma_speciality','')}, {p_.get('diploma_qualification','')}")
-        stazh = (f"{p_.get('stage_years') or '—'} лет / {p_.get('stage_years_here') or '—'}")
-        trudovaya = (f"{p_.get('trudovaya_number') or '—'}, Приказ №{p_.get('order_number') or '—'} "
+                        f"выдан {p_.get('diploma_date') or '—'}, {p_.get('diploma_institution','')}, "
+                        f"{p_.get('diploma_speciality','')}, {p_.get('diploma_qualification','')}")
+        stazh = f"{p_.get('stage_years') or '—'} / {p_.get('stage_years_here') or '—'}"
+        trudovaya = (f"{p_.get('trudovaya_number') or '—'}, Пр.№{p_.get('order_number') or '—'} "
                      f"от {p_.get('hire_date') or '—'}")
         attestat = p_.get('attestat_number') or '—'
         if p_.get('attestat_date'):
             attestat += f" от {p_.get('attestat_date')}"
         if p_.get('attestat_specialization'):
             attestat += f" {p_.get('attestat_specialization')}"
-        itr_rows.append([i, p_.get('position',''), p_.get('fio',''), obrazovanie, stazh, trudovaya, attestat])
+        itr_rows.append([str(i), p_.get('position',''), p_.get('fio',''), obrazovanie, stazh, trudovaya, attestat])
 
-    _table(doc, ["№", "Должность", "ФИО", "Образование (уровень, диплом, учреждение, специальность, квалификация)",
-                 "Стаж (по виду деятельности / у нанимателя)", "Трудовая книжка + приказ", "Аттестат, специализация"],
-           itr_rows, widths=[1, 3, 3.5, 6, 2.5, 3.5, 4])
+    blocks.append(_table(
+        ["№", "Должность", "ФИО", "Образование (уровень, диплом, учреждение, специальность, квалификация)",
+         "Стаж (по деятельности / у нанимателя)", "Трудовая книжка + приказ", "Аттестат, специализация"],
+        itr_rows, widths=[0.6, 2.2, 2.4, 4.5, 1.8, 2.6, 3.0]))
 
-    _p(doc, "")
-    _p(doc, "Раздел 2 — рабочие строительных профессий, соответствующих заявляемым видам "
-            "деятельности в области строительства согласно технологической документации на "
-            "производство строительно-монтажных работ, работающих по основному месту работы:")
+    blocks.append(_para(""))
+    blocks.append(_para("Раздел 2 — рабочие строительных профессий, соответствующих заявляемым видам "
+                         "деятельности в области строительства согласно технологической документации на "
+                         "производство строительно-монтажных работ, работающих по основному месту работы:"))
     if workers:
-        w_rows = [[i, w.get('profession',''), w.get('razryad','') or '—', w.get('count','') or '—']
+        w_rows = [[str(i), w.get('profession',''), w.get('razryad','') or '—', str(w.get('count','') or '—')]
                   for i, w in enumerate(workers, 1)]
-        _table(doc, ["№", "Профессия рабочего", "Разряд", "Количество человек"], w_rows,
-               widths=[1, 8, 3, 4])
+        blocks.append(_table(["№", "Профессия рабочего", "Разряд", "Количество человек"], w_rows,
+                              widths=[0.6, 5, 2, 2.5]))
     else:
-        _p(doc, "Сведения о рабочих не предоставлены на момент подготовки документа.")
+        blocks.append(_para("Сведения о рабочих не предоставлены на момент подготовки документа."))
 
-    _p(doc, "")
-    _p(doc, f"Директор {full_nom} _____________ {dir_init}")
-    _p(doc, "«___» _______ 202_ г.")
-    return _doc_bytes(doc)
+    blocks.append(_para(""))
+    blocks.append(_para(f"Директор {full_nom} _____________ {dir_init}"))
+    blocks.append(_para("«___» _______ 202_ г."))
+    return _build_docx(blocks, landscape=True)
 
 
-# ── Документы 3-5: сводные списки (простые таблицы) ─────────────────────────
+# ═══════════════════ Документы 3-5: сводные списки ═══════════════════
 def gen_form3_trudovye(company: dict, itr_list: list) -> bytes:
     full_nom = _quoted_name(company, 'nom')
     dir_init = _dir_init(company.get('director_fio', ''))
-    doc = _new_doc()
-    _p(doc, full_nom, bold=True)
-    _p(doc, "")
-    _p(doc, "Форма № 3", align='center', bold=True)
-    _p(doc, "СВОДНЫЙ СПИСОК трудовых книжек руководящих работников, специалистов, работающих по "
-            "основному месту работы", align='center', bold=True)
-    _p(doc, "")
-    rows = [[i, p_.get('fio',''), p_.get('position',''), p_.get('trudovaya_number') or '—']
+    rows = [[str(i), p_.get('fio',''), p_.get('position',''), p_.get('trudovaya_number') or '—']
             for i, p_ in enumerate(itr_list, 1)]
-    _table(doc, ["№ п/п", "Ф.И.О.", "Должность в соответствии с записью в трудовой книжке",
-                 "Номер трудовой книжки"], rows, widths=[1.5, 5, 7, 4])
-    _p(doc, "")
-    _p(doc, f"Директор _____________ {dir_init}")
-    _p(doc, "«___» _______ 202_ г.")
-    return _doc_bytes(doc)
+    blocks = [
+        _para(full_nom, bold=True), _para(""),
+        _para("Форма № 3", align='center', bold=True),
+        _para("СВОДНЫЙ СПИСОК трудовых книжек руководящих работников, специалистов, работающих по "
+              "основному месту работы", align='center', bold=True),
+        _para(""),
+    ]
+    blocks.append(_table(["№ п/п", "Ф.И.О.", "Должность в соответствии с записью в трудовой книжке",
+                           "Номер трудовой книжки"], rows, widths=[1, 3.5, 4.5, 2.5]))
+    blocks += [_para(""), _para(f"Директор _____________ {dir_init}"), _para("«___» _______ 202_ г.")]
+    return _build_docx(blocks)
 
 
 def gen_form4_diplomy(company: dict, itr_list: list) -> bytes:
     full_nom = _quoted_name(company, 'nom')
     dir_init = _dir_init(company.get('director_fio', ''))
-    doc = _new_doc()
-    _p(doc, full_nom, bold=True)
-    _p(doc, "")
-    _p(doc, "Форма № 4", align='center', bold=True)
-    _p(doc, "СВОДНЫЙ СПИСОК дипломов руководящих работников, специалистов, работающих по "
-            "основному месту работы", align='center', bold=True)
-    _p(doc, "")
-    rows = [[i, p_.get('fio',''), p_.get('diploma_number') or '—'] for i, p_ in enumerate(itr_list, 1)]
-    _table(doc, ["№ п/п", "Ф.И.О.", "Номер диплома"], rows, widths=[1.5, 8, 6])
-    _p(doc, "")
-    _p(doc, f"Директор _____________ {dir_init}")
-    _p(doc, "«___» _______ 202_ г.")
-    return _doc_bytes(doc)
+    rows = [[str(i), p_.get('fio',''), p_.get('diploma_number') or '—'] for i, p_ in enumerate(itr_list, 1)]
+    blocks = [
+        _para(full_nom, bold=True), _para(""),
+        _para("Форма № 4", align='center', bold=True),
+        _para("СВОДНЫЙ СПИСОК дипломов руководящих работников, специалистов, работающих по "
+              "основному месту работы", align='center', bold=True),
+        _para(""),
+    ]
+    blocks.append(_table(["№ п/п", "Ф.И.О.", "Номер диплома"], rows, widths=[1, 5, 4]))
+    blocks += [_para(""), _para(f"Директор _____________ {dir_init}"), _para("«___» _______ 202_ г.")]
+    return _build_docx(blocks)
 
 
 def gen_form5_attestaty(company: dict, itr_list: list) -> bytes:
     full_nom = _quoted_name(company, 'nom')
     dir_init = _dir_init(company.get('director_fio', ''))
-    doc = _new_doc()
-    _p(doc, full_nom, bold=True)
-    _p(doc, "")
-    _p(doc, "Форма № 5", align='center', bold=True)
-    _p(doc, "СВОДНЫЙ СПИСОК квалификационных аттестатов руководящих работников, специалистов, "
-            "работающих по основному месту работы", align='center', bold=True)
-    _p(doc, "")
     rows = []
     for i, p_ in enumerate(itr_list, 1):
         att = p_.get('attestat_number', '')
@@ -487,45 +459,46 @@ def gen_form5_attestaty(company: dict, itr_list: list) -> bytes:
             info = f"{att} с {p_.get('attestat_date_from','')} г. по {p_.get('attestat_date_to','')} г. {p_.get('attestat_specialization','')}"
         else:
             info = "нет аттестата / в процессе получения"
-        rows.append([i, p_.get('fio',''), p_.get('position',''), info])
-    _table(doc, ["№ п/п", "Ф.И.О.", "Должность", "Номер и срок действия аттестата, специализация"],
-           rows, widths=[1.5, 5, 4, 7])
-    _p(doc, "")
-    _p(doc, f"Директор _____________ {dir_init}")
-    _p(doc, "«___» _______ 202_ г.")
-    return _doc_bytes(doc)
+        rows.append([str(i), p_.get('fio',''), p_.get('position',''), info])
+    blocks = [
+        _para(full_nom, bold=True), _para(""),
+        _para("Форма № 5", align='center', bold=True),
+        _para("СВОДНЫЙ СПИСОК квалификационных аттестатов руководящих работников, специалистов, "
+              "работающих по основному месту работы", align='center', bold=True),
+        _para(""),
+    ]
+    blocks.append(_table(["№ п/п", "Ф.И.О.", "Должность", "Номер и срок действия аттестата, специализация"],
+                          rows, widths=[1, 3.5, 3, 5.5]))
+    blocks += [_para(""), _para(f"Директор _____________ {dir_init}"), _para("«___» _______ 202_ г.")]
+    return _build_docx(blocks)
 
 
 def gen_form6_opyt(company: dict, experience_objects: list) -> bytes:
     full_nom = _quoted_name(company, 'nom')
     dir_init = _dir_init(company.get('director_fio', ''))
-    doc = _new_doc()
-    _p(doc, full_nom, bold=True)
-    _p(doc, "")
-    _p(doc, "Форма № 6", align='center', bold=True)
-    _p(doc, "Сведения о наличии опыта выполнения работ (оказания услуг) по заявляемому виду "
-            "деятельности в области строительства за последние пять лет в качестве генерального "
-            "подрядчика", align='center', bold=True)
-    _p(doc, "")
     if experience_objects:
-        rows = [[i, o.get('name',''), o.get('complexity_class','')] for i, o in enumerate(experience_objects, 1)]
+        rows = [[str(i), o.get('name',''), o.get('complexity_class','')] for i, o in enumerate(experience_objects, 1)]
     else:
-        rows = [[1, '-', '-'], [2, '-', '-']]
-    _table(doc, ["№", "Наименование объекта", "Класс сложности согласно СН 3.02.07-2020"],
-           rows, widths=[1.5, 10, 5])
-    _p(doc, "")
-    _p(doc, f"Директор _____________ {dir_init}")
-    return _doc_bytes(doc)
+        rows = [["1", "-", "-"], ["2", "-", "-"]]
+    blocks = [
+        _para(full_nom, bold=True), _para(""),
+        _para("Форма № 6", align='center', bold=True),
+        _para("Сведения о наличии опыта выполнения работ (оказания услуг) по заявляемому виду "
+              "деятельности в области строительства за последние пять лет в качестве генерального "
+              "подрядчика", align='center', bold=True),
+        _para(""),
+    ]
+    blocks.append(_table(["№", "Наименование объекта", "Класс сложности согласно СН 3.02.07-2020"],
+                          rows, widths=[1, 6.5, 3.5]))
+    blocks += [_para(""), _para(f"Директор _____________ {dir_init}")]
+    return _build_docx(blocks)
 
 
-# ── Главный конвейер ─────────────────────────────────────────────────────────
+# ═══════════════════ Главный конвейер ═══════════════════
 def generate_company_attestation_package(company: dict, attestation_data: dict, api_key, vibe_call_fn,
                                           progress_cb=None) -> dict:
-    """
-    api_key/vibe_call_fn больше не используются для текста документов (генерация теперь
-    полностью детерминирована через python-docx) — оставлены в сигнатуре для совместимости
-    с существующим вызовом из generator.py.
-    """
+    """api_key/vibe_call_fn не используются (генерация детерминирована), оставлены для
+    совместимости сигнатуры с существующим вызовом из generator.py."""
     docs = []
     step = [0]
     category_for_total = _normalize_category(attestation_data.get('category'))
@@ -551,14 +524,12 @@ def generate_company_attestation_package(company: dict, attestation_data: dict, 
     experience_objects = attestation_data.get('experience_objects', [])
     prior_years = attestation_data.get('prior_category_years', 0)
 
-    # Автоматический расчёт стажа из сырых дат (Игорю не нужно считать в уме — только
-    # переписать даты приёма/увольнения из трудовой книжки в employment_periods).
+    # Автоматический расчёт стажа из сырых дат (employment_periods), если он ещё не посчитан
     for person in itr_list:
         periods = person.get('employment_periods')
         if periods and not person.get('stage_years'):
             calc = calculate_stazh(periods, as_of_date=attestation_data.get('as_of_date'))
             person['stage_years'] = calc['display']
-        # Стаж именно у текущего нанимателя — последний период в списке (если явно не указан)
         if periods and not person.get('stage_years_here'):
             last_period = periods[-1] if periods else None
             if last_period:
