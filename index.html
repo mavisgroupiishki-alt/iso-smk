@@ -7,13 +7,13 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Fira+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#F5F3EE;--surface:#FFF;--border:#DDD8CF;
-  --navy:#1E3A5F;--navyL:#2B5180;
-  --gold:#B8891A;--goldL:#F5EDD3;
-  --teal:#0B7A79;--tealL:#D6EFEF;
-  --orange:#C05C1A;--orangeL:#FAEADE;
-  --green:#2D6A4F;--greenL:#D8F0E5;
-  --red:#B91C1C;--text:#18181B;--muted:#706A5E;
+  --bg:#F7EFE4;--surface:#FFF;--border:#E8DCC8;
+  --navy:#9C5B6E;--navyL:#B97389;
+  --gold:#C97B84;--goldL:#F7DDE1;
+  --teal:#A56B75;--tealL:#F3E3E6;
+  --orange:#C97A5F;--orangeL:#FBEAE0;
+  --green:#7D8F6E;--greenL:#E9EFE0;
+  --red:#B5544A;--text:#4A3639;--muted:#A6837D;
   --r:6px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -76,7 +76,7 @@ body{font-family:'Fira Sans',sans-serif;background:var(--bg);color:var(--text);d
 
 /* ── CARDS ── */
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:16px;overflow:hidden}
-.card-head{padding:13px 20px;border-bottom:1px solid var(--border);background:#FAFAF8;display:flex;align-items:center;gap:10px}
+.card-head{padding:13px 20px;border-bottom:1px solid var(--border);background:#FAF6F0;display:flex;align-items:center;gap:10px}
 .card-head .chi{width:26px;height:26px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
 .card-head h3{font-family:'Playfair Display',serif;font-size:14px;color:var(--navy);font-weight:600}
 .card-body{padding:20px}
@@ -95,7 +95,7 @@ input,select,textarea{
   transition:border-color .14s,box-shadow .14s;
 }
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--navyL);box-shadow:0 0 0 3px rgba(43,81,128,.1)}
-input::placeholder{color:#C4BDB2}
+input::placeholder{color:#CDB8AA}
 .hint{font-size:10px;color:var(--muted)}
 .divider{height:1px;background:var(--border);margin:16px 0}
 .sec-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:10px;display:flex;align-items:center;gap:8px}
@@ -120,7 +120,7 @@ input::placeholder{color:#C4BDB2}
 }
 .co-btn:hover{opacity:.85}
 .co-btn.edit{background:var(--tealL);color:var(--teal)}
-.co-btn.del{background:#FEE2E2;color:var(--red)}
+.co-btn.del{background:#FCE5E3;color:var(--red)}
 .co-btn.gen{background:var(--navy);color:#fff}
 
 /* ── TABS ── */
@@ -152,15 +152,15 @@ input::placeholder{color:#C4BDB2}
   cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;
   transition:background .15s;margin-top:6px;
 }
-.gen-btn:hover{background:#152D4A}
-.gen-btn:disabled{background:#8FA8C4;cursor:not-allowed}
+.gen-btn:hover{background:#6B3846}
+.gen-btn:disabled{background:#C299A8;cursor:not-allowed}
 .spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .65s linear infinite;display:none}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* ── ALERTS ── */
 .alert{padding:12px 16px;border-radius:var(--r);font-size:12.5px;margin-top:12px;display:none}
-.alert.err{background:#FEF2F2;border:1px solid #FECACA;color:var(--red)}
-.alert.ok{background:#F0FDF4;border:1px solid #86EFAC;color:var(--green)}
+.alert.err{background:#FCE9E7;border:1px solid #E8B4B0;color:var(--red)}
+.alert.ok{background:#F3F3E9;border:1px solid #B8C9A8;color:var(--green)}
 
 /* ── JOURNAL ── */
 .jn-item{
@@ -195,15 +195,15 @@ input::placeholder{color:#C4BDB2}
 .modal-foot{padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px}
 
 /* ── RESULT BOX ── */
-#result-box{display:none;margin-top:16px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:var(--r);padding:18px}
+#result-box{display:none;margin-top:16px;background:#F3F3E9;border:1px solid #B8C9A8;border-radius:var(--r);padding:18px}
 #result-box h3{font-size:14px;font-weight:700;color:var(--green);margin-bottom:10px}
 .dl-btn{
   display:flex;align-items:center;gap:8px;padding:10px 14px;
-  background:#fff;border:1px solid #86EFAC;border-radius:var(--r);
+  background:#fff;border:1px solid #B8C9A8;border-radius:var(--r);
   font-size:12.5px;font-weight:600;color:var(--green);cursor:pointer;
   text-decoration:none;transition:background .12s;width:fit-content;
 }
-.dl-btn:hover{background:#F0FDF4}
+.dl-btn:hover{background:#F3F3E9}
 
 /* ── EMPTY STATE ── */
 .empty{text-align:center;padding:50px 20px;color:var(--muted)}
@@ -264,7 +264,7 @@ input::placeholder{color:#C4BDB2}
     <div id="page-docs" class="page-content">
       <div class="tabs">
         <div class="tab active" onclick="switchTab('iso',this)">🏅 ИСО / СМК</div>
-        <div class="tab" onclick="switchTab('suot',this)">🦺 СУОТ <span style="font-size:9px;background:#E2E0D8;padding:1px 6px;border-radius:8px;margin-left:4px">скоро</span></div>
+        <div class="tab" onclick="switchTab('suot',this)">🦺 СУОТ <span style="font-size:9px;background:#EDE1D6;padding:1px 6px;border-radius:8px;margin-left:4px">скоро</span></div>
       </div>
 
       <!-- ISO TAB -->
@@ -280,7 +280,7 @@ input::placeholder{color:#C4BDB2}
         <div id="sub-journals" class="subtab-content active">
           <div class="card">
             <div class="card-head">
-              <div class="chi" style="background:#EDE8F7">📚</div>
+              <div class="chi" style="background:#F2E3E9">📚</div>
               <h3>Журналы СМК</h3>
             </div>
             <div class="card-body">
@@ -288,7 +288,7 @@ input::placeholder{color:#C4BDB2}
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
                 <div id="journal-list"></div>
               </div>
-              <div style="margin-top:14px;padding:12px;background:var(--goldL);border-radius:var(--r);font-size:11.5px;color:#7A6830">
+              <div style="margin-top:14px;padding:12px;background:var(--goldL);border-radius:var(--r);font-size:11.5px;color:#8B5A5F">
                 💡 Для формирования документов выберите компанию в разделе «Компании» и нажмите «Сформировать пакет»
               </div>
             </div>
@@ -372,33 +372,33 @@ input::placeholder{color:#C4BDB2}
     <div id="page-ai" class="page-content" style="display:none;height:calc(100vh - 52px);margin:-24px -28px;flex-direction:column">
 
       <!-- KEY — задаётся через VIBE_API_KEY на сервере, не нужно вводить вручную -->
-      <div style="background:#D8F0E5;border-bottom:1px solid #86EFAC;padding:5px 20px;display:flex;align-items:center;gap:8px;flex-shrink:0">
-        <span style="font-size:11px;color:#2D6A4F">✅ ИИгорь · BitrixGPT 5.5 Thinking · Vision · Бесплатно</span>
+      <div style="background:#E9EFE0;border-bottom:1px solid #B8C9A8;padding:5px 20px;display:flex;align-items:center;gap:8px;flex-shrink:0">
+        <span style="font-size:11px;color:#7D8F6E">✅ ИИгорь · BitrixGPT 5.5 Thinking · Vision · Бесплатно</span>
       </div>
 
       <!-- CHAT + CARD LAYOUT -->
       <div style="flex:1;display:flex;overflow:hidden;min-height:0">
 
         <!-- LEFT: DATA CARD -->
-        <div style="width:280px;flex-shrink:0;background:#fff;border-right:1px solid #E2E0D8;display:flex;flex-direction:column;overflow:hidden">
-          <div style="padding:12px 14px 8px;border-bottom:1px solid #E2E0D8;background:#FAFAF8">
+        <div style="width:280px;flex-shrink:0;background:#fff;border-right:1px solid #EDE1D6;display:flex;flex-direction:column;overflow:hidden">
+          <div style="padding:12px 14px 8px;border-bottom:1px solid #EDE1D6;background:#FAF6F0">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-              <div style="font-size:12px;font-weight:700;color:#1B2B45">Карточка компании</div>
+              <div style="font-size:12px;font-weight:700;color:#8B4A5C">Карточка компании</div>
               <button onclick="aiOpenCompanySwitcher()" title="Сохранённые компании"
-                style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;color:#706A5E">📂</button>
+                style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;color:#A6837D">📂</button>
             </div>
-            <div id="ai-card-status" style="font-size:10px;color:#9D9790;margin-top:2px">Данных нет</div>
+            <div id="ai-card-status" style="font-size:10px;color:#A8938A;margin-top:2px">Данных нет</div>
           </div>
           <div id="ai-card-body" style="flex:1;overflow-y:auto;padding:10px;font-size:11px">
-            <div style="color:#B0AAA2;text-align:center;padding:20px 10px">Передайте данные в чате →</div>
+            <div style="color:#B49E93;text-align:center;padding:20px 10px">Передайте данные в чате →</div>
           </div>
-          <div style="padding:10px;border-top:1px solid #E2E0D8;display:flex;flex-direction:column;gap:6px">
+          <div style="padding:10px;border-top:1px solid #EDE1D6;display:flex;flex-direction:column;gap:6px">
             <button onclick="aiStartNewCompany()"
-              style="width:100%;height:28px;background:#fff;color:#706A5E;border:1px solid #D8D4CB;border-radius:6px;font-size:11px;cursor:pointer">
+              style="width:100%;height:28px;background:#fff;color:#A6837D;border:1px solid #E3D5C7;border-radius:6px;font-size:11px;cursor:pointer">
               ➕ Новая компания
             </button>
             <button id="ai-gen-btn" onclick="aiGenerate()" disabled
-              style="width:100%;height:36px;background:#8FA8C4;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:not-allowed;transition:background .15s">
+              style="width:100%;height:36px;background:#C299A8;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:not-allowed;transition:background .15s">
               📦 Сформировать пакет
             </button>
           </div>
@@ -408,8 +408,8 @@ input::placeholder{color:#C4BDB2}
         <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
           <div id="ai-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px">
             <div style="display:flex;gap:8px;align-items:flex-start;max-width:680px">
-              <div style="width:28px;height:28px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0">ИГ</div>
-              <div style="padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:0.5px solid #E2E0D8;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+              <div style="width:28px;height:28px;border-radius:50%;background:#8B4A5C;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0">ИГ</div>
+              <div style="padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:0.5px solid #EDE1D6;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05)">
                 Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.<br><br>💡 Если людей больше 3-4 или архив большой (много фото) — присылайте по одному человеку за раз (2-3 фото), так меньше риск ошибок при распознавании.
               </div>
             </div>
@@ -425,26 +425,26 @@ input::placeholder{color:#C4BDB2}
           </div>
 
           <!-- INPUT -->
-          <div style="padding:10px 14px;border-top:1px solid #E2E0D8;background:#fff">
+          <div style="padding:10px 14px;border-top:1px solid #EDE1D6;background:#fff">
             <div id="ai-file-list" style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px"></div>
             <div style="display:flex;gap:7px;align-items:flex-end">
-              <div style="flex:1;border:1px solid #C8C5BC;border-radius:12px;overflow:hidden;transition:border-color .15s">
+              <div style="flex:1;border:1px solid #D4C4B8;border-radius:12px;overflow:hidden;transition:border-color .15s">
                 <textarea id="ai-input" rows="2" placeholder="Вставьте текст от эксперта или напишите правку..."
                   onkeydown="aiHandleKey(event)" oninput="aiResize(this)"
                   style="width:100%;padding:8px 11px;border:none;outline:none;resize:none;font-family:inherit;font-size:12.5px;line-height:1.5;max-height:100px;min-height:38px;background:transparent"></textarea>
-                <div style="padding:4px 8px;border-top:0.5px solid #E2E0D8;display:flex;align-items:center;gap:8px">
-                  <label style="display:flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:4px;border:0.5px solid #C8C5BC;background:transparent;font-size:10.5px;color:#706A5E;cursor:pointer;font-family:inherit;user-select:none">
+                <div style="padding:4px 8px;border-top:0.5px solid #EDE1D6;display:flex;align-items:center;gap:8px">
+                  <label style="display:flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:4px;border:0.5px solid #D4C4B8;background:transparent;font-size:10.5px;color:#A6837D;cursor:pointer;font-family:inherit;user-select:none">
                     📎 Прикрепить файл
                     <input type="file" multiple
                       accept=".txt,.docx,.pdf,.xlsx,.xls,.csv,.doc,.zip,.rar,.png,.jpg,.jpeg"
                       style="display:none"
                       id="ai-file-input">
                   </label>
-                  <span style="font-size:10px;color:#B0AAA2">pdf, png, jpg — читает ИИ · docx, xlsx, zip · Enter — отправить</span>
+                  <span style="font-size:10px;color:#B49E93">pdf, png, jpg — читает ИИ · docx, xlsx, zip · Enter — отправить</span>
                 </div>
               </div>
               <button id="ai-send-btn" onclick="aiSend()"
-                style="width:36px;height:36px;border-radius:8px;background:#1B2B45;border:none;cursor:pointer;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s">➤</button>
+                style="width:36px;height:36px;border-radius:8px;background:#8B4A5C;border:none;cursor:pointer;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s">➤</button>
             </div>
             <!-- file input moved to body -->
           </div>
@@ -644,7 +644,7 @@ input::placeholder{color:#C4BDB2}
       </button>
 
       <div id="gen-error" class="alert err"></div>
-      <div id="gen-result" style="display:none;margin-top:14px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:var(--r);padding:16px">
+      <div id="gen-result" style="display:none;margin-top:14px;background:#F3F3E9;border:1px solid #B8C9A8;border-radius:var(--r);padding:16px">
         <div style="font-size:13px;font-weight:700;color:var(--green);margin-bottom:8px">✅ Документы готовы!</div>
         <div id="gen-result-info" style="font-size:12px;color:var(--green);margin-bottom:12px"></div>
         <a id="gen-dl-link" class="dl-btn" href="#" onclick="downloadZip(event)">
@@ -768,13 +768,13 @@ function renderDocLists() {
   
   const jl = document.getElementById('journal-list');
   if (jl) jl.outerHTML = `<div id="journal-list" style="display:contents">${JOURNALS.map(i => `
-    <div style="background:#F3F0FA;padding:8px 10px;border-radius:4px;font-size:11.5px;display:flex;align-items:center;gap:6px">
+    <div style="background:#F5E8ED;padding:8px 10px;border-radius:4px;font-size:11.5px;display:flex;align-items:center;gap:6px">
       <span>📓</span> ${i}
     </div>`).join('')}</div>`;
   
-  renderList(DI_LIST, 'di-list', '#EFF9F7');
+  renderList(DI_LIST, 'di-list', '#F5EAE8');
   renderList(SMK_LIST, 'smk-list', '#FFF8F0');
-  renderList(CARDS_LIST, 'cards-list', '#F0FDF4');
+  renderList(CARDS_LIST, 'cards-list', '#F3F3E9');
 }
 
 // ── COMPANIES ─────────────────────────────────────────────
@@ -1028,30 +1028,36 @@ document.addEventListener('DOMContentLoaded', () => {
 .prod-btn{font-size:11px;padding:4px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);cursor:pointer;font-family:inherit;transition:all .12s}
 .prod-btn:hover{background:rgba(255,255,255,.18);color:#fff}
 .active-prod{background:var(--accent)!important;border-color:var(--accent)!important;color:#fff!important;font-weight:700}
-.ai-qr{font-size:11px;padding:4px 10px;border-radius:16px;border:1px solid #C8C5BC;background:#fff;color:#18181B;cursor:pointer;font-family:inherit;transition:all .12s}
-.ai-qr:hover{border-color:#2B4166;color:#1B2B45;background:#E6F1FB}
+.ai-qr{font-size:11px;padding:4px 10px;border-radius:16px;border:1px solid #D4C4B8;background:#fff;color:#4A3639;cursor:pointer;font-family:inherit;transition:all .12s}
+.ai-qr:hover{border-color:#7A4552;color:#8B4A5C;background:#F3E4E8}
 .ai-msg-ai{display:flex;gap:8px;align-items:flex-start;max-width:680px;align-self:flex-start}
 .ai-msg-user{display:flex;gap:8px;align-items:flex-start;max-width:680px;align-self:flex-end;flex-direction:row-reverse}
-.ai-bubble-ai{padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:.5px solid #E2E0D8;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05);max-width:calc(100% - 40px)}
-.ai-bubble-user{padding:9px 12px;border-radius:10px;border-bottom-right-radius:3px;background:#1B2B45;color:#fff;font-size:12.5px;line-height:1.55;max-width:calc(100% - 40px)}
+.ai-bubble-ai{padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:.5px solid #EDE1D6;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05);max-width:calc(100% - 40px)}
+.ai-bubble-user{padding:9px 12px;border-radius:10px;border-bottom-right-radius:3px;background:#8B4A5C;color:#fff;font-size:12.5px;line-height:1.55;max-width:calc(100% - 40px)}
 .ai-avatar{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0}
-.ai-q-block{margin-top:8px;padding:8px 10px;background:#FDF8EE;border:1px solid #F5EDD3;border-radius:8px}
-.ai-q-title{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#B8891A;margin-bottom:4px}
-.ai-q-item{display:flex;gap:5px;padding:3px 0;border-bottom:.5px solid #F5EDD3;font-size:11px}
+.ai-q-block{margin-top:8px;padding:8px 10px;background:#FDF8EE;border:1px solid #F7DDE1;border-radius:8px}
+.ai-q-title{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#C97B84;margin-bottom:4px}
+.ai-q-item{display:flex;gap:5px;padding:3px 0;border-bottom:.5px solid #F7DDE1;font-size:11px}
 .ai-q-item:last-child{border-bottom:none}
-.ai-df{display:flex;justify-content:space-between;padding:4px 6px;border-bottom:.5px solid #E2E0D8;gap:6px}
+.ai-df{display:flex;justify-content:space-between;padding:4px 6px;border-bottom:.5px solid #EDE1D6;gap:6px}
 .ai-df:last-child{border-bottom:none}
-.ai-dl{font-size:9.5px;color:#706A5E;flex-shrink:0}
-.ai-dv{font-size:10.5px;font-weight:600;color:#2D6A4F;text-align:right;word-break:break-word}
-.ai-person{display:flex;align-items:center;gap:5px;padding:4px 7px;border-radius:6px;background:#E6F1FB;border:.5px solid #B5D4F4;margin-bottom:3px}
-.ai-pname{font-size:10.5px;font-weight:700;color:#1B2B45}
-.ai-prole{font-size:9.5px;color:#3D5A84}
-.ai-flag-err{padding:5px 8px;border-radius:6px;background:#FEF2F2;border:.5px solid #FECACA;color:#B91C1C;font-size:10.5px;margin-bottom:4px}
-.ai-flag-warn{padding:5px 8px;border-radius:6px;background:#FAEADE;border:.5px solid #F5C895;color:#7A3810;font-size:10.5px;margin-bottom:4px}
-.ai-flag-ok{padding:5px 8px;border-radius:6px;background:#D8F0E5;border:.5px solid #86EFAC;color:#2D6A4F;font-size:10.5px;margin-bottom:4px}
-.ai-sec{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#9D9790;margin:8px 0 4px;display:flex;align-items:center;gap:5px}
-.ai-sec::after{content:'';flex:1;height:.5px;background:#E2E0D8}
-.typing-dot{width:5px;height:5px;border-radius:50%;background:#706A5E;animation:tdot .8s infinite;display:inline-block;margin:0 2px}
+.ai-dl{font-size:9.5px;color:#A6837D;flex-shrink:0}
+.ai-dv{font-size:10.5px;font-weight:600;color:#7D8F6E;text-align:right;word-break:break-word}
+.ai-person{display:flex;align-items:center;gap:5px;padding:4px 7px;border-radius:6px;background:#F3E4E8;border:.5px solid #E0BFC7;margin-bottom:3px}
+.ai-pname{font-size:10.5px;font-weight:700;color:#8B4A5C}
+.ai-prole{font-size:9.5px;color:#A66678}
+.ai-person-detail{border-radius:8px;background:#FDF8EE;border:.5px solid #E8DCC8;margin-bottom:6px;overflow:hidden}
+.ai-person-detail summary{display:flex;align-items:center;gap:7px;padding:7px 9px;cursor:pointer;list-style:none}
+.ai-person-detail summary::-webkit-details-marker{display:none}
+.ai-person-detail summary:hover{background:#F7EFE4}
+.ai-person-detail[open] summary{border-bottom:.5px solid #E8DCC8}
+.ai-person-detail-body{padding:8px 10px 10px 41px;display:flex;flex-direction:column;gap:3px}
+.ai-flag-err{padding:5px 8px;border-radius:6px;background:#FCE9E7;border:.5px solid #E8B4B0;color:#B5544A;font-size:10.5px;margin-bottom:4px}
+.ai-flag-warn{padding:5px 8px;border-radius:6px;background:#FBEAE0;border:.5px solid #E8B8A0;color:#7A4235;font-size:10.5px;margin-bottom:4px}
+.ai-flag-ok{padding:5px 8px;border-radius:6px;background:#E9EFE0;border:.5px solid #B8C9A8;color:#7D8F6E;font-size:10.5px;margin-bottom:4px}
+.ai-sec{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#A8938A;margin:8px 0 4px;display:flex;align-items:center;gap:5px}
+.ai-sec::after{content:'';flex:1;height:.5px;background:#EDE1D6}
+.typing-dot{width:5px;height:5px;border-radius:50%;background:#A6837D;animation:tdot .8s infinite;display:inline-block;margin:0 2px}
 .typing-dot:nth-child(2){animation-delay:.15s}
 .typing-dot:nth-child(3){animation-delay:.3s}
 @keyframes tdot{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-4px)}}
@@ -1250,12 +1256,12 @@ async function aiOpenCompanySwitcher() {
     document.body.appendChild(modal);
   }
   modal.innerHTML = `<div style="background:#fff;border-radius:12px;width:420px;max-height:70vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.2)">
-    <div style="padding:14px 18px;border-bottom:1px solid #E2E0D8;display:flex;justify-content:space-between;align-items:center">
-      <div style="font-weight:700;font-size:13px;color:#1B2B45">📂 Сохранённые компании</div>
-      <button onclick="document.getElementById('ai-switcher-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:16px;color:#9D9790">✕</button>
+    <div style="padding:14px 18px;border-bottom:1px solid #EDE1D6;display:flex;justify-content:space-between;align-items:center">
+      <div style="font-weight:700;font-size:13px;color:#8B4A5C">📂 Сохранённые компании</div>
+      <button onclick="document.getElementById('ai-switcher-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:16px;color:#A8938A">✕</button>
     </div>
     <div id="ai-switcher-list" style="overflow-y:auto;padding:10px">
-      <div style="text-align:center;padding:20px;color:#B0AAA2;font-size:11px">Загрузка...</div>
+      <div style="text-align:center;padding:20px;color:#B49E93;font-size:11px">Загрузка...</div>
     </div>
   </div>`;
 
@@ -1264,7 +1270,7 @@ async function aiOpenCompanySwitcher() {
   if(!listEl) return; // модалка могла закрыться пока грузили
 
   if(!list.length) {
-    listEl.innerHTML = '<div style="text-align:center;padding:20px;color:#B0AAA2;font-size:11px">Нет сохранённых компаний</div>';
+    listEl.innerHTML = '<div style="text-align:center;padding:20px;color:#B49E93;font-size:11px">Нет сохранённых компаний</div>';
     return;
   }
 
@@ -1272,10 +1278,10 @@ async function aiOpenCompanySwitcher() {
     const dateStr = item.savedAt ? new Date(item.savedAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
     const isCurrent = item.key === aiCurrentCompanyKey;
     return `<div onclick="aiSwitchToCompany('${item.key}')"
-      style="padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:4px;border:1px solid ${isCurrent ? '#B8891A' : '#E2E0D8'};background:${isCurrent ? '#FBF4E4' : '#fff'}"
-      onmouseover="this.style.background='#F5F3EE'" onmouseout="this.style.background='${isCurrent ? '#FBF4E4' : '#fff'}'">
-      <div style="font-size:12px;font-weight:700;color:#1B2B45">${item.label || 'Без названия'}${isCurrent ? ' · текущая' : ''}</div>
-      <div style="font-size:10px;color:#9D9790;margin-top:2px">Сохранено: ${dateStr}</div>
+      style="padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:4px;border:1px solid ${isCurrent ? '#C97B84' : '#EDE1D6'};background:${isCurrent ? '#FAF1E3' : '#fff'}"
+      onmouseover="this.style.background='#F7EFE4'" onmouseout="this.style.background='${isCurrent ? '#FAF1E3' : '#fff'}'">
+      <div style="font-size:12px;font-weight:700;color:#8B4A5C">${item.label || 'Без названия'}${isCurrent ? ' · текущая' : ''}</div>
+      <div style="font-size:10px;color:#A8938A;margin-top:2px">Сохранено: ${dateStr}</div>
     </div>`;
   }).join('');
 }
@@ -1356,9 +1362,9 @@ function aiAddMsg(role, text, questions, id) {
   if(id) d.id = id;
   let qHtml = '';
   if(questions && questions.length) {
-    qHtml = `<div class="ai-q-block"><div class="ai-q-title">❓ Нужна информация</div>${questions.map((q,i)=>`<div class="ai-q-item"><span style="font-weight:700;color:#B8891A;flex-shrink:0">${i+1}.</span><span>${q}</span></div>`).join('')}</div>`;
+    qHtml = `<div class="ai-q-block"><div class="ai-q-title">❓ Нужна информация</div>${questions.map((q,i)=>`<div class="ai-q-item"><span style="font-weight:700;color:#C97B84;flex-shrink:0">${i+1}.</span><span>${q}</span></div>`).join('')}</div>`;
   }
-  const avatarStyle = `background:${role==='ai'?'#1B2B45':'#B8891A'}`;
+  const avatarStyle = `background:${role==='ai'?'#8B4A5C':'#C97B84'}`;
   d.innerHTML = `<div class="ai-avatar" style="${avatarStyle}">${role==='ai'?'ИГ':'ОФ'}</div><div class="${role==='ai'?'ai-bubble-ai':'ai-bubble-user'}">${text}${qHtml}</div>`;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
@@ -1377,7 +1383,7 @@ function aiShowTyping() {
   const box = document.getElementById('ai-messages');
   const d = document.createElement('div');
   d.className = 'ai-msg-ai'; d.id = 'ai-typing';
-  d.innerHTML = `<div class="ai-avatar" style="background:#1B2B45">ИГ</div><div class="ai-bubble-ai"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
+  d.innerHTML = `<div class="ai-avatar" style="background:#8B4A5C">ИГ</div><div class="ai-bubble-ai"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
   box.appendChild(d); box.scrollTop = box.scrollHeight;
 }
 function aiRemoveTyping(){const t=document.getElementById('ai-typing');if(t)t.remove();}
@@ -1387,11 +1393,11 @@ function aiRenderCard(data) {
     // Полная очистка карточки (для новой компании)
     aiCurrentData = {};
     const cc = document.getElementById('ai-card-body');
-    if(cc) cc.innerHTML = '<div style="color:#B0AAA2;text-align:center;padding:20px 10px">Передайте данные в чате →</div>';
+    if(cc) cc.innerHTML = '<div style="color:#B49E93;text-align:center;padding:20px 10px">Передайте данные в чате →</div>';
     const st0 = document.getElementById('ai-card-status');
     if(st0) st0.textContent = 'Данных нет';
     const genBtn0 = document.getElementById('ai-gen-btn');
-    if(genBtn0) { genBtn0.disabled = true; genBtn0.style.background = '#8FA8C4'; genBtn0.style.cursor = 'not-allowed'; }
+    if(genBtn0) { genBtn0.disabled = true; genBtn0.style.background = '#C299A8'; genBtn0.style.cursor = 'not-allowed'; }
     return;
   }
   if(!data) return;
@@ -1462,7 +1468,7 @@ function aiRenderCard(data) {
     staff.forEach(p => {
       const otBadge = p.ot_certificate ? (' · 🛡' + (p.ot_certificate_date && p.ot_certificate_date!=='undefined' ? ' '+p.ot_certificate_date : '')) : '';
       const roleBadge = p.role ? (' · '+(rl[p.role]||p.role)) : '';
-      html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#1B2B45;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${(p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase()}</div><div><div class="ai-pname">${p.fio||''}</div><div class="ai-prole">${p.position||''}${roleBadge}${otBadge}</div></div></div>`;
+      html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#8B4A5C;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${(p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase()}</div><div><div class="ai-pname">${p.fio||''}</div><div class="ai-prole">${p.position||''}${roleBadge}${otBadge}</div></div></div>`;
     });
   }
 
@@ -1473,7 +1479,7 @@ function aiRenderCard(data) {
     workers.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🦺 ${w}</span></div>`);
     html += '</div>';
   } else if(staff.length) {
-    html += '<div class="ai-sec" style="color:#C05C1A">⚠️ Рабочие профессии не указаны</div>';
+    html += '<div class="ai-sec" style="color:#C97A5F">⚠️ Рабочие профессии не указаны</div>';
   }
 
   // Виды работ для СПК
@@ -1498,9 +1504,9 @@ function aiRenderCard(data) {
     html += '</div>';
   }
 
-  // Аттестация компании (юрлица)
+  // Аттестация компании (юрлица) — с полными данными по каждому человеку (раскрывается по клику)
   const compAtt = aiCurrentData.company_attestation;
-  if(compAtt && (compAtt.work_items?.length || compAtt.category || compAtt.is_cancellation)) {
+  if(compAtt && (compAtt.work_items?.length || compAtt.category || compAtt.is_cancellation || (compAtt.itr||[]).length)) {
     const catLabel = compAtt.category ? `Генподряд, категория ${compAtt.category} (ГС)` : 'Подряд (СТ, без генподряда)';
     html += `<div class="ai-sec">🏢 Аттестация компании — ${compAtt.is_cancellation ? 'заявление на отмену' : catLabel}</div><div>`;
     if(!compAtt.is_cancellation) {
@@ -1508,6 +1514,53 @@ function aiRenderCard(data) {
       html += `<div class="ai-df"><span class="ai-dv">Штат: ${compAtt.staff_total||'?'} чел., ИТР: ${(compAtt.itr||[]).length}, сметчик: ${compAtt.has_smetchik ? 'есть' : 'нет'}</span></div>`;
     }
     html += '</div>';
+
+    const itrPeople = compAtt.itr || [];
+    if(itrPeople.length) {
+      html += '<div class="ai-sec">👤 ИТР — полные данные (нажмите чтобы раскрыть)</div>';
+      itrPeople.forEach((p, idx) => {
+        const initials = (p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase();
+        const fields = [
+          ['Образование', p.education_level],
+          ['Диплом №', p.diploma_number],
+          ['Дата выдачи диплома', p.diploma_date],
+          ['Учебное заведение', p.diploma_institution],
+          ['Специальность', p.diploma_speciality],
+          ['Квалификация', p.diploma_qualification],
+          ['Стаж по деятельности', p.stage_years],
+          ['Стаж у нанимателя', p.stage_years_here],
+          ['Трудовая книжка №', p.trudovaya_number],
+          ['Приказ о приёме', p.order_number ? `№${p.order_number}${p.hire_date ? ' от '+p.hire_date : ''}` : ''],
+          ['Аттестат №', p.attestat_number],
+          ['Аттестат действителен', (p.attestat_date_from||p.attestat_date_to) ? `с ${p.attestat_date_from||'?'} по ${p.attestat_date_to||'?'}` : ''],
+          ['Специализация аттестата', p.attestat_specialization],
+          ['Паспорт', p.passport_series && p.passport_number ? `${p.passport_series} ${p.passport_number}` : ''],
+          ['Идентификационный №', p.id_number],
+        ];
+        const filledFields = fields.filter(([_, v]) => v && v !== '—');
+        const emptyCount = fields.length - filledFields.length;
+        html += `<details class="ai-person-detail">
+          <summary>
+            <div style="width:22px;height:22px;border-radius:50%;background:#8B4A5C;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${initials}</div>
+            <div style="flex:1"><div class="ai-pname">${p.fio||'?'}</div><div class="ai-prole">${p.position||''}</div></div>
+            <span style="font-size:11px;color:${emptyCount>3?'#C97A5F':'#A6837D'}">${filledFields.length}/${fields.length} полей</span>
+          </summary>
+          <div class="ai-person-detail-body">
+            ${filledFields.length ? filledFields.map(([label,val]) => `<div class="ai-df"><span style="color:#A6837D;min-width:170px;display:inline-block">${label}:</span><span class="ai-dv">${val}</span></div>`).join('') : '<div class="ai-df" style="color:#C97A5F">Нет заполненных данных</div>'}
+            ${emptyCount > 0 ? `<div class="ai-df" style="color:#C97A5F;margin-top:6px">⚠️ Не заполнено полей: ${emptyCount}</div>` : ''}
+          </div>
+        </details>`;
+      });
+    }
+
+    const compWorkers = compAtt.workers || [];
+    if(compWorkers.length) {
+      html += '<div class="ai-sec">🦺 Рабочие (' + compWorkers.length + ')</div><div>';
+      compWorkers.forEach(w => {
+        html += `<div class="ai-df"><span class="ai-dv">${w.profession||'?'} — разряд ${w.razryad||'—'}, ${w.count||'?'} чел.</span></div>`;
+      });
+      html += '</div>';
+    }
   }
 
   // Объекты
@@ -1526,13 +1579,13 @@ function aiRenderCard(data) {
     html += '</div>';
   }
 
-  document.getElementById('ai-card-body').innerHTML = html || '<div style="color:#B0AAA2;text-align:center;padding:20px 10px">Передайте данные в чате →</div>';
+  document.getElementById('ai-card-body').innerHTML = html || '<div style="color:#B49E93;text-align:center;padding:20px 10px">Передайте данные в чате →</div>';
 
   // Кнопка генерации
   const btn = document.getElementById('ai-gen-btn');
   if(r==='ready'||r==='partial'||r==='review') {
     btn.disabled = false;
-    btn.style.cssText = 'width:100%;height:36px;background:#0B7A79;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s';
+    btn.style.cssText = 'width:100%;height:36px;background:#A56B75;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s';
   }
 }
 
@@ -1695,7 +1748,7 @@ function aiHandleFiles(files) {
 function aiRenderFileList() {
   const box = document.getElementById('ai-file-list');
   box.innerHTML = aiAttachedFiles.map((f,i) => `
-    <div style="display:flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;background:#D6EFEF;border:0.5px solid #9FE1CB;font-size:10.5px;color:#0B7A79">
+    <div style="display:flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;background:#F3E3E6;border:0.5px solid #C3A8A0;font-size:10.5px;color:#A56B75">
       📄 ${f.name}
       <span onclick="aiRemoveFile(${i})" style="cursor:pointer;opacity:.7;margin-left:2px">✕</span>
     </div>`).join('');
@@ -1914,13 +1967,13 @@ async function aiGenerate() {
   const progDiv = document.createElement('div');
   progDiv.id = progressId;
   progDiv.className = 'ai-msg-ai';
-  progDiv.innerHTML = `<div class="ai-avatar" style="background:#1B2B45">ИГ</div>
+  progDiv.innerHTML = `<div class="ai-avatar" style="background:#8B4A5C">ИГ</div>
     <div class="ai-bubble-ai">
       <div id="${progressId}-text" style="margin-bottom:8px">📋 Анализирую данные компании...</div>
-      <div style="background:#E2E0D8;border-radius:4px;height:6px;overflow:hidden">
-        <div id="${progressId}-bar" style="background:#0B7A79;height:100%;width:0%;transition:width .5s;border-radius:4px"></div>
+      <div style="background:#EDE1D6;border-radius:4px;height:6px;overflow:hidden">
+        <div id="${progressId}-bar" style="background:#A56B75;height:100%;width:0%;transition:width .5s;border-radius:4px"></div>
       </div>
-      <div id="${progressId}-pct" style="font-size:10px;color:#9D9790;margin-top:4px">0%</div>
+      <div id="${progressId}-pct" style="font-size:10px;color:#A8938A;margin-top:4px">0%</div>
     </div>`;
   document.getElementById('ai-messages').appendChild(progDiv);
   document.getElementById('ai-messages').scrollTop = 99999;
@@ -1965,7 +2018,7 @@ async function aiGenerate() {
       // Кнопка ручной проверки
       const checkBtn = document.createElement('button');
       checkBtn.textContent = '🔄 Проверить статус';
-      checkBtn.style = 'margin-top:8px;padding:4px 10px;border-radius:4px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:11px';
+      checkBtn.style = 'margin-top:8px;padding:4px 10px;border-radius:4px;border:1px solid #D4C4B8;background:#fff;cursor:pointer;font-size:11px';
       checkBtn.onclick = async () => {
         try {
           const raw2 = await fetch('/api/task/' + taskId).then(x=>x.text());
@@ -1977,14 +2030,14 @@ async function aiGenerate() {
             await aiSaveToPersistentJournal(tr.orgName, tr.fileCount, tr.dates, tr.zipB64);
             const safeOrg = (tr.orgName||'documents').replace(/[^\wа-яё\s-]/gi,'');
             const warnBlock = (tr.warnings && tr.warnings.length)
-              ? `<div style="margin-top:10px;padding:10px 12px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:12.5px;color:#9A3412">
+              ? `<div style="margin-top:10px;padding:10px 12px;background:#FBF0E6;border:1px solid #E8B39F;border-radius:8px;font-size:12.5px;color:#A6503D">
                    <b>⚠️ Проверьте перед подачей:</b><ul style="margin:6px 0 0 18px;padding:0">${tr.warnings.map(w=>`<li>${w}</li>`).join('')}</ul>
                  </div>` : '';
             if(tr.zipB64) {
               const blob = aiBase64ToBlob(tr.zipB64, 'application/zip');
               const url = URL.createObjectURL(blob);
               aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Файл сохранён в журнале.<br><br>
-                <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:13px;text-decoration:none">
+                <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#E9EFE0;border:1px solid #B8C9A8;border-radius:8px;color:#7D8F6E;font-weight:700;font-size:13px;text-decoration:none">
                   📥 Скачать пакет документов
                 </a>${warnBlock}`);
             } else {
@@ -2004,7 +2057,7 @@ async function aiGenerate() {
       journalLink.href = '/api/journal';
       journalLink.textContent = '📋 Открыть журнал генераций';
       journalLink.target = '_blank';
-      journalLink.style = 'display:block;margin-top:6px;font-size:10px;color:#706A5E;text-decoration:underline';
+      journalLink.style = 'display:block;margin-top:6px;font-size:10px;color:#A6837D;text-decoration:underline';
       progDiv.appendChild(journalLink);
 
       const poll = setInterval(async () => {
@@ -2046,14 +2099,14 @@ async function aiGenerate() {
             await aiSaveToPersistentJournal(tr.orgName, tr.fileCount, tr.dates, tr.zipB64);
             const safeOrg = (tr.orgName||'documents').replace(/[^\wа-яё\s-]/gi,'');
             const warnBlock = (tr.warnings && tr.warnings.length)
-              ? `<div style="margin-top:10px;padding:10px 12px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:12.5px;color:#9A3412">
+              ? `<div style="margin-top:10px;padding:10px 12px;background:#FBF0E6;border:1px solid #E8B39F;border-radius:8px;font-size:12.5px;color:#A6503D">
                    <b>⚠️ Проверьте перед подачей:</b><ul style="margin:6px 0 0 18px;padding:0">${tr.warnings.map(w=>`<li>${w}</li>`).join('')}</ul>
                  </div>` : '';
             if(tr.zipB64) {
               const blob = aiBase64ToBlob(tr.zipB64, 'application/zip');
               const url = URL.createObjectURL(blob);
               aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Файл сохранён в журнале.<br><br>
-                <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:13px;text-decoration:none">
+                <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#E9EFE0;border:1px solid #B8C9A8;border-radius:8px;color:#7D8F6E;font-weight:700;font-size:13px;text-decoration:none">
                   📥 Скачать пакет документов
                 </a>${warnBlock}`);
             } else {
@@ -2087,7 +2140,7 @@ async function aiGenerate() {
       progDiv.remove();
       if(r.success && r.journalId) {
         aiAddMsg('ai', `✅ Готово! <strong>${r.fileCount} документов</strong>.<br><br>
-          <a href="/api/download/${r.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#D8F0E5;border:1px solid #86EFAC;border-radius:8px;color:#2D6A4F;font-weight:700;font-size:12px;text-decoration:none">📥 Скачать</a>`);
+          <a href="/api/download/${r.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#E9EFE0;border:1px solid #B8C9A8;border-radius:8px;color:#7D8F6E;font-weight:700;font-size:12px;text-decoration:none">📥 Скачать</a>`);
       }
       btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
     }
