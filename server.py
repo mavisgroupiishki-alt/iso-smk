@@ -579,6 +579,25 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
 
 
 # ── Извлечение текста из файлов (рекурсивно) ────────────────
+def _looks_like_real_text(s: str) -> bool:
+    """
+    Отличает настоящий читаемый текст от мусора, который может получиться при
+    попытке regex-разбора СЖАТОГО потока PDF (байты сжатых данных иногда случайно
+    складываются в нечто похожее на "BT...(текст)...ET", но это не текст).
+    Настоящий текст (даже на русском/белорусском) почти целиком состоит из букв,
+    цифр, пробелов и обычной пунктуации. Мусор из сжатых данных — нет.
+    """
+    if not s or len(s.strip()) < 10:
+        return False
+    allowed = set(' \t\n\r.,;:!?()-–—«»"\'/%№0123456789'
+                  'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                  'абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ'
+                  'іўІЎ')  # белорусские буквы
+    good = sum(1 for c in s if c in allowed)
+    ratio = good / len(s)
+    return ratio >= 0.85
+
+
 def extract_text_from_file(file_bytes, filename, _depth=0):
     """Рекурсивно читает файлы и архивы внутри архивов (до 3 уровней)"""
     if _depth > 3:
@@ -606,6 +625,14 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
             # ВАЖНО: сканируем только начало файла, а не весь файл целиком.
             # Большие PDF (десятки МБ) почти всегда — сканы без текстового слоя (BT/ET там нет вообще),
             # а decode()+regex по всем байтам такого файла — верный способ упасть в OOM на Render Free.
+            #
+            # КРИТИЧНЫЙ БАГ (найден и исправлен): если содержимое PDF сжато (FlateDecode —
+            # это подавляющее большинство современных PDF и сканов), то regex BT...ET иногда
+            # СЛУЧАЙНО находит похожие последовательности байт внутри сжатого мусора и вытаскивает
+            # бессмысленный "текст". Раньше это принималось как успешное извлечение (длиннее 50
+            # символов, не начинается с "[") — и код НИКОГДА не переходил к vision, хотя должен
+            # был. Именно так терялись реальные данные людей (дипломы/паспорта/трудовые сканы) —
+            # функция "успешно" возвращала мусор вместо текста, vision не вызывался вообще.
             PDF_SCAN_LIMIT = 800 * 1024  # 800 КБ хватает с запасом для обычных текстовых PDF
             try:
                 raw = file_bytes[:PDF_SCAN_LIMIT].decode('latin-1', errors='replace')
@@ -615,7 +642,11 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
                     strings = re.findall(r'\(([^)]{2,})\)', b)
                     result.extend(strings)
                 if result:
-                    return ' '.join(result)[:8000]
+                    candidate = ' '.join(result)[:8000]
+                    if _looks_like_real_text(candidate):
+                        return candidate
+                    # похоже на мусор из сжатого потока — не принимаем как успех,
+                    # падаем в [PDF_SCAN: файл является сканом] ниже -> вызовет vision
             except Exception:
                 pass
             return '[PDF_SCAN: файл является сканом]'
