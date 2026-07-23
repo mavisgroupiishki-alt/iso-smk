@@ -41,12 +41,15 @@ def _rebuild(parts: dict) -> bytes:
 
 
 def _paragraphs(xml: str) -> list:
-    """Разбивает document.xml на список XML-блоков абзацев <w:p ...>...</w:p>."""
-    return re.findall(r'<w:p\b.*?</w:p>', xml, re.DOTALL)
+    """Разбивает document.xml на список XML-блоков абзацев <w:p ...>...</w:p>.
+    Отдельно матчит самозакрывающиеся пустые абзацы <w:p .../> (без отдельного
+    </w:p>) — иначе они склеиваются со следующим реальным абзацем в один "абзац",
+    что ломает точечную замену текста."""
+    return re.findall(r'<w:p\b[^>]*?/>|<w:p\b[^>]*>.*?</w:p>', xml, re.DOTALL)
 
 
 def _para_text(para_xml: str) -> str:
-    return re.sub(r'<[^>]+>', '', para_xml).strip()
+    return re.sub(r'<[^>]+>', '', para_xml).strip().replace('\xa0', ' ')
 
 
 def _esc(s) -> str:

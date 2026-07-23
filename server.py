@@ -304,7 +304,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
         "has_smetchik": false,
         "prior_category_years": 0,
         "experience_objects": [{"name":"","complexity_class":"К-4"}],
-        "workers": [{"profession":"","count":0,"razryad":""}],
+        "workers": [{"profession":"","count":0,"razryad":"II|III|IV|V|VI (римскими цифрами, как в реальном бланке)"}],
         "is_cancellation": false,
         "old_attestat_number": "",
         "cancellation_reason": "",
@@ -1167,9 +1167,27 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                           'список', 'перечень', 'работник', 'паспорт', 'диплом', 'трудов']
     priority = [t for t in texts if any(k in t.lower() for k in PRIORITY_KEYWORDS)]
     other = [t for t in texts if t not in priority]
-    result = '\n\n'.join(priority + other)
-    if len(result) > 60000:
-        result = result[:60000] + '\n...[обрезано, слишком много данных]'
+    ordered_blocks = priority + other
+
+    # КРИТИЧНО: раньше здесь был жёсткий обрез на 60000 символов, который МОЛЧА
+    # выбрасывал данные людей, чьи файлы шли позже в списке — именно так однажды
+    # пропали данные по человеку, хотя его фото были успешно распознаны. Лимит
+    # увеличен с большим запасом, а если обрезка всё же нужна — теперь явно
+    # называем, чьи файлы не влезли, вместо тихой потери.
+    MAX_RESULT_CHARS = 300000
+    result = '\n\n'.join(ordered_blocks)
+    if len(result) > MAX_RESULT_CHARS:
+        kept_blocks, running_len = [], 0
+        for block in ordered_blocks:
+            if running_len + len(block) > MAX_RESULT_CHARS:
+                break
+            kept_blocks.append(block)
+            running_len += len(block) + 2
+        dropped_names = [b.split('---')[1].strip() for b in ordered_blocks[len(kept_blocks):] if '---' in b]
+        result = '\n\n'.join(kept_blocks)
+        result += (f'\n\n[⚠️ ДАННЫЕ ОБРЕЗАНЫ — не поместились и НЕ попали в анализ файлы: '
+                    f'{", ".join(dropped_names[:15])}{" и другие" if len(dropped_names) > 15 else ""}. '
+                    f'Если среди них важные документы — пришлите их отдельным сообщением.]')
     if skipped_notes:
         result += ('\n\n[Пропущены файлы крупнее лимита: ' + ', '.join(skipped_notes[:20]) + ']')
     if len(entries) > MAX_ITEMS:
@@ -1227,10 +1245,22 @@ def _extract_archive_zip(file_bytes, filename, _depth=0):
                     other.append(t)
             # Приоритетные идут первыми, потом остальные
             ordered = priority + other
+            # КРИТИЧНО: раньше здесь был жёсткий обрез на 40000 символов, который МОЛЧА
+            # выбрасывал данные — теперь лимит намного больше, а обрезка (если всё же
+            # нужна) явно называет какие файлы не поместились.
+            MAX_CHARS = 300000
             result = '\n\n'.join(ordered)
-            # Лимит 40000 символов
-            if len(result) > 40000:
-                result = result[:40000] + '\n...[обрезано, файл большой]'
+            if len(result) > MAX_CHARS:
+                kept, running_len = [], 0
+                for block in ordered:
+                    if running_len + len(block) > MAX_CHARS:
+                        break
+                    kept.append(block)
+                    running_len += len(block) + 2
+                dropped = [b.split('---')[1].strip() for b in ordered[len(kept):] if '---' in b]
+                result = '\n\n'.join(kept)
+                result += (f'\n\n[⚠️ ДАННЫЕ ОБРЕЗАНЫ — не поместились: '
+                            f'{", ".join(dropped[:15])}{" и другие" if len(dropped) > 15 else ""}]')
             if skipped:
                 result += ('\n\n[Пропущены крупные файлы без анализа (не читаются для извлечения данных, '
                            'но остаются в исходном архиве для подачи в орган): ' + ', '.join(skipped[:20]) + ']')
@@ -1262,7 +1292,7 @@ def _extract_archive_rar(file_bytes, filename, _depth=0):
                     texts.append('--- ' + fn + ' ---\n' + inner_text)
             except: pass
         if texts:
-            return '\n\n'.join(texts)[:12000]
+            return '\n\n'.join(texts)[:280000]
         return '[rar: файлы не найдены]'
     except ImportError:
         pass
@@ -1298,13 +1328,13 @@ def _extract_archive_rar(file_bytes, filename, _depth=0):
                                     texts.append('--- ' + fn + ' ---\n' + inner_text)
                             except: pass
                     if texts:
-                        return '\n\n'.join(texts)[:12000]
+                        return '\n\n'.join(texts)[:280000]
                     break
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
 
     if texts:
-        return '\n\n'.join(texts)[:12000]
+        return '\n\n'.join(texts)[:280000]
     return '[RAR: не удалось распаковать. Перепакуйте в ZIP — правая кнопка → 7-Zip → ZIP]'
 
 
@@ -1489,6 +1519,17 @@ class H(http.server.BaseHTTPRequestHandler):
                     break
                 if not filename or file_bytes is None:
                     self._json({'success':False,'error':'Файл не найден в запросе'},400); return
+                # ЗАЩИТА: архивы (zip/rar) НЕ должны обрабатываться этим эндпоинтом —
+                # здесь нет распознавания фото (vision), только текстовые файлы. Раньше
+                # это было потенциальной дырой: если бы архив сюда попал, фото внутри
+                # молча пропускались бы без единой ошибки. Явно закрываем этот путь.
+                _ext_guard = filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
+                if _ext_guard in ('zip', 'rar'):
+                    self._json({'success': False,
+                                 'error': 'Архивы обрабатываются через /api/extract-archive-async '
+                                          '(там есть распознавание фото) — этот эндпоинт для одиночных файлов.'},
+                                400)
+                    return
                 # Защита от падения сервера (OOM) на Render Free (512 МБ RAM).
                 # Для zip/rar лимит выше, потому что теперь ОГРОМНЫЕ файлы ВНУТРИ архива
                 # (сканы актов/ОПЗ по 50-80 МБ) пропускаются на этапе распаковки и не читаются

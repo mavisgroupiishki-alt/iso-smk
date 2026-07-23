@@ -33,7 +33,10 @@ def _rebuild(parts: dict) -> bytes:
 
 
 def _paragraphs(xml: str) -> list:
-    return re.findall(r'<w:p\b.*?</w:p>', xml, re.DOTALL)
+    # Регекс должен отдельно матчить самозакрывающиеся пустые абзацы <w:p .../>
+    # (без отдельного </w:p>) — иначе они склеиваются со следующим реальным
+    # абзацем в один "абзац", что ломает точечную замену текста.
+    return re.findall(r'<w:p\b[^>]*?/>|<w:p\b[^>]*>.*?</w:p>', xml, re.DOTALL)
 
 
 def _esc(s) -> str:
@@ -55,7 +58,8 @@ def _replace_para_text(para_xml: str, new_text: str) -> str:
 
 def _find_para_index(paras: list, predicate) -> int:
     for i, p in enumerate(paras):
-        if predicate(re.sub(r'<[^>]+>', '', p).strip()):
+        text = re.sub(r'<[^>]+>', '', p).strip().replace('\xa0', ' ')
+        if predicate(text):
             return i
     return -1
 

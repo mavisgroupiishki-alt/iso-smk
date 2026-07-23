@@ -72,14 +72,34 @@ def _normalize_category(category):
     return str(category).strip()
 
 
+def _get_category_code(code: str) -> str:
+    """'7.4.1' -> '7.4' (родительская категория), '7.1' -> '7.1' (уже верхний уровень)."""
+    parts = code.split('.')
+    if len(parts) >= 3:
+        return f"{parts[0]}.{parts[1]}"
+    return code
+
+
+def _flat_work_items() -> dict:
+    """Плоский словарь ВСЕХ кодов (и категорий, и подпунктов) -> текст — для поиска
+    по ключевым словам и для сводного текста типа 'область деятельности: ...'."""
+    flat = {}
+    for cat_code, cat in CLASSIFIER['punkt_7_smr']['categories'].items():
+        flat[cat_code] = cat['text']
+        for sub_code, sub_text in cat.get('sub', {}).items():
+            flat[sub_code] = sub_text
+    return flat
+
+
 # Разговорные термины клиентов не совпадают по словам с официальными формулировками
-# классификатора (например "общестрой" никак не пересекается по буквам с "геодезические
-# работы" или "монтаж каменных конструкций") — задаём известные типовые наборы явно,
-# вместо того чтобы полагаться только на случайное совпадение корней слов.
+# классификатора — задаём известные типовые наборы явно. "Общестрой" сверен по
+# реальному поданному документу (ООО «АК СтройФемили») — это разделы 7.2-7.6
+# целиком (основания, фундаменты, конструкции, антикоррозия, кровли), а не узкий
+# список из нескольких пунктов, как предполагалось раньше.
 COMMON_BUNDLES = {
-    'общестрой': ['7.4.1', '7.4.2', '7.4.3', '7.6', '7.7', '7.24'],
-    'общестроительные': ['7.4.1', '7.4.2', '7.4.3', '7.6', '7.7', '7.24'],
-    'общестроительный': ['7.4.1', '7.4.2', '7.4.3', '7.6', '7.7', '7.24'],
+    'общестрой': ['7.2', '7.3', '7.4', '7.5', '7.6'],
+    'общестроительные': ['7.2', '7.3', '7.4', '7.5', '7.6'],
+    'общестроительный': ['7.2', '7.3', '7.4', '7.5', '7.6'],
 }
 
 
@@ -87,13 +107,13 @@ def find_work_items(query: str, max_items=10):
     q = query.lower()
     for keyword, codes in COMMON_BUNDLES.items():
         if keyword in q:
-            items = CLASSIFIER['punkt_7_smr']['items']
-            return [(code, items.get(code, code)) for code in codes]
+            flat = _flat_work_items()
+            return [(code, flat.get(code, code)) for code in codes]
 
     q_stems = {w[:5] for w in re.findall(r'[а-яё]{5,}', q)}
-    items = CLASSIFIER['punkt_7_smr']['items']
+    flat = _flat_work_items()
     found = []
-    for code, text in items.items():
+    for code, text in flat.items():
         tl = text.lower()
         t_stems = re.findall(r'[а-яё]{5,}', tl)
         score = sum(1 for w in t_stems if w[:5] in q_stems)
@@ -101,6 +121,41 @@ def find_work_items(query: str, max_items=10):
             found.append((score, code, text))
     found.sort(key=lambda x: -x[0])
     return [(code, text) for _, code, text in found[:max_items]]
+
+
+def render_work_items_lines(work_items: list) -> list:
+    """Строит строки пункта 7 заявления с правильной вложенностью — как в реальном
+    документе: категория с подпунктами → "7.4 текст:" затем "7.4.1 текст;" на каждый
+    выбранный подпункт. Категория БЕЗ подпунктов (лист) → "7.7. текст;" одной строкой.
+    Если передан код категории целиком (например "7.4") — разворачиваем ВСЕ её
+    подпункты; если переданы только конкретные подкоды — используем только их."""
+    categories = CLASSIFIER['punkt_7_smr']['categories']
+    selected = {}  # cat_code -> 'ALL' | set(sub_codes)
+    for code in work_items:
+        cat_code = _get_category_code(code)
+        if cat_code not in categories:
+            continue
+        if code == cat_code:
+            selected[cat_code] = 'ALL'
+        else:
+            if selected.get(cat_code) != 'ALL':
+                selected.setdefault(cat_code, set()).add(code)
+
+    lines = []
+    for cat_code, cat in categories.items():  # сохраняем естественный порядок классификатора
+        if cat_code not in selected:
+            continue
+        subs = cat.get('sub', {})
+        if not subs:
+            lines.append(f"{cat_code}. {cat['text']};")
+            continue
+        chosen = list(subs.keys()) if selected[cat_code] == 'ALL' else [s for s in subs if s in selected[cat_code]]
+        if not chosen:
+            continue
+        lines.append(f"{cat_code} {cat['text']}:")
+        for sub_code in chosen:
+            lines.append(f"{sub_code} {subs[sub_code]};")
+    return lines
 
 
 def calculate_stazh(periods: list, as_of_date: str = None) -> dict:
@@ -181,7 +236,7 @@ def _esc(s):
             .replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
 
 
-def _para(text='', align='left', bold=False, size=22, space_after=120):
+def _para(text='', align='left', bold=False, size=30, space_after=120):
     align_xml = {'left': 'left', 'center': 'center', 'right': 'right', 'justify': 'both'}.get(align, 'left')
     b = '<w:b/>' if bold else ''
     return (f'<w:p><w:pPr><w:jc w:val="{align_xml}"/><w:spacing w:after="{space_after}" w:line="276" w:lineRule="auto"/></w:pPr>'
@@ -189,27 +244,27 @@ def _para(text='', align='left', bold=False, size=22, space_after=120):
             f'<w:t xml:space="preserve">{_esc(text) if text else " "}</w:t></w:r></w:p>')
 
 
-def _cell(text, w, bold=False, align='left'):
+def _cell(text, w, bold=False, align='left', size=24):
     align_xml = {'left': 'left', 'center': 'center'}.get(align, 'left')
     b = '<w:b/>' if bold else ''
     return (f'<w:tc><w:tcPr><w:tcW w:w="{w}" w:type="dxa"/><w:vAlign w:val="center"/></w:tcPr>'
             f'<w:p><w:pPr><w:jc w:val="{align_xml}"/><w:spacing w:after="0"/></w:pPr>'
-            f'<w:r><w:rPr>{b}<w:sz w:val="18"/><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/></w:rPr>'
+            f'<w:r><w:rPr>{b}<w:sz w:val="{size}"/><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/></w:rPr>'
             f'<w:t xml:space="preserve">{_esc(text)}</w:t></w:r></w:p></w:tc>')
 
 
-def _table_fixed(headers, rows, widths_twips, number_row=True):
+def _table_fixed(headers, rows, widths_twips, number_row=True, cell_size=24):
     """Таблица с ТОЧНЫМИ ширинами колонок в твипах (взяты из реальных документов),
     с опциональной строкой нумерации "1 2 3..." под заголовками — как в оригиналах."""
     grid = ''.join(f'<w:gridCol w:w="{w}"/>' for w in widths_twips)
-    hdr = '<w:tr>' + ''.join(_cell(h, w, True, 'center') for h, w in zip(headers, widths_twips)) + '</w:tr>'
+    hdr = '<w:tr>' + ''.join(_cell(h, w, True, 'center', cell_size) for h, w in zip(headers, widths_twips)) + '</w:tr>'
     num_row = ''
     if number_row:
         nums = [str(i+1) for i in range(len(headers))]
-        num_row = '<w:tr>' + ''.join(_cell(n, w, False, 'center') for n, w in zip(nums, widths_twips)) + '</w:tr>'
+        num_row = '<w:tr>' + ''.join(_cell(n, w, False, 'center', cell_size) for n, w in zip(nums, widths_twips)) + '</w:tr>'
     body = ''
     for row in rows:
-        body += '<w:tr>' + ''.join(_cell(v, w) for v, w in zip(row, widths_twips)) + '</w:tr>'
+        body += '<w:tr>' + ''.join(_cell(v, w, size=cell_size) for v, w in zip(row, widths_twips)) + '</w:tr>'
     borders = ('<w:tblBorders>'
                '<w:top w:val="single" w:sz="4" w:color="000000"/>'
                '<w:left w:val="single" w:sz="4" w:color="000000"/>'
@@ -236,12 +291,18 @@ _WORD_RELS = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
               '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>')
 
 
-def _build_docx(body_blocks, landscape=False) -> bytes:
+def _build_docx(body_blocks, landscape=False, margins=None) -> bytes:
     body = ''.join(body_blocks)
-    if landscape:
-        sect = '<w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:pgMar w:top="850" w:right="850" w:bottom="850" w:left="850"/></w:sectPr>'
+    if margins:
+        top, right, bottom, left = margins
+    elif landscape:
+        top, right, bottom, left = 850, 850, 850, 850
     else:
-        sect = '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="850" w:right="1417" w:bottom="850" w:left="1417"/></w:sectPr>'
+        top, right, bottom, left = 850, 1417, 850, 1417
+    if landscape:
+        sect = f'<w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:pgMar w:top="{top}" w:right="{right}" w:bottom="{bottom}" w:left="{left}"/></w:sectPr>'
+    else:
+        sect = f'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="{top}" w:right="{right}" w:bottom="{bottom}" w:left="{left}"/></w:sectPr>'
     doc_xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
                f'<w:body>{body}{sect}</w:body></w:document>')
@@ -285,7 +346,7 @@ def gen_zayavlenie_company(company: dict, work_items: list, category: str) -> by
     blocks.append(_para(f"Тел.: {company.get('phone','')}"))
     blocks.append(_para(f"e-mail: {company.get('email','')}"))
     blocks.append(_para(""))
-    blocks.append(_para("ЗАЯВЛЕНИЕ", align='center', bold=True, size=26))
+    blocks.append(_para("ЗАЯВЛЕНИЕ", align='center', bold=True, size=32))
     blocks.append(_para("о получении аттестата соответствия", align='center', bold=True))
     blocks.append(_para(""))
     blocks.append(_para(f"Прошу провести аттестацию {full_gen} на право осуществления:", align='justify'))
@@ -298,9 +359,8 @@ def gen_zayavlenie_company(company: dict, work_items: list, category: str) -> by
             f"классов(а) сложности.", align='justify'))
 
     blocks.append(_para("7. Выполнение строительно-монтажных работ:", align='justify'))
-    for code in work_items:
-        text = CLASSIFIER['punkt_7_smr']['items'].get(code, code)
-        blocks.append(_para(f"{code}. {text};", align='justify'))
+    for line in render_work_items_lines(work_items):
+        blocks.append(_para(line, align='justify'))
 
     blocks.append(_para("соответствующей квалификационным требованиям, предъявляемым для получения "
                          "аттестатов(а) соответствия 1-4 классов(а) сложности.", align='justify'))
@@ -346,7 +406,11 @@ def gen_zayavlenie_company(company: dict, work_items: list, category: str) -> by
                '<w:insideV w:val="single" w:sz="4" w:color="000000"/></w:tblBorders>')
     blocks.append(f'<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>{borders}</w:tblPr><w:tblGrid>{grid}</w:tblGrid>{hdr}{body}</w:tbl>')
     blocks.append(_para(""))
-    blocks.append(_para(f"{dir_pos} _____________ {dir_init}"))
+    L_sig = _legal(company.get('form'))
+    short_form = (company.get('form') or 'ООО').upper()
+    q_sig = L_sig['quote']
+    sig_name = f"{short_form} {q_sig[0]}{company.get('name','')}{q_sig[1]}"
+    blocks.append(_para(f"{dir_pos} {sig_name} _____________ {dir_init}"))
 
     return _build_docx(blocks)
 
@@ -371,7 +435,7 @@ def gen_zayavlenie_otmena(company: dict, old_attestat_number: str, reason: str) 
         _para(company.get('address', '')),
         _para(f"УНП {company.get('unp','')}"),
         _para(""),
-        _para("ЗАЯВЛЕНИЕ", align='center', bold=True, size=26),
+        _para("ЗАЯВЛЕНИЕ", align='center', bold=True, size=32),
         _para("о прекращении действия аттестата соответствия", align='center', bold=True),
         _para(""),
         _para(f"{full_nom} просит прекратить действие выданного ранее аттестата соответствия "
@@ -398,16 +462,16 @@ def gen_form2_itr(company: dict, itr_list: list, workers: list, work_scope_text:
     n_itr = len(itr_list)
 
     blocks = [
-        _para(full_nom, bold=True),
+        _para(full_nom, bold=True, size=26),
         _para(""),
-        _para("Форма № 2", align='center', bold=True),
+        _para("Форма № 2", align='right', bold=False, size=26),
         _para("СВЕДЕНИЯ о составе и профессиональной квалификации руководящих работников, "
-              "специалистов и рабочих, работающих по основному месту работы", align='center', bold=True),
+              "специалистов и рабочих, работающих по основному месту работы", align='center', bold=True, size=24),
         _para(""),
         _para(f"Общая численность работающих {total_staff} чел., в том числе по заявляемому виду "
               f"деятельности {total_staff} чел. по состоянию на ___.___.____ ; численность "
-              f"инженерно-технических работников по заявляемому виду деятельности {n_itr} чел."),
-        _para(f"Область деятельности: {work_scope_text}"),
+              f"инженерно-технических работников по заявляемому виду деятельности {n_itr} чел.", size=26),
+        _para(f"Область деятельности: {work_scope_text}", size=26),
         _para(""),
     ]
 
@@ -435,12 +499,12 @@ def gen_form2_itr(company: dict, itr_list: list, workers: list, work_scope_text:
             attestat += f" {p_.get('attestat_specialization')}"
         itr_rows.append([str(i), p_.get('position',''), p_.get('fio',''), obrazovanie, stazh, trudovaya, attestat])
 
-    blocks.append(_table_fixed(itr_headers, itr_rows, itr_widths))
+    blocks.append(_table_fixed(itr_headers, itr_rows, itr_widths, cell_size=26))
 
     blocks.append(_para(""))
     blocks.append(_para("Рабочие строительных профессий, соответствующих заявляемым видам деятельности "
                          "в области строительства согласно технологической документации на производство "
-                         "строительно-монтажных работ, работающих по основному месту работы:"))
+                         "строительно-монтажных работ, работающих по основному месту работы:", size=26))
 
     if workers:
         # Реальная структура: № | Профессия | II | III | IV | V | VI | Итого — ширины из СК76/Асецкий
@@ -462,14 +526,14 @@ def gen_form2_itr(company: dict, itr_list: list, workers: list, work_scope_text:
             w_rows.append(row)
         total_row = ["", "Итого по разрядам:"] + [str(totals[r]) if totals[r] else '' for r in RAZRYAD_COLUMNS] + [str(sum(totals.values()))]
         w_rows.append(total_row)
-        blocks.append(_table_fixed(w_headers, w_rows, w_widths, number_row=True))
+        blocks.append(_table_fixed(w_headers, w_rows, w_widths, number_row=True, cell_size=26))
     else:
-        blocks.append(_para("Сведения о рабочих не предоставлены на момент подготовки документа."))
+        blocks.append(_para("Сведения о рабочих не предоставлены на момент подготовки документа.", size=26))
 
     blocks.append(_para(""))
     blocks.append(_para(f"Директор {full_nom} _____________ {dir_init}"))
     blocks.append(_para("«___» _______ 202_ г."))
-    return _build_docx(blocks, landscape=True)
+    return _build_docx(blocks, landscape=False, margins=(567, 567, 567, 1418))
 
 
 # ═══════════════════ Документы 3-5: сводные списки (точные ширины из оригиналов) ═══════════════════
@@ -480,7 +544,7 @@ def gen_form3_trudovye(company: dict, itr_list: list) -> bytes:
             for i, p_ in enumerate(itr_list, 1)]
     blocks = [
         _para(full_nom, bold=True), _para(""),
-        _para("Форма № 3", align='center', bold=True),
+        _para("Форма № 3", align='right', bold=False, size=26),
         _para("СВОДНЫЙ СПИСОК трудовых книжек руководящих работников, специалистов, работающих по "
               "основному месту работы", align='center', bold=True),
         _para(""),
@@ -499,7 +563,7 @@ def gen_form4_diplomy(company: dict, itr_list: list) -> bytes:
     rows = [[str(i), p_.get('fio',''), p_.get('diploma_number') or '—'] for i, p_ in enumerate(itr_list, 1)]
     blocks = [
         _para(full_nom, bold=True), _para(""),
-        _para("Форма № 4", align='center', bold=True),
+        _para("Форма № 4", align='right', bold=False, size=26),
         _para("СВОДНЫЙ СПИСОК дипломов руководящих работников, специалистов, работающих по "
               "основному месту работы", align='center', bold=True),
         _para(""),
@@ -523,7 +587,7 @@ def gen_form5_attestaty(company: dict, itr_list: list) -> bytes:
         rows.append([str(i), p_.get('fio',''), p_.get('position',''), info])
     blocks = [
         _para(full_nom, bold=True), _para(""),
-        _para("Форма № 5", align='center', bold=True),
+        _para("Форма № 5", align='right', bold=False, size=26),
         _para("СВОДНЫЙ СПИСОК квалификационных аттестатов руководящих работников, специалистов, "
               "работающих по основному месту работы", align='center', bold=True),
         _para(""),
@@ -652,7 +716,8 @@ def generate_company_attestation_package(company: dict, attestation_data: dict, 
     docs.append({'name': f"{org} - 1. Заявление.docx",
                   'bytes': gen_zayavlenie_company(company, work_items, category)})
 
-    work_scope_text = ', '.join(CLASSIFIER['punkt_7_smr']['items'].get(c, c) for c in work_items)
+    _flat = _flat_work_items()
+    work_scope_text = ', '.join(_flat.get(c, c) for c in work_items)
 
     p("2. Форма №2 (ИТР и рабочие)")
     docs.append({'name': f"{org} - 2. Форма №2 ИТР и рабочие.docx",
