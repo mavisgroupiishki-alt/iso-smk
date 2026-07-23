@@ -521,6 +521,33 @@ def vision_extract_verified(file_bytes, filename, api_key):
             f"Попытка 1: {first}\n\nПопытка 2: {second}"), False
 
 
+def _pdf_pages_to_images(file_bytes, max_pages=3, max_dim=1900, quality=82):
+    """
+    Конвертирует страницы PDF в настоящие JPEG-картинки перед отправкой в vision.
+    КРИТИЧНО: раньше PDF отправлялся в vision как есть (media_type=application/pdf
+    внутри image_url) — модель отвечала ошибкой 'unsupported_format', потому что
+    image_url ожидает именно изображение, не документ. PDF-сканы (паспорт, диплом,
+    трудовая) из-за этого не распознавались НИКОГДА, даже когда доходили до vision.
+    Берём только первые max_pages страниц — этого достаточно для типичных сканов
+    документов (диплом/паспорт/страница трудовой — обычно 1 разворот на файл).
+    """
+    from pdf2image import convert_from_bytes
+    from PIL import Image
+    import io as _io4
+    images_b64 = []
+    pages = convert_from_bytes(file_bytes, dpi=150, first_page=1, last_page=max_pages)
+    for img in pages:
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
+            img = img.resize((int(img.size[0]*ratio), int(img.size[1]*ratio)), Image.LANCZOS)
+        buf = _io4.BytesIO()
+        img.save(buf, 'JPEG', quality=quality, optimize=True)
+        images_b64.append(base64.b64encode(buf.getvalue()).decode('utf-8'))
+    return images_b64
+
+
 def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None):
     """Синхронный вызов vision для одного файла (фото/скан). Уменьшает изображение
     перед отправкой. Ограничивает параллелизм через VISION_SEMAPHORE (не более 2 разом
@@ -528,12 +555,53 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     import base64 as _b64, time as _time
     active_prompt = prompt_override or VISION_PROMPT
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+
+    if ext == 'pdf':
+        # PDF конвертируется в настоящие картинки — см. _pdf_pages_to_images().
+        try:
+            pages_b64 = _pdf_pages_to_images(file_bytes)
+        except Exception as e:
+            print(f"  ❌ vision_extract({filename}): не удалось конвертировать PDF в изображения — {type(e).__name__}: {e}")
+            return f'[PDF: не удалось подготовить для распознавания — {e}]'
+        if not pages_b64:
+            return '[PDF: страницы не найдены]'
+        content_blocks = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                           for b64 in pages_b64]
+        content_blocks.append({"type": "text", "text": active_prompt +
+                                (f"\n\n(Документ из {len(pages_b64)} страниц — учти все страницы вместе.)"
+                                 if len(pages_b64) > 1 else '')})
+        payload_mb = sum(len(b) for b in pages_b64) / 1024 / 1024
+        vibe_payload = {"model": VIBE_MODEL_VISION, "max_tokens": 1000,
+                         "messages": [{"role": "user", "content": content_blocks}]}
+        print(f"  🔎 vision_extract({filename}): PDF -> {len(pages_b64)} стр., отправляю {payload_mb:.2f} МБ, жду семафор...")
+        VISION_SEMAPHORE.acquire()
+        t0 = _time.time()
+        try:
+            resp = req_lib.post(VIBE_URL, headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+                                 json=vibe_payload, timeout=90)
+            elapsed = _time.time() - t0
+            resp.raise_for_status()
+            data = resp.json()
+            text = "".join(c.get("message", {}).get("content", "") for c in data.get("choices", []))
+            print(f"  ✅ vision_extract({filename}): успех за {elapsed:.1f} сек, {len(text)} символов ответа")
+            return text or '[vision: пустой ответ]'
+        except req_lib.exceptions.Timeout:
+            elapsed = _time.time() - t0
+            print(f"  ⏱️ vision_extract({filename}): ТАЙМАУТ через {elapsed:.1f} сек")
+            return f'[vision: таймаут при распознавании {filename}]'
+        except Exception as e:
+            elapsed = _time.time() - t0
+            print(f"  ❌ vision_extract({filename}): ОШИБКА через {elapsed:.1f} сек — {type(e).__name__}: {e}")
+            return f'[vision ошибка: {e}]'
+        finally:
+            VISION_SEMAPHORE.release()
+
     if ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'):
         small_bytes, mt = _downscale_image(file_bytes)
         file_bytes = small_bytes
         media_type = mt or (media_type or 'image/jpeg')
     elif not media_type:
-        media_type = 'application/pdf' if ext == 'pdf' else 'image/jpeg'
+        media_type = 'image/jpeg'
 
     b64_data = _b64.b64encode(file_bytes).decode('utf-8')
     payload_mb = len(b64_data) / 1024 / 1024
@@ -798,13 +866,15 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                 fast_txt = extract_text_from_file(data, short)
                 if fast_txt and len(fast_txt) > 10 and not fast_txt.startswith('['):
                     return f"--- {folder + '/' if folder else ''}{short} ---\n" + fast_txt
-                # PDF отправляется в vision целиком (страница не рендерится отдельно — такой
-                # возможности сейчас нет), поэтому очень большие сканы намеренно не шлём —
-                # рискованно по времени/памяти. Лучше явно попросить переснять по страницам.
-                PDF_VISION_LIMIT = 8 * 1024 * 1024
+                # PDF теперь конвертируется в изображения первых 3 страниц (см.
+                # _pdf_pages_to_images) — стоимость рендера зависит от КОЛИЧЕСТВА
+                # обрабатываемых страниц, а не от общего размера файла на диске
+                # (даже 18-МБ скан с высоким разрешением рендерит только первые 3
+                # страницы). Поэтому лимит можно держать намного щедрее, чем раньше.
+                PDF_VISION_LIMIT = 40 * 1024 * 1024
                 if len(data) > PDF_VISION_LIMIT:
                     return (f"--- {folder + '/' if folder else ''}{short} ---\n"
-                            f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания целиком — "
+                            f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания — "
                             f"пришлите этот документ отдельными фото по 1-2 страницы вместо одного большого PDF]")
                 txt = vision_extract(data, short, api_key)
             else:
