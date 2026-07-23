@@ -590,3 +590,161 @@ def render_spravka_si(company: dict, director_fio: str, si_list: list) -> bytes:
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
 
+
+
+# ═══════════════════ Адаптер для реального пайплайна (generator.py) ═══════════════════
+def _find_person(itr, *keywords):
+    for p in itr:
+        pos = (p.get('position') or '').lower()
+        if any(k in pos for k in keywords):
+            return p
+    return None
+
+
+def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict, resp: dict,
+                             variant: str = 'spk_stroy', progress_cb=None) -> dict:
+    """
+    company: {name, form, unp, address, city, director_fio, director_position, phone, bisp_org}
+    itr: список [{fio, position}] — сотрудники (используем чтобы найти гл.инженера/прорабов)
+    dates: результат calculate_dates() из generator.py (goals, year и т.д.)
+    resp: результат select_responsible(itr) из generator.py
+    variant: 'spk_stroy' | 'spk_bisp'
+    """
+    org = company.get('name', 'company')
+    director_fio = company.get('director_fio', '') or (resp.get('director') or {}).get('fio', '')
+    gl_person = _find_person(itr, 'главный инженер', 'гл. инженер') or resp.get('process_resp')
+    gl_inzhener_fio = (gl_person or {}).get('fio', '') if gl_person != resp.get('director') else ''
+    foremen = [p.get('fio', '') for p in itr
+               if any(k in (p.get('position') or '').lower() for k in ('прораб', 'производитель работ'))
+               and p.get('fio') != director_fio]
+    if not foremen:
+        alt = _find_person(itr, 'мастер')
+        if alt and alt.get('fio') != director_fio:
+            foremen = [alt.get('fio', '')]
+    if not foremen:
+        foremen = [gl_inzhener_fio] if gl_inzhener_fio else ['']
+
+    all_people = [{'fio': director_fio, 'position': company.get('director_position', 'Директор'),
+                   'role_key': 'директор'}]
+    if gl_inzhener_fio:
+        all_people.append({'fio': gl_inzhener_fio, 'position': (gl_person or {}).get('position', 'Главный инженер'),
+                           'role_key': 'главный инженер'})
+    for f in foremen:
+        if f:
+            fp = next((p for p in itr if p.get('fio') == f), {})
+            all_people.append({'fio': f, 'position': fp.get('position', 'Производитель работ'),
+                               'role_key': 'производитель работ'})
+
+    order_date = dates.get('goals', '')
+    city = company.get('city', 'Минск')
+    year = dates.get('year', '')
+    docs = []
+    step = [0]
+    total = 19 if variant == 'spk_bisp' else 12
+
+    def p(msg):
+        step[0] += 1
+        if progress_cb:
+            progress_cb(step[0], total, msg)
+        print(f"  [spk_v2 {step[0]}/{total}] {msg}")
+
+    def add(name, data_bytes):
+        docs.append({'name': name, 'bytes': data_bytes})
+
+    p("1. Условия в производственных помещениях")
+    add(f"{org} СПК - 1 Условия в производственных помещениях.docx", render_usloviya(company))
+
+    p("2. Приказ о СПК")
+    add(f"{org} СПК - 4.1 Приказ о СПК.docx",
+        render_prikaz_spk(company, '1/СПК', order_date, city, director_fio, gl_inzhener_fio, foremen))
+
+    p("3. Приказ о внутреннем обучении")
+    add(f"{org} СПК - 4.2.1 Приказ о внутреннем обучении.docx",
+        render_prikaz_obuchenie(company, '2/СПК', order_date, city, director_fio, order_date))
+
+    p("4. Приказ о ТО средств измерений")
+    resp_si = foremen[0] if foremen and foremen[0] else director_fio
+    add(f"{org} СПК - 4.3 Приказ о ТО СИ.docx",
+        render_prikaz_to_si(company, '3/СПК', order_date, city, director_fio, resp_si))
+
+    p("5. Приказ о назначении ответственного за машины")
+    add(f"{org} СПК - 4.4 Приказ о машинах.docx",
+        render_prikaz_mashiny(company, '4/СПК', order_date, city, director_fio, resp_si))
+
+    p("6. Справка ИТР")
+    people_itr = [dict(pp, protocol_number='1', protocol_date=order_date) for pp in all_people]
+    add(f"{org} СПК - 2 Справка ИТР.docx", render_spravka_itr(company, people_itr))
+
+    p("7. Организационная структура")
+    add(f"{org} СПК - 3 Организационная структура.docx",
+        render_orgstruktura(company, director_fio, gl_inzhener_fio, foremen))
+
+    p("8. Протокол о внутреннем обучении")
+    add(f"{org} СПК - 4.2.2 Протокол обучения.docx",
+        render_protokol_obuchenie(company, '1', order_date, city, order_date, '2/СПК', all_people))
+
+    p("9. Положение о СПК")
+    add(f"{org} СПК - 5 Положение о СПК.docx", render_polozhenie(company, director_fio))
+
+    p("10. Паспорт СПК")
+    add(f"{org} СПК - 6 Паспорт СПК.docx",
+        render_pasport(company, director_fio, company.get('phone', ''), company.get('address', ''), all_people))
+
+    p("11. Справка ТТК")
+    work_types = company.get('work_types', [company.get('scope', 'Общестроительные работы')])
+    ttk_list = [{'code': f'ТТК-{i+1:03d}', 'name': f'ТК на {wt}', 'organization': 'РУП «Стройтехнорм»',
+                 'validity': str(int(year) + 2) if year else ''} for i, wt in enumerate(work_types[:6])]
+    add(f"{org} СПК - 7 Справка ТТК.docx", render_spravka_ttk(company, director_fio, ttk_list))
+
+    p("12. Справка СИ")
+    si_list = [
+        {'name': 'Рулетка измерительная', 'characteristics': '(0-3000) мм', 'count': 1, 'number': '—', 'verification': f'Свидетельство о поверке {year} г.'},
+        {'name': 'Уровень строительный', 'characteristics': 'ГОСТ 9416, I группа точности', 'count': 1, 'number': '—', 'verification': f'Свидетельство о поверке {year} г.'},
+    ]
+    add(f"{org} СПК - 8 Справка СИ.docx", render_spravka_si(company, director_fio, si_list))
+
+    if variant == 'spk_bisp':
+        try:
+            from generator_bisp_templates import (
+                render_garantiya_ttk, render_garantiya_labs, render_garantiya_reklamacii,
+                render_plan_audita, render_polozhenie_vhod, render_grafik_poverki, render_perechen_produkcii,
+            )
+            recipient = company.get('bisp_org', 'РУП «СтройМедиаПроект»')
+
+            p("13. Гарантийное письмо на ТТК")
+            add(f"{org} СПК БИСП - 9.1 Гарантийное письмо на ТТК.docx",
+                render_garantiya_ttk(company, director_fio, '1-01', order_date, recipient))
+
+            p("14. Гарантийное письмо по лабораториям")
+            add(f"{org} СПК БИСП - 9.3 Гарантийное письмо по лабораториям.docx",
+                render_garantiya_labs(company, director_fio, '1-02', order_date, recipient))
+
+            p("15. Гарантийное письмо об отсутствии рекламаций")
+            add(f"{org} СПК БИСП - 9.6 Гарантийное письмо об отсутствии рекламаций.docx",
+                render_garantiya_reklamacii(company, director_fio, '1-03', order_date, recipient))
+
+            p("16. План внутреннего аудита")
+            add(f"{org} СПК БИСП - План внутреннего аудита.docx",
+                render_plan_audita(company, director_fio, year))
+
+            p("17. Положение о входном контроле")
+            add(f"{org} СПК БИСП - 5.2 Положение о входном контроле.docx",
+                render_polozhenie_vhod(company, director_fio))
+
+            p("18. График поверки СИ")
+            add(f"{org} СПК БИСП - График поверки СИ.docx",
+                render_grafik_poverki(company, director_fio, year))
+
+            p("19. Перечень продукции входного контроля")
+            add(f"{org} СПК БИСП - Перечень продукции входного контроля.docx",
+                render_perechen_produkcii(company, director_fio))
+        except Exception as e:
+            print(f"  ❌ Ошибка генерации документов БИСП: {e}")
+
+    warnings = []
+    if not gl_inzhener_fio:
+        warnings.append("Не найден главный инженер в штате — в документах СПК это поле осталось пустым.")
+    if not any(foremen):
+        warnings.append("Не найден прораб/производитель работ в штате — использован главный инженер как ответственный по умолчанию.")
+
+    return {'docs': docs, 'warnings': warnings}

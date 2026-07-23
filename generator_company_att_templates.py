@@ -397,3 +397,110 @@ def render_forma5(company: dict, itr_list: list) -> bytes:
     xml = _splice_rows(xml, rows[2:], new_rows)
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
+
+
+# ═══════════════════ Адаптер для реального пайплайна (generator.py) ═══════════════════
+# Старый generator_company_att.py (реконструкция без вашего файла как основы) держит
+# всю логику предупреждений/расчёта стажа/видов работ — она НЕ зависит от способа
+# рендера, поэтому переиспользуем её, а не дублируем. Меняем только САМ рендер
+# документов на настоящие шаблоны (render_zayavlenie и т.д. из этого файла).
+def generate_company_attestation_package_v2(company: dict, attestation_data: dict,
+                                             api_key=None, vibe_call_fn=None, progress_cb=None) -> dict:
+    from generator_company_att import (
+        find_work_items, render_work_items_lines, calculate_stazh,
+        check_category_requirements, _flat_work_items, RAZRYAD_COLUMNS,
+        gen_zayavlenie_otmena, gen_form6_opyt,  # ещё не переведены на настоящий шаблон — честно используем старую версию для этих двух редких случаев
+    )
+
+    docs = []
+    step = [0]
+    category = attestation_data.get('category')
+    if isinstance(category, str) and category.strip().lower() in ('', 'null', 'none', 'нет'):
+        category = None
+    total_steps = 1 if attestation_data.get('is_cancellation') else (6 if category else 5)
+
+    def p(msg):
+        step[0] += 1
+        if progress_cb:
+            progress_cb(step[0], total_steps, msg)
+        print(f"  [company_att_v2 {step[0]}] {msg}")
+
+    org = company.get('name', 'company')
+    itr_list = attestation_data.get('itr', [])
+    workers = attestation_data.get('workers', [])
+    staff_total = attestation_data.get('staff_total', len(itr_list))
+    has_smetchik = attestation_data.get('has_smetchik', False)
+    experience_objects = attestation_data.get('experience_objects', [])
+    prior_years = attestation_data.get('prior_category_years', 0)
+
+    for person in itr_list:
+        periods = person.get('employment_periods')
+        if periods and not person.get('stage_years'):
+            calc = calculate_stazh(periods, as_of_date=attestation_data.get('as_of_date'))
+            person['stage_years'] = calc['display']
+        if periods and not person.get('stage_years_here'):
+            last_period = periods[-1] if periods else None
+            if last_period:
+                calc_here = calculate_stazh([last_period], as_of_date=attestation_data.get('as_of_date'))
+                person['stage_years_here'] = calc_here['display']
+
+    warnings = []
+    if category:
+        warnings = check_category_requirements(category, staff_total, has_smetchik, experience_objects, prior_years)
+    if len(itr_list) <= 1 and staff_total > 1:
+        warnings.append(f"В данных только {len(itr_list)} человек в ИТР, хотя штат указан как {staff_total} — "
+                         f"похоже часть людей потерялась при разборе. Проверьте пакет перед подачей.")
+    empty_itr = [pp.get('fio', f'#{i+1}') for i, pp in enumerate(itr_list)
+                 if not pp.get('diploma_number') and not pp.get('stage_years') and not pp.get('trudovaya_number')]
+    if empty_itr:
+        warnings.append(f"У этих людей вообще не заполнены диплом/стаж/трудовая (в документе будут прочерки): "
+                         f"{', '.join(empty_itr)}.")
+    partial_missing = [pp.get('fio', '?') for pp in itr_list if pp.get('diploma_number') and not pp.get('trudovaya_number')]
+    if partial_missing:
+        warnings.append(f"У этих людей есть диплом, но нет номера трудовой книжки: {', '.join(partial_missing)}.")
+    if not workers:
+        warnings.append("Реальные данные о рабочих не переданы — раздел «рабочие» в Форме №2 будет пустым, "
+                         "а не придуман по виду работ. Уточните у клиента список профессий/разрядов/количества.")
+    elif any(w.get('razryad') and str(w.get('razryad')).upper().strip() not in RAZRYAD_COLUMNS for w in workers):
+        bad = [w.get('profession', '?') for w in workers if w.get('razryad') and str(w.get('razryad')).upper().strip() not in RAZRYAD_COLUMNS]
+        warnings.append(f"У этих рабочих разряд указан не в формате II-VI (римскими цифрами), проверьте: {', '.join(bad)}.")
+
+    if attestation_data.get('is_cancellation'):
+        p("Заявление на отмену/исключение")
+        docs.append({'name': f"{org} - Заявление на отмену.docx",
+                     'bytes': gen_zayavlenie_otmena(company, attestation_data.get('old_attestat_number', ''),
+                                                     attestation_data.get('cancellation_reason', 'по заявлению обладателя'))})
+        return {'docs': docs, 'warnings': warnings}
+
+    work_items = attestation_data.get('work_items') or []
+    if not work_items and attestation_data.get('work_scope_text'):
+        work_items = [code for code, _ in find_work_items(attestation_data['work_scope_text'])]
+    if not work_items:
+        work_items = ['7.4.1']
+
+    work_lines = render_work_items_lines(work_items)
+    _flat = _flat_work_items()
+    work_scope_text = ', '.join(_flat.get(c, c) for c in work_items)
+
+    p("1. Заявление")
+    docs.append({'name': f"{org} - 1. Заявление.docx", 'bytes': render_zayavlenie(company, work_lines)})
+
+    p("2. Форма №2 (ИТР и рабочие)")
+    docs.append({'name': f"{org} - 2. Форма №2 ИТР и рабочие.docx",
+                 'bytes': render_forma2(company, itr_list, workers, work_scope_text, staff_total)})
+
+    p("3. Форма №3 (Трудовые)")
+    docs.append({'name': f"{org} - 3. Форма №3 Трудовые.docx", 'bytes': render_forma3(company, itr_list)})
+
+    p("4. Форма №4 (Дипломы)")
+    docs.append({'name': f"{org} - 4. Форма №4 Дипломы.docx", 'bytes': render_forma4(company, itr_list)})
+
+    p("5. Форма №5 (Аттестаты)")
+    docs.append({'name': f"{org} - 5. Форма №5 Аттестаты.docx", 'bytes': render_forma5(company, itr_list)})
+
+    if category:
+        p("6. Форма №6 (Опыт генподрядчика) — пока старая версия, ещё не переведена на настоящий шаблон")
+        docs.append({'name': f"{org} - 6. Форма №6 Опыт.docx",
+                     'bytes': gen_form6_opyt(company, experience_objects)})
+
+    return {'docs': docs, 'warnings': warnings}

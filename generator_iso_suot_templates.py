@@ -156,3 +156,108 @@ def render_generic(template_file: str, company_old: dict, company_new: dict,
 
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
+
+
+# ═══════════════════ Адаптер для реального пайплайна (generator.py) ═══════════════════
+import json as _json
+
+_MANIFEST_PATH = TPL_DIR / 'manifest.json'
+_MANIFEST = _json.loads(_MANIFEST_PATH.read_text('utf-8')) if _MANIFEST_PATH.exists() else {}
+
+# Реальные реквизиты компании-образца (Варта), зашитые во все 155 шаблонов —
+# единая точка правды, чтобы не дублировать в разных вызовах.
+_OLD_COMPANY = {
+    'name': 'Варта', 'city': 'г. Лида', 'unp': '500381571',
+    'street': 'ул. Лётная, 7', 'bank_account': 'BY69AKBB30120000301344200000',
+    'bank_name': 'АСБ «Беларусбанк»', 'postal_code': '231282', 'region': 'Гродненская обл.',
+}
+_OLD_PEOPLE = {
+    'Василенко': 'С.Ф.', 'Кормилицин': 'П.А.', 'Вершалович': ['А.П.', 'А.М.'],
+}
+# СУОТ-файлы определяются по префиксу ключа в манифесте; converted_1..16 (кроме 17,18) тоже СУОТ.
+_SUOT_CONVERTED_IDX = set(range(1, 17))
+
+
+def _category_of(key: str) -> str:
+    if key.startswith('suot_'):
+        return 'suot'
+    if key.startswith('converted_'):
+        idx = int(key.split('_')[1].split('.')[0])
+        return 'suot' if idx in _SUOT_CONVERTED_IDX else 'iso'
+    return 'iso'
+
+
+def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: dict,
+                                  product: str = 'iso_suot', progress_cb=None) -> dict:
+    """
+    company: {name, form, unp, address, city, phone, email, director_fio, ...}
+    itr: список [{fio, position}]
+    dates: результат calculate_dates() (не используется напрямую — реквизиты в шаблонах
+           почти не зависят от дат, в отличие от старого ИИ-генератора)
+    resp: результат select_responsible(itr) — director/process_resp/auditors и т.д.
+    product: 'iso' | 'suot' | 'iso_suot' — какие категории файлов включать
+    """
+    org = company.get('name', 'company')
+    director_fio = company.get('director_fio', '') or (resp.get('director') or {}).get('fio', '')
+
+    # Разбираем реальное ФИО директора на фамилию+инициалы для замены
+    d_parts = (director_fio or '').strip().split()
+    dir_surname = d_parts[0] if d_parts else ''
+    dir_initials = ('.'.join(p[0] for p in d_parts[1:] if p) + '.') if len(d_parts) > 1 else ''
+
+    # Два дополнительных человека (гл.инженер/специалисты), упоминаемых в некоторых
+    # приказах — берём следующих по списку ИТР после директора, если они есть.
+    others = [p for p in itr if p.get('fio') != director_fio][:2]
+    other_names = []
+    for p in others:
+        parts = (p.get('fio') or '').strip().split()
+        if parts:
+            surname = parts[0]
+            inits = ('.'.join(x[0] for x in parts[1:] if x) + '.') if len(parts) > 1 else ''
+            other_names.append((surname, inits))
+
+    company_new = {
+        'name': org,
+        'city': f"г. {company.get('city','')}" if company.get('city') and not company.get('city','').startswith('г.') else company.get('city',''),
+        'unp': company.get('unp', ''),
+        'street': company.get('address', ''),
+        'bank_account': company.get('bank_account', ''),
+        'bank_name': company.get('bank_name', ''),
+        'postal_code': company.get('postal_code', ''),
+        'region': company.get('region', ''),
+    }
+
+    people_map = {}
+    if dir_surname:
+        people_map['Василенко'] = dir_surname
+    if dir_initials:
+        people_map['С.Ф.'] = dir_initials
+    if len(other_names) >= 1:
+        people_map['Кормилицин'] = other_names[0][0]
+        if other_names[0][1]:
+            people_map['П.А.'] = other_names[0][1]
+    if len(other_names) >= 2:
+        people_map['Вершалович'] = other_names[1][0]
+        if other_names[1][1]:
+            people_map['А.П.'] = other_names[1][1]
+            people_map['А.М.'] = other_names[1][1]
+
+    wanted_categories = {'iso_suot': {'iso', 'suot'}, 'iso': {'iso'}, 'suot': {'suot'}}.get(product, {'iso', 'suot'})
+    keys = sorted(k for k in _MANIFEST if _category_of(k) in wanted_categories)
+
+    docs = []
+    total = len(keys) or 1
+    for i, key in enumerate(keys, 1):
+        friendly = _MANIFEST[key]
+        category = _category_of(key)
+        prefix = f"{org} СУОТ" if category == 'suot' else org
+        out_name = f"{prefix} - {friendly}.docx"
+        if progress_cb:
+            progress_cb(i, total, f"{friendly[:50]}")
+        try:
+            data = render_generic(key, _OLD_COMPANY, company_new, people_map)
+            docs.append({'name': out_name, 'bytes': data})
+        except Exception as e:
+            print(f"  ❌ Ошибка генерации {key} ({friendly}): {e}")
+
+    return {'docs': docs, 'warnings': []}

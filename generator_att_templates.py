@@ -196,3 +196,56 @@ def render_zayavlenie_spec(company: dict, person: dict, request: dict) -> bytes:
 
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
+
+
+# ═══════════════════ Адаптер для реального пайплайна (generator.py) ═══════════════════
+def generate_attestation_package_v2(company: dict, person: dict, requests: list,
+                                     api_key=None, vibe_call_fn=None, progress_cb=None) -> list:
+    """
+    Совместим по сигнатуре со старым generate_attestation_package из generator_att.py
+    (вызывается так же из generator.py — company, person, requests, api_key, vibe_call, progress_cb),
+    но реально рендерит через настоящий шаблон (render_zayavlenie_spec) вместо ИИ-сочинения текста.
+    На каждую специализацию — отдельное заявление, как и раньше.
+    """
+    docs = []
+    fio_safe = (person.get('fio') or 'specialist').split()[0]
+
+    company_mapped = {
+        'form': company.get('form', 'ООО'),
+        'name': company.get('name', ''),
+        'reg_address': company.get('address', ''),
+        'unp': company.get('unp', ''),
+        'bank_account': company.get('bank_account', ''),  # старая форма company обычно даёт только bank_details одной строкой — этих отдельных полей может не быть, тогда останется прочерк
+        'bank_name': company.get('bank_name', ''),
+        'bik': company.get('bik', ''),
+        'phone': company.get('phone', ''),
+        'email': company.get('email', ''),
+        'director_position': company.get('director_position', 'Директор'),
+        'director_fio': company.get('director_fio', ''),
+    }
+    person_mapped = {
+        'fio': person.get('fio', ''),
+        'diploma_speciality': person.get('diploma_speciality', ''),
+        'diploma_qualification': person.get('diploma_qualification', ''),
+        'diploma_number': person.get('diploma_number', ''),
+        'passport_series': person.get('passport_series', ''),
+        'passport_number': person.get('passport_number', ''),
+        'id_number': person.get('id_number', ''),
+        'issued_by': person.get('passport_issuer', ''),  # разные имена поля в схеме Игоря и в шаблоне
+        'address': person.get('address', ''),
+        'trudovaya_number': person.get('trudovaya_number', ''),
+    }
+
+    total = len(requests) or 1
+    for i, req in enumerate(requests, 1):
+        if progress_cb:
+            progress_cb(i, total, f"Заявление: {person.get('fio','')} — {req.get('specialization','')[:40]}")
+        request_mapped = {'specialization': req.get('specialization', ''), 'grade': req.get('grade', '')}
+        try:
+            doc_bytes = render_zayavlenie_spec(company_mapped, person_mapped, request_mapped)
+            safe_spec = re.sub(r'[^\w\s-]', '', req.get('specialization', ''))[:40]
+            docs.append({'name': f"{fio_safe} - Заявление - {safe_spec}.docx", 'bytes': doc_bytes})
+        except Exception as e:
+            print(f"  ❌ Ошибка генерации заявления для {person.get('fio','')}: {e}")
+
+    return docs

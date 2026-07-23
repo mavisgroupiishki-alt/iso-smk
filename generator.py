@@ -810,7 +810,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     # ── Аттестация специалистов — отдельная ветка, без штата/рисков/ISO-логики ──
     if product == 'att':
         try:
-            from generator_att import generate_attestation_package
+            from generator_att_templates import generate_attestation_package_v2 as generate_attestation_package
         except Exception as e:
             return {'docs': [], 'dates': dates, 'responsible': {}, 'itr_count': 0,
                     'workers_count': 0, 'professions': [], 'error': f'Модуль аттестации не загружен: {e}'}
@@ -846,7 +846,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
 
     if product == 'company_att':
         try:
-            from generator_company_att import generate_company_attestation_package
+            from generator_company_att_templates import generate_company_attestation_package_v2 as generate_company_attestation_package
         except Exception as e:
             return {'docs': [], 'dates': dates, 'responsible': {}, 'itr_count': 0,
                     'workers_count': 0, 'professions': [], 'error': f'Модуль аттестации компании не загружен: {e}'}
@@ -945,15 +945,32 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
         print(f"  [{step[0]}] {msg}")
 
     org = company.get('name', 'org')
+    warnings = []
 
-    if product in ('iso', 'iso_suot'):
-        _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p)
-
-    if product in ('suot', 'iso_suot'):
-        _gen_suot(org, company, dates, resp, itr, workers, worker_professions, api_key, add, p)
+    if product in ('iso', 'suot', 'iso_suot'):
+        try:
+            from generator_iso_suot_templates import generate_iso_suot_package_v2
+            result_is = generate_iso_suot_package_v2(company, itr, dates, resp, product=product,
+                                                       progress_cb=lambda i, t, m: p(m))
+            docs.extend(result_is['docs'])
+            warnings.extend(result_is.get('warnings', []))
+        except Exception as e:
+            print(f"  ❌ Модуль ИСО/СУОТ (настоящие шаблоны) не загружен, откат на старый ИИ-генератор: {e}")
+            if product in ('iso', 'iso_suot'):
+                _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p)
+            if product in ('suot', 'iso_suot'):
+                _gen_suot(org, company, dates, resp, itr, workers, worker_professions, api_key, add, p)
 
     if product in ('spk_stroy', 'spk_bisp'):
-        _gen_spk(org, company, dates, resp, itr, api_key, add, p, variant=product)
+        try:
+            from generator_spk_templates import generate_spk_package_v2
+            result_spk = generate_spk_package_v2(company, itr, workers, dates, resp, variant=product,
+                                                   progress_cb=lambda i, t, m: p(m))
+            docs.extend(result_spk['docs'])
+            warnings.extend(result_spk.get('warnings', []))
+        except Exception as e:
+            print(f"  ❌ Модуль СПК (настоящие шаблоны) не загружен, откат на старый ИИ-генератор: {e}")
+            _gen_spk(org, company, dates, resp, itr, api_key, add, p, variant=product)
 
     return {
         'docs': docs,
@@ -961,7 +978,8 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
         'responsible': resp,
         'itr_count': len(itr),
         'workers_count': len(workers),
-        'professions': worker_professions
+        'professions': worker_professions,
+        'warnings': warnings,
     }
 
 
@@ -2899,8 +2917,7 @@ def gen_spk_pasport(company, dates, resp, itr, api_key):
 7 Применяемая нормативная документация (ТНПА):
 Актуальные ГОСТ, СТБ, ТКП по заявленным видам работ согласно фонду ТНПА.
 
-8 Технологическая документация:
-Согласно Перечню типовых технологических карт (Справка ТТК).
+Технологическая документация: согласно Перечню типовых технологических карт (Справка ТТК).
 
 Средства измерений: согласно Справке СИ.
 
@@ -3057,10 +3074,6 @@ def gen_spk_garantiynoe(num, name, company, dates, resp, api_key, bisp_org=None)
         6: f"сообщает, что в адрес {full} не поступали письменные рекламации (претензии) от заказчиков к качеству выполненных строительно-монтажных работ за отчётный период.",
     }
 
-    # Адресат единый для всех писем одной компании — зависит от выбранного БИСП-органа клиента,
-    # не от номера письма. ВАЖНО: явно подставляем готовую строку адресата в шапку письма,
-    # а не просим ИИ её придумать — раньше ИИ иногда писал общую заглушку вроде "В СПК"
-    # вместо реального названия органа.
     bisp_addr = bisp_org or company.get('bisp_org', "РУП «СтройМедиаПроект»")
     prompt = f"""Создай ГАРАНТИЙНОЕ ПИСЬМО для СПК строго в этом формате — НЕ меняй и НЕ сокращай строку адресата.
 
