@@ -3,4 +3,4 @@ rarfile
 Pillow
 pillow-heif
 python-docx
-pdf2image
+PyMuPDF

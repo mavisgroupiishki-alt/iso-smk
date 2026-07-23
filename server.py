@@ -528,23 +528,34 @@ def _pdf_pages_to_images(file_bytes, max_pages=3, max_dim=1900, quality=82):
     внутри image_url) — модель отвечала ошибкой 'unsupported_format', потому что
     image_url ожидает именно изображение, не документ. PDF-сканы (паспорт, диплом,
     трудовая) из-за этого не распознавались НИКОГДА, даже когда доходили до vision.
+
+    Используем PyMuPDF (fitz) — НЕ pdf2image/Poppler: Render Free блокирует
+    apt-get install на этапе сборки (файловая система только для чтения), а
+    PyMuPDF самодостаточен — весь рендер PDF встроен прямо в Python-пакет, без
+    единой системной зависимости.
+
     Берём только первые max_pages страниц — этого достаточно для типичных сканов
     документов (диплом/паспорт/страница трудовой — обычно 1 разворот на файл).
     """
-    from pdf2image import convert_from_bytes
+    import fitz  # PyMuPDF
     from PIL import Image
     import io as _io4
     images_b64 = []
-    pages = convert_from_bytes(file_bytes, dpi=150, first_page=1, last_page=max_pages)
-    for img in pages:
-        if img.mode in ('RGBA', 'P'):
-            img = img.convert('RGB')
-        if max(img.size) > max_dim:
-            ratio = max_dim / max(img.size)
-            img = img.resize((int(img.size[0]*ratio), int(img.size[1]*ratio)), Image.LANCZOS)
-        buf = _io4.BytesIO()
-        img.save(buf, 'JPEG', quality=quality, optimize=True)
-        images_b64.append(base64.b64encode(buf.getvalue()).decode('utf-8'))
+    doc = fitz.open(stream=file_bytes, filetype='pdf')
+    try:
+        n_pages = min(len(doc), max_pages)
+        for i in range(n_pages):
+            page = doc[i]
+            pix = page.get_pixmap(dpi=150)
+            img = Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
+            if max(img.size) > max_dim:
+                ratio = max_dim / max(img.size)
+                img = img.resize((int(img.size[0]*ratio), int(img.size[1]*ratio)), Image.LANCZOS)
+            buf = _io4.BytesIO()
+            img.save(buf, 'JPEG', quality=quality, optimize=True)
+            images_b64.append(base64.b64encode(buf.getvalue()).decode('utf-8'))
+    finally:
+        doc.close()
     return images_b64
 
 
