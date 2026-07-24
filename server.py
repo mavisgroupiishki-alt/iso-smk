@@ -671,7 +671,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                                 (f"\n\n(Документ из {len(pages_b64)} страниц — учти все страницы вместе.)"
                                  if len(pages_b64) > 1 else '')})
         payload_mb = sum(len(b) for b in pages_b64) / 1024 / 1024
-        vibe_payload = {"model": VIBE_MODEL_VISION, "max_tokens": 4000,
+        vibe_payload = {"model": VIBE_MODEL_VISION, "max_tokens": 8000,
                          "messages": [{"role": "user", "content": content_blocks}]}
         print(f"  🔎 vision_extract({filename}): PDF -> {len(pages_b64)} стр., отправляю {payload_mb:.2f} МБ, жду семафор...")
         VISION_SEMAPHORE.acquire()
@@ -709,7 +709,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     payload_mb = len(b64_data) / 1024 / 1024
     vibe_payload = {
         "model": VIBE_MODEL_VISION,
-        "max_tokens": 4000,
+        "max_tokens": 8000,
         "messages": [{
             "role": "user",
             "content": [
