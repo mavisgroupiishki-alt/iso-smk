@@ -1968,16 +1968,25 @@ async function aiRawCheckArchive(file) {
   const result = await aiReadArchiveAsync(file);
   const text = result.content || '';
 
-  // Разбираем на блоки по маркеру "--- путь/файл ---"
-  const blockRe = /^--- (.+?) ---(?: ⚠️ (\S+))?\n([\s\S]*?)(?=\n--- |\n?$)/gm;
-  const rawBlocks = [];
+  // Теперь сервер САМ сводит документы одного человека в одну карточку (если их
+  // 2+) — такие блоки помечены "=== 👤 Имя (N документов, сведено воедино) ===".
+  // Остальное (один документ на человека, общие файлы вроде счетов) остаётся в
+  // старом формате "--- путь/файл ---". Разбираем оба вида.
+  const reconciledRe = /^=== 👤 (.+?) \((\d+) документов, сведено воедино\) ===\n([\s\S]*?)(?=\n(?:===|---) |\n?$)/gm;
+  const rawRe = /^--- (.+?) ---(?: ⚠️ (\S+))?\n([\s\S]*?)(?=\n(?:===|---) |\n?$)/gm;
+
+  const reconciled = [];
   let m;
-  while ((m = blockRe.exec(text)) !== null) {
+  while ((m = reconciledRe.exec(text)) !== null) {
+    reconciled.push({ person: m[1].trim(), docCount: m[2], summary: m[3].trim() });
+  }
+  const rawBlocks = [];
+  while ((m = rawRe.exec(text)) !== null) {
     rawBlocks.push({ fullPath: m[1].trim(), isError: !!m[2], content: m[3].trim() });
   }
 
-  // Убираем общий корневой префикс (имя самого архива) — иначе оно повторяется
-  // в каждой группе и мешает читать. Ищем самый длинный общий "папка/" префикс.
+  // Убираем общий корневой префикс (имя самого архива) для "сырых" блоков —
+  // иначе оно повторяется в каждой группе и мешает читать.
   let commonPrefix = '';
   if (rawBlocks.length > 0) {
     const firstSlash = rawBlocks[0].fullPath.indexOf('/');
@@ -1995,14 +2004,32 @@ async function aiRawCheckArchive(file) {
     return { group, fname, content: b.content, isError: b.isError };
   });
 
-  // Группируем по папке, сохраняя порядок первого появления
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  // Сначала — уже сведённые сервером карточки людей (2+ документа на человека).
+  // Это основной, компактный вид того что просили: без дублей, с явными пометками
+  // расхождений, а не сплошным текстом на всю страницу.
+  let reconciledHtml = '';
+  for (const r of reconciled) {
+    const hasDiscrepancy = r.summary.includes('РАСХОЖДЕНИЕ');
+    const badge = hasDiscrepancy
+      ? `<span style="color:#C97A5F">⚠️ есть расхождения между документами — сверьте с оригиналом</span>`
+      : `<span style="color:#6B9B7A">✅ данные из ${r.docCount} документов совпадают</span>`;
+    reconciledHtml += `<details style="margin-bottom:8px" open>`
+                     + `<summary style="cursor:pointer;font-size:12px;font-weight:600;color:#8B4A5C;padding:6px 8px;background:${hasDiscrepancy ? '#FBE4DC' : '#F7DDE1'};border-radius:6px">`
+                     + `👤 ${esc(r.person)} — ${badge}`
+                     + `</summary>`
+                     + `<div style="margin:6px 4px 0 12px;padding:8px 10px;background:#F3F8F0;border:1px solid #D9E5D0;border-radius:6px">`
+                     + `<div style="font-size:11.5px;white-space:pre-wrap;word-break:break-word;color:#5C4A3D">${esc(r.summary)}</div>`
+                     + `</div></details>`;
+  }
+
+  // Группируем "сырые" (не сведённые — один документ или общие файлы) по папке
   const groups = new Map();
   for (const b of blocks) {
     if (!groups.has(b.group)) groups.set(b.group, []);
     groups.get(b.group).push(b);
   }
-
-  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
   let groupsHtml = '';
   for (const [groupName, items] of groups) {
@@ -2022,13 +2049,14 @@ async function aiRawCheckArchive(file) {
                  + `</div>`;
     }
 
-    groupsHtml += `<details style="margin-bottom:8px" open>`
+    groupsHtml += `<details style="margin-bottom:8px">`
                 + `<summary style="cursor:pointer;font-size:12px;font-weight:600;color:#8B4A5C;padding:6px 8px;background:#F7DDE1;border-radius:6px">`
-                + `👤 ${esc(groupName)} — ${statusBadge}`
+                + `📁 ${esc(groupName)} — ${statusBadge}`
                 + `</summary>`
                 + `<div style="padding:4px 4px 0 12px">${itemsHtml}</div>`
                 + `</details>`;
   }
+  groupsHtml = reconciledHtml + groupsHtml;
 
   const charCount = text.length;
   const totalOk = blocks.filter(b => !b.isError).length;

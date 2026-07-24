@@ -870,6 +870,94 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
     return '[Неизвестный формат файла]'
 
 
+def _group_blocks_by_person(texts):
+    """Группирует блоки текста '--- путь/файл ---\\nсодержимое' по папке (папка = человек,
+    та же логика что и в диагностической кнопке на фронтенде). Возвращает (groups, order):
+    groups — {имя_папки_или_None: [блок, блок, ...]}, order — порядок первого появления."""
+    groups = {}
+    order = []
+    for block in texts:
+        m = re.match(r'^--- (.+?) ---', block)
+        if not m:
+            groups.setdefault(None, []).append(block)
+            if None not in order: order.append(None)
+            continue
+        full_path = m.group(1).strip()
+        slash_idx = full_path.rfind('/')
+        person = full_path[:slash_idx] if slash_idx >= 0 else None
+        groups.setdefault(person, []).append(block)
+        if person not in order: order.append(person)
+    return groups, order
+
+
+def _reconcile_person_summary(person_name, raw_blocks, api_key):
+    """Один ИИ-вызов на человека: сводит все его документы (паспорт, диплом(ы),
+    трудовая, аттестат) в компактную структурированную карточку. КРИТИЧНО: если
+    в разных документах одно и то же поле (ФИО, дата, номер) прочитано ПО-РАЗНОМУ
+    (обычное дело на старых рукописных документах) — явно помечает расхождение,
+    а не выбирает молча один вариант."""
+    combined = '\n\n'.join(raw_blocks)
+    if len(combined) > 60000:
+        combined = combined[:60000] + '\n[...обрезано для сверки...]'
+    prompt = (
+        f"Ниже — результаты распознавания НЕСКОЛЬКИХ документов ОДНОГО И ТОГО ЖЕ человека "
+        f"(«{person_name}»): паспорт, диплом(ы), трудовая книжка, аттестат и т.п.\n\n"
+        f"{combined}\n\n"
+        f"Собери ИТОГОВУЮ карточку по этому человеку СТРОГО в таком формате, коротко, "
+        f"без длинных абзацев и без пересказа каждой записи трудовой книжки подряд:\n\n"
+        f"ФИО: [самый вероятный вариант]\n"
+        f"Дата рождения: ...\n"
+        f"Паспорт/ID: серия, номер, кем и когда выдан\n"
+        f"Диплом(ы): номер, специальность, квалификация, дата выдачи, учебное заведение "
+        f"(если дипломов несколько — перечисли все отдельными строками)\n"
+        f"Трудовая книжка: номер\n"
+        f"Аттестат/удостоверение: номер, специализация, срок действия (если несколько — все)\n"
+        f"Стаж/ключевые места работы: кратко, только значимое для аттестации\n\n"
+        f"КРИТИЧЕСКИ ВАЖНО:\n"
+        f"— Если в РАЗНЫХ документах одно и то же поле (ФИО, дата, номер) указано ПО-РАЗНОМУ "
+        f"(например в одном 'Александр', в другом — 'Алёна', или разные номера регистрации) — "
+        f"НЕ выбирай молча один вариант. Напиши оба через ' / ' и добавь пометку "
+        f"'⚠️ РАСХОЖДЕНИЕ — сверить с оригиналом'.\n"
+        f"— Не дублируй одну и ту же информацию дважды.\n"
+        f"— Если что-то не найдено ни в одном документе — напиши 'не найдено', не выдумывай.\n"
+        f"— Отвечай ТОЛЬКО структурированными полями выше, без вступлений и заключений."
+    )
+    return vibe_call([{"role": "user", "content": prompt}], api_key, max_tokens=1500)
+
+
+def _reconcile_all_people(texts, api_key):
+    """Группирует блоки по человеку; для людей с 2+ документами делает сверку
+    (см. _reconcile_person_summary), убирая дубли и помечая расхождения. Для
+    общих документов (без папки, например счета/договоры) или людей с одним
+    документом — сверка не нужна, оставляем как есть."""
+    from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
+    groups, order = _group_blocks_by_person(texts)
+
+    def reconcile_one(person):
+        blocks = groups[person]
+        if person is None or len(blocks) < 2:
+            return person, blocks
+        try:
+            summary = _reconcile_person_summary(person, blocks, api_key)
+            label = f"=== 👤 {person} ({len(blocks)} документов, сведено воедино) ===\n{summary}"
+            return person, [label]
+        except Exception as e:
+            print(f"  ⚠️ Сверка по «{person}» не удалась: {type(e).__name__}: {e} — отдаю как есть, без свода")
+            return person, blocks
+
+    results = {}
+    with _TPE(max_workers=2) as ex:
+        futures = {ex.submit(reconcile_one, person): person for person in order}
+        for fut in _ac(futures):
+            person, blocks = fut.result()
+            results[person] = blocks
+
+    result_blocks = []
+    for person in order:
+        result_blocks.extend(results[person])
+    return result_blocks
+
+
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
@@ -1007,6 +1095,21 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                         if r: texts.append(r)
                     except Exception as ex2:
                         texts.append(f"--- {short} --- [ошибка: {ex2}]")
+
+    # ── Сверка по человеку: убираем дубли и явно помечаем расхождения ──────
+    # Раньше отдавали сырую свалку — по 5-10 файлов на человека сплошным текстом,
+    # без дедупликации, и если в разных документах ФИО/даты/номера расходились
+    # (типичное дело на старых рукописных документах) — эти противоречия просто
+    # терялись в потоке текста, а модель ниже по цепочке (Игорь) могла тихо выбрать
+    # один из вариантов, не предупредив клиента. Теперь для каждого человека
+    # (папка = человек) делаем ОДИН дополнительный ИИ-вызов, который сводит все
+    # его документы в компактную карточку и явно помечает расхождения — вместо
+    # того чтобы Игорь или человек потом сами искали противоречия в стене текста.
+    try:
+        p("Свожу данные по каждому человеку...")
+        texts = _reconcile_all_people(texts, api_key)
+    except Exception as e:
+        print(f"  ⚠️ Сверка по людям не удалась ({type(e).__name__}: {e}) — отдаю как есть, без свода")
 
     PRIORITY_KEYWORDS = ['поставщик', 'объект', 'сотрудник', 'штатн', 'персонал',
                           'список', 'перечень', 'работник', 'паспорт', 'диплом', 'трудов']
