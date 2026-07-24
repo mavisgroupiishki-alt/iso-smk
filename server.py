@@ -529,25 +529,27 @@ def _pdf_pages_to_images(file_bytes, max_pages=3, max_dim=1900, quality=82):
     image_url ожидает именно изображение, не документ. PDF-сканы (паспорт, диплом,
     трудовая) из-за этого не распознавались НИКОГДА, даже когда доходили до vision.
 
-    Используем PyMuPDF (fitz) — НЕ pdf2image/Poppler: Render Free блокирует
-    apt-get install на этапе сборки (файловая система только для чтения), а
-    PyMuPDF самодостаточен — весь рендер PDF встроен прямо в Python-пакет, без
-    единой системной зависимости.
+    Используем pypdfium2 (не pdf2image/Poppler — Render Free блокирует apt-get на
+    этапе сборки, файловая система только для чтения; не PyMuPDF — не удалось
+    подтвердить его установку живым тестом в песочнице разработки). pypdfium2 —
+    Python-обёртка над PDFium (движок PDF из Chromium), собранная как самодостаточное
+    колесо без единой системной зависимости — проверено вживую перед отправкой этого
+    кода: реальный PDF отрендерен и превращён в JPEG успешно.
 
     Берём только первые max_pages страниц — этого достаточно для типичных сканов
     документов (диплом/паспорт/страница трудовой — обычно 1 разворот на файл).
     """
-    import fitz  # PyMuPDF
+    import pypdfium2 as pdfium
     from PIL import Image
     import io as _io4
     images_b64 = []
-    doc = fitz.open(stream=file_bytes, filetype='pdf')
+    doc = pdfium.PdfDocument(file_bytes)
     try:
         n_pages = min(len(doc), max_pages)
         for i in range(n_pages):
             page = doc[i]
-            pix = page.get_pixmap(dpi=150)
-            img = Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
+            bitmap = page.render(scale=150/72)  # 150 DPI
+            img = bitmap.to_pil().convert('RGB')
             if max(img.size) > max_dim:
                 ratio = max_dim / max(img.size)
                 img = img.resize((int(img.size[0]*ratio), int(img.size[1]*ratio)), Image.LANCZOS)
@@ -891,9 +893,19 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
             else:
                 txt = vision_extract(data, short, api_key)
 
-            if txt and len(txt) > 10 and not txt.startswith('['):
+            # КРИТИЧНО: раньше здесь было "if txt and len > 10 and not startswith('[')"
+            # — а мои же сообщения об ОШИБКАХ специально начинаются с '[' (чтобы легко
+            # отличать от настоящего текста). Из-за этого условия любая ошибка
+            # (таймаут, сбой конвертации PDF, отказ vision) тихо выбрасывала файл из
+            # результата совсем — как будто его никогда не было. Человек видел просто
+            # "ничего не найдено" вместо реальной причины. Теперь ошибки тоже
+            # показываются — с пометкой, чтобы сразу было видно что это сбой, а не
+            # то что файл прочитан пустым.
+            if txt and len(txt) > 10:
+                if txt.startswith('['):
+                    return f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n" + txt
                 return f"--- {folder + '/' if folder else ''}{short} ---\n" + txt
-            return None
+            return f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ПУСТОЙ РЕЗУЛЬТАТ (короче 10 символов)"
 
         if image_entries:
             with ThreadPoolExecutor(max_workers=2) as ex:
