@@ -671,7 +671,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                                 (f"\n\n(Документ из {len(pages_b64)} страниц — учти все страницы вместе.)"
                                  if len(pages_b64) > 1 else '')})
         payload_mb = sum(len(b) for b in pages_b64) / 1024 / 1024
-        vibe_payload = {"model": VIBE_MODEL_VISION, "max_tokens": 1000,
+        vibe_payload = {"model": VIBE_MODEL_VISION, "max_tokens": 4000,
                          "messages": [{"role": "user", "content": content_blocks}]}
         print(f"  🔎 vision_extract({filename}): PDF -> {len(pages_b64)} стр., отправляю {payload_mb:.2f} МБ, жду семафор...")
         VISION_SEMAPHORE.acquire()
@@ -684,6 +684,8 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             data = resp.json()
             text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
             print(f"  ✅ vision_extract({filename}): успех за {elapsed:.1f} сек, {len(text)} символов ответа")
+            if not text:
+                print(f"  ⚠️ vision_extract({filename}): ПУСТОЙ content — сырой ответ API (первые 500 симв): {json.dumps(data)[:500]}")
             return text or '[vision: пустой ответ]'
         except req_lib.exceptions.Timeout:
             elapsed = _time.time() - t0
@@ -707,7 +709,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     payload_mb = len(b64_data) / 1024 / 1024
     vibe_payload = {
         "model": VIBE_MODEL_VISION,
-        "max_tokens": 1000,
+        "max_tokens": 4000,
         "messages": [{
             "role": "user",
             "content": [
@@ -729,6 +731,8 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         data = resp.json()
         text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
         print(f"  ✅ vision_extract({filename}): успех за {elapsed:.1f} сек, {len(text)} символов ответа")
+        if not text:
+            print(f"  ⚠️ vision_extract({filename}): ПУСТОЙ content — сырой ответ API (первые 500 симв): {json.dumps(data)[:500]}")
         return text or '[vision: пустой ответ]'
     except req_lib.exceptions.Timeout:
         elapsed = _time.time() - t0
