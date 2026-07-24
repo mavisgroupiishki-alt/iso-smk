@@ -1959,24 +1959,87 @@ async function aiRawCheckArchive(file) {
   // (текст + vision по фото), но результат показывает прямо в чате как есть —
   // без похода к Игорю/ИИ. Нужно чтобы увидеть РЕАЛЬНО что распозналось, когда
   // непонятно, теряются ли данные при чтении файлов или уже при интерпретации ИИ.
+  // Группируем по папке (обычно папка = человек) — так же, как просили показывать
+  // Игорю: не сплошной список файлов, а "человек -> его документы".
   if(!file) return;
-  document.getElementById('ai-raw-check-input').value = ''; // сброс, чтобы можно было выбрать тот же файл повторно
+  document.getElementById('ai-raw-check-input').value = '';
 
-  aiAddMsg('user', `🔍 Проверка архива «${file.name}» (сырой текст, без Игоря)`);
+  aiAddMsg('user', `🔍 Проверка архива «${file.name}» (сырой текст, сгруппировано по людям)`);
   const result = await aiReadArchiveAsync(file);
+  const text = result.content || '';
 
-  const text = result.content || '[пусто]';
+  // Разбираем на блоки по маркеру "--- путь/файл ---"
+  const blockRe = /^--- (.+?) ---(?: ⚠️ (\S+))?\n([\s\S]*?)(?=\n--- |\n?$)/gm;
+  const rawBlocks = [];
+  let m;
+  while ((m = blockRe.exec(text)) !== null) {
+    rawBlocks.push({ fullPath: m[1].trim(), isError: !!m[2], content: m[3].trim() });
+  }
+
+  // Убираем общий корневой префикс (имя самого архива) — иначе оно повторяется
+  // в каждой группе и мешает читать. Ищем самый длинный общий "папка/" префикс.
+  let commonPrefix = '';
+  if (rawBlocks.length > 0) {
+    const firstSlash = rawBlocks[0].fullPath.indexOf('/');
+    if (firstSlash > 0) {
+      const candidate = rawBlocks[0].fullPath.slice(0, firstSlash + 1);
+      if (rawBlocks.every(b => b.fullPath.startsWith(candidate))) commonPrefix = candidate;
+    }
+  }
+
+  const blocks = rawBlocks.map(b => {
+    const trimmed = b.fullPath.startsWith(commonPrefix) ? b.fullPath.slice(commonPrefix.length) : b.fullPath;
+    const slashIdx = trimmed.lastIndexOf('/');
+    const group = slashIdx >= 0 ? trimmed.slice(0, slashIdx) : '(общие документы, без папки)';
+    const fname = slashIdx >= 0 ? trimmed.slice(slashIdx + 1) : trimmed;
+    return { group, fname, content: b.content, isError: b.isError };
+  });
+
+  // Группируем по папке, сохраняя порядок первого появления
+  const groups = new Map();
+  for (const b of blocks) {
+    if (!groups.has(b.group)) groups.set(b.group, []);
+    groups.get(b.group).push(b);
+  }
+
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  let groupsHtml = '';
+  for (const [groupName, items] of groups) {
+    const okCount = items.filter(i => !i.isError).length;
+    const errCount = items.length - okCount;
+    const statusBadge = errCount === 0
+      ? `<span style="color:#6B9B7A">✅ все ${okCount} прочитаны</span>`
+      : `<span style="color:#6B9B7A">✅ ${okCount}</span> · <span style="color:#C97A5F">⚠️ ${errCount} не прочитано</span>`;
+
+    let itemsHtml = '';
+    for (const it of items) {
+      const border = it.isError ? '#E8B4A8' : '#D9E5D0';
+      const bg = it.isError ? '#FDF1EC' : '#F3F8F0';
+      itemsHtml += `<div style="margin:6px 0;padding:8px 10px;background:${bg};border:1px solid ${border};border-radius:6px">`
+                 + `<div style="font-size:10.5px;font-weight:600;color:#8B6F5F;margin-bottom:4px">${it.isError ? '⚠️ ' : '📄 '}${esc(it.fname)}</div>`
+                 + `<div style="font-size:11px;white-space:pre-wrap;word-break:break-word;color:#5C4A3D">${esc(it.content) || '<i>(пусто)</i>'}</div>`
+                 + `</div>`;
+    }
+
+    groupsHtml += `<details style="margin-bottom:8px" open>`
+                + `<summary style="cursor:pointer;font-size:12px;font-weight:600;color:#8B4A5C;padding:6px 8px;background:#F7DDE1;border-radius:6px">`
+                + `👤 ${esc(groupName)} — ${statusBadge}`
+                + `</summary>`
+                + `<div style="padding:4px 4px 0 12px">${itemsHtml}</div>`
+                + `</details>`;
+  }
+
   const charCount = text.length;
-  const fileBlocksCount = (text.match(/^--- /gm) || []).length;
+  const totalOk = blocks.filter(b => !b.isError).length;
+  const totalErr = blocks.length - totalOk;
+  const statsHtml = `<div style="font-size:11px;color:#A6837D;margin-bottom:8px">`
+                   + `📊 Групп (людей/разделов): <b>${groups.size}</b> · Файлов прочитано: <b>${totalOk}</b>`
+                   + (totalErr ? ` · <span style="color:#C97A5F">не прочитано: ${totalErr}</span>` : '')
+                   + (text.includes('ДАННЫЕ ОБРЕЗАНЫ') ? ` · <span style="color:#C97A5F">⚠️ есть обрезанные данные!</span>` : '')
+                   + `</div>`;
 
-  const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const html = `<div style="font-size:11px;color:#A6837D;margin-bottom:8px">`
-             + `📊 Распознано файлов: <b>${fileBlocksCount}</b> · Символов текста: <b>${charCount}</b>`
-             + (text.includes('ДАННЫЕ ОБРЕЗАНЫ') ? ` · <span style="color:#C97A5F">⚠️ есть обрезанные данные!</span>` : '')
-             + `</div>`
-             + `<pre style="white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:11px;background:#FDF8EE;border:1px solid #E8DCC8;border-radius:8px;padding:10px;max-height:500px;overflow-y:auto;margin:0">${escaped}</pre>`;
-
-  aiAddMsg('ai', html);
+  aiAddMsg('ai', statsHtml + (groupsHtml || `<i>Ничего не распознано.</i>`));
 }
 
 function aiHandleKey(e) {
