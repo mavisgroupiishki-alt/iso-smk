@@ -561,13 +561,100 @@ def _pdf_pages_to_images(file_bytes, max_pages=3, max_dim=1900, quality=82):
     return images_b64
 
 
+TESSDATA_DIR = BASE_DIR / 'tessdata'
+_TESSERACT_STATUS = {'checked': False, 'available': False, 'has_rus': False, 'reason': ''}
+
+def _check_tesseract():
+    """Проверяет один раз при первом обращении: стоит ли вообще tesseract на сервере
+    и есть ли русский языковой пакет (из репозитория, папка tessdata/ — не системный,
+    чтобы не зависеть от apt-get, который Render блокирует на этапе сборки)."""
+    if _TESSERACT_STATUS['checked']:
+        return _TESSERACT_STATUS
+    _TESSERACT_STATUS['checked'] = True
+    try:
+        import pytesseract
+        pytesseract.get_tesseract_version()
+        _TESSERACT_STATUS['available'] = True
+    except Exception as e:
+        _TESSERACT_STATUS['reason'] = f'бинарник tesseract недоступен: {e}'
+        print(f"  ℹ️ Tesseract OCR недоступен ({_TESSERACT_STATUS['reason']}) — все файлы пойдут через vision как раньше")
+        return _TESSERACT_STATUS
+    rus_path = TESSDATA_DIR / 'rus.traineddata'
+    if rus_path.exists():
+        _TESSERACT_STATUS['has_rus'] = True
+        print(f"  ✅ Tesseract OCR доступен, русский языковой пакет найден в {rus_path}")
+    else:
+        _TESSERACT_STATUS['reason'] = f'нет файла {rus_path} (нужно положить в репозиторий, папка tessdata/)'
+        print(f"  ℹ️ Tesseract доступен, но {_TESSERACT_STATUS['reason']} — все файлы пойдут через vision")
+    return _TESSERACT_STATUS
+
+
+def _tesseract_ocr_image(pil_image):
+    """OCR одной картинки локальным Tesseract (без похода в интернет вообще).
+    Возвращает текст или None, если результат выглядит ненадёжным (мало текста,
+    много не-буквенного мусора — типичный признак что Tesseract не справился, например
+    с рукописным текстом или сильно смазанным фото)."""
+    import pytesseract
+    import os as _os
+    _os.environ['TESSDATA_PREFIX'] = str(TESSDATA_DIR)
+    text = pytesseract.image_to_string(pil_image, lang='rus+eng', config='--tessdata-dir "%s"' % TESSDATA_DIR)
+    text = text.strip()
+    if len(text) < 15:
+        return None  # почти ничего не нашёл — вероятно скан плохого качества или рукопись
+    if not _looks_like_real_text(text):
+        return None  # похоже на мусор, а не реальный текст
+    return text
+
+
+def _try_tesseract_first(file_bytes, filename):
+    """Пытается прочитать файл локальным OCR ПЕРЕД тем как идти во внешний vision API.
+    Работает только для ПЕЧАТНОГО текста (дипломы/справки/официальные бланки — почти
+    всегда печать) — для рукописного текста (старые записи в трудовой от руки) заведомо
+    хуже ИИ-vision, поэтому в таких случаях намеренно возвращает None, чтобы код упал
+    на vision как раньше. Возвращает текст или None (None = 'иди в vision')."""
+    status = _check_tesseract()
+    if not (status['available'] and status['has_rus']):
+        return None
+    try:
+        from PIL import Image
+        import io as _io5
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        if ext == 'pdf':
+            pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=3)
+            texts = []
+            for b64 in pages_b64:
+                img = Image.open(_io5.BytesIO(base64.b64decode(b64)))
+                t = _tesseract_ocr_image(img)
+                if t:
+                    texts.append(t)
+            if not texts:
+                return None
+            return '\n\n'.join(texts)
+        else:
+            small_bytes, _ = _downscale_image(file_bytes, max_dim=2400, quality=90)  # для OCR чуть покрупнее чем для vision
+            img = Image.open(_io5.BytesIO(small_bytes))
+            return _tesseract_ocr_image(img)
+    except Exception as e:
+        print(f"  ⚠️ Tesseract OCR упал с ошибкой на {filename} ({type(e).__name__}: {e}) — иду в vision")
+        return None
+
+
 def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None):
-    """Синхронный вызов vision для одного файла (фото/скан). Уменьшает изображение
-    перед отправкой. Ограничивает параллелизм через VISION_SEMAPHORE (не более 2 разом
-    на весь сервер — иначе Render Free падает по памяти)."""
+    """Синхронный вызов vision для одного файла (фото/скан). Сначала пробует локальный
+    Tesseract OCR (бесплатно, быстро, не зависит от внешнего API) — если он недоступен
+    на сервере или не справился (плохой скан/рукопись), падает на внешний vision API
+    как раньше. Уменьшает изображение перед отправкой. Ограничивает параллелизм через
+    VISION_SEMAPHORE (не более 2 разом на весь сервер — иначе Render Free падает по памяти)."""
     import base64 as _b64, time as _time
     active_prompt = prompt_override or VISION_PROMPT
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+
+    if ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf'):
+        tesseract_text = _try_tesseract_first(file_bytes, filename)
+        if tesseract_text:
+            print(f"  ✅ vision_extract({filename}): прочитано локальным Tesseract OCR, "
+                  f"{len(tesseract_text)} символов — в vision API не ходили")
+            return tesseract_text
 
     if ext == 'pdf':
         # PDF конвертируется в настоящие картинки — см. _pdf_pages_to_images().

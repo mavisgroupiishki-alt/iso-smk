@@ -4,3 +4,4 @@ Pillow
 pillow-heif
 python-docx
 pypdfium2
+pytesseract
