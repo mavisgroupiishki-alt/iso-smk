@@ -870,6 +870,26 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
     return '[Неизвестный формат файла]'
 
 
+def _simple_ai_call(prompt, api_key, max_tokens=1500):
+    """Минимальный вызов текстовой модели БЕЗ системного промпта Игоря (AI_SYSTEM
+    требует отвечать строго JSON — для задач вроде сведения карточки человека это
+    не подходит и всё сломает). Отдельная функция специально для таких служебных
+    задач — не путать с call_ai (это для основного чата с Игорем)."""
+    resp = req_lib.post(
+        VIBE_URL,
+        headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+        json={"model": VIBE_MODEL, "max_tokens": max_tokens,
+              "messages": [{"role": "user", "content": prompt}]},
+        timeout=90
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
+    if not text:
+        raise RuntimeError(f"Пустой ответ от модели при сведении данных (сырой ответ: {json.dumps(data)[:300]})")
+    return text
+
+
 def _group_blocks_by_person(texts):
     """Группирует блоки текста '--- путь/файл ---\\nсодержимое' по папке (папка = человек,
     та же логика что и в диагностической кнопке на фронтенде). Возвращает (groups, order):
@@ -922,7 +942,7 @@ def _reconcile_person_summary(person_name, raw_blocks, api_key):
         f"— Если что-то не найдено ни в одном документе — напиши 'не найдено', не выдумывай.\n"
         f"— Отвечай ТОЛЬКО структурированными полями выше, без вступлений и заключений."
     )
-    return vibe_call([{"role": "user", "content": prompt}], api_key, max_tokens=1500)
+    return _simple_ai_call(prompt, api_key, max_tokens=1500)
 
 
 def _reconcile_all_people(texts, api_key):
@@ -1692,6 +1712,13 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type','text/html; charset=utf-8')
         self.send_header('Content-Length',str(len(b)))
+        # КРИТИЧНО: без этого браузер может показывать старый закэшированный
+        # index.html даже после деплоя новой версии — человек тестирует фикс,
+        # видит старое поведение, и непонятно, деплой не применился или фикс
+        # не сработал. Явно запрещаем кэширование HTML (сам файл маленький,
+        # разница в скорости незаметна, а путаницы больше не будет).
+        self.send_header('Cache-Control','no-store, no-cache, must-revalidate, max-age=0')
+        self.send_header('Pragma','no-cache')
         self.end_headers(); self.wfile.write(b)
 
     def do_OPTIONS(self): self.send_response(200); self.end_headers()
