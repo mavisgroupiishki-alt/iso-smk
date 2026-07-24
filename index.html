@@ -1955,119 +1955,29 @@ async function aiReadArchiveAsync(file) {
 }
 
 async function aiRawCheckArchive(file) {
-  // Диагностический режим: читает архив ТЕМ ЖЕ бэкенд-путём, что и обычная загрузка
-  // (текст + vision по фото), но результат показывает прямо в чате как есть —
-  // без похода к Игорю/ИИ. Нужно чтобы увидеть РЕАЛЬНО что распозналось, когда
-  // непонятно, теряются ли данные при чтении файлов или уже при интерпретации ИИ.
-  // Группируем по папке (обычно папка = человек) — так же, как просили показывать
-  // Игорю: не сплошной список файлов, а "человек -> его документы".
+  // Сервер теперь САМ сводит все документы каждого человека в готовую карточку
+  // (реквизиты компании + люди по номерам, при расхождениях между документами
+  // выбран наиболее вероятный вариант) — задача фронтенда просто ПОКАЗАТЬ этот
+  // текст и дать удобно скопировать, не заниматься сложным разбором самому.
   if(!file) return;
   document.getElementById('ai-raw-check-input').value = '';
 
-  aiAddMsg('user', `🔍 Проверка архива «${file.name}» (сырой текст, сгруппировано по людям)`);
+  aiAddMsg('user', `🔍 Проверка архива «${file.name}» — данные для копирования`);
   const result = await aiReadArchiveAsync(file);
-  const text = result.content || '';
-
-  // Теперь сервер САМ сводит документы одного человека в одну карточку (если их
-  // 2+) — такие блоки помечены "=== 👤 Имя (N документов, сведено воедино) ===".
-  // Остальное (один документ на человека, общие файлы вроде счетов) остаётся в
-  // старом формате "--- путь/файл ---". Разбираем оба вида.
-  const reconciledRe = /^=== 👤 (.+?) \((\d+) документов, сведено воедино\) ===\n([\s\S]*?)(?=\n(?:===|---) |\n?$)/gm;
-  const rawRe = /^--- (.+?) ---(?: ⚠️ (\S+))?\n([\s\S]*?)(?=\n(?:===|---) |\n?$)/gm;
-
-  const reconciled = [];
-  let m;
-  while ((m = reconciledRe.exec(text)) !== null) {
-    reconciled.push({ person: m[1].trim(), docCount: m[2], summary: m[3].trim() });
-  }
-  const rawBlocks = [];
-  while ((m = rawRe.exec(text)) !== null) {
-    rawBlocks.push({ fullPath: m[1].trim(), isError: !!m[2], content: m[3].trim() });
-  }
-
-  // Убираем общий корневой префикс (имя самого архива) для "сырых" блоков —
-  // иначе оно повторяется в каждой группе и мешает читать.
-  let commonPrefix = '';
-  if (rawBlocks.length > 0) {
-    const firstSlash = rawBlocks[0].fullPath.indexOf('/');
-    if (firstSlash > 0) {
-      const candidate = rawBlocks[0].fullPath.slice(0, firstSlash + 1);
-      if (rawBlocks.every(b => b.fullPath.startsWith(candidate))) commonPrefix = candidate;
-    }
-  }
-
-  const blocks = rawBlocks.map(b => {
-    const trimmed = b.fullPath.startsWith(commonPrefix) ? b.fullPath.slice(commonPrefix.length) : b.fullPath;
-    const slashIdx = trimmed.lastIndexOf('/');
-    const group = slashIdx >= 0 ? trimmed.slice(0, slashIdx) : '(общие документы, без папки)';
-    const fname = slashIdx >= 0 ? trimmed.slice(slashIdx + 1) : trimmed;
-    return { group, fname, content: b.content, isError: b.isError };
-  });
+  const text = result.content || '[пусто]';
 
   const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const boxId = 'raw-copy-' + Date.now();
+  const hasDiscrepancy = text.includes('⚠️');
 
-  // Сначала — уже сведённые сервером карточки людей (2+ документа на человека).
-  // Это основной, компактный вид того что просили: без дублей, с явными пометками
-  // расхождений, а не сплошным текстом на всю страницу.
-  let reconciledHtml = '';
-  for (const r of reconciled) {
-    const hasDiscrepancy = r.summary.includes('РАСХОЖДЕНИЕ');
-    const badge = hasDiscrepancy
-      ? `<span style="color:#C97A5F">⚠️ есть расхождения между документами — сверьте с оригиналом</span>`
-      : `<span style="color:#6B9B7A">✅ данные из ${r.docCount} документов совпадают</span>`;
-    reconciledHtml += `<details style="margin-bottom:8px" open>`
-                     + `<summary style="cursor:pointer;font-size:12px;font-weight:600;color:#8B4A5C;padding:6px 8px;background:${hasDiscrepancy ? '#FBE4DC' : '#F7DDE1'};border-radius:6px">`
-                     + `👤 ${esc(r.person)} — ${badge}`
-                     + `</summary>`
-                     + `<div style="margin:6px 4px 0 12px;padding:8px 10px;background:#F3F8F0;border:1px solid #D9E5D0;border-radius:6px">`
-                     + `<div style="font-size:11.5px;white-space:pre-wrap;word-break:break-word;color:#5C4A3D">${esc(r.summary)}</div>`
-                     + `</div></details>`;
-  }
+  const html = `<div style="font-size:11px;color:#A6837D;margin-bottom:8px">`
+             + (hasDiscrepancy ? `<span style="color:#C97A5F">⚠️ есть отмеченные расхождения между документами — проверьте помеченные строки</span>` : `<span style="color:#6B9B7A">✅ расхождений не отмечено</span>`)
+             + `</div>`
+             + `<button onclick="navigator.clipboard.writeText(document.getElementById('${boxId}').innerText).then(()=>{this.innerText='✅ Скопировано'; setTimeout(()=>this.innerText='📋 Скопировать всё',1500)})" `
+             + `style="margin-bottom:8px;padding:6px 14px;border-radius:6px;border:1px solid #C97A5F;background:#F7DDE1;color:#8B4A5C;font-size:11px;cursor:pointer;font-family:inherit">📋 Скопировать всё</button>`
+             + `<pre id="${boxId}" style="white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:11.5px;background:#FDF8EE;border:1px solid #E8DCC8;border-radius:8px;padding:12px;max-height:600px;overflow-y:auto;margin:0">${esc(text)}</pre>`;
 
-  // Группируем "сырые" (не сведённые — один документ или общие файлы) по папке
-  const groups = new Map();
-  for (const b of blocks) {
-    if (!groups.has(b.group)) groups.set(b.group, []);
-    groups.get(b.group).push(b);
-  }
-
-  let groupsHtml = '';
-  for (const [groupName, items] of groups) {
-    const okCount = items.filter(i => !i.isError).length;
-    const errCount = items.length - okCount;
-    const statusBadge = errCount === 0
-      ? `<span style="color:#6B9B7A">✅ все ${okCount} прочитаны</span>`
-      : `<span style="color:#6B9B7A">✅ ${okCount}</span> · <span style="color:#C97A5F">⚠️ ${errCount} не прочитано</span>`;
-
-    let itemsHtml = '';
-    for (const it of items) {
-      const border = it.isError ? '#E8B4A8' : '#D9E5D0';
-      const bg = it.isError ? '#FDF1EC' : '#F3F8F0';
-      itemsHtml += `<div style="margin:6px 0;padding:8px 10px;background:${bg};border:1px solid ${border};border-radius:6px">`
-                 + `<div style="font-size:10.5px;font-weight:600;color:#8B6F5F;margin-bottom:4px">${it.isError ? '⚠️ ' : '📄 '}${esc(it.fname)}</div>`
-                 + `<div style="font-size:11px;white-space:pre-wrap;word-break:break-word;color:#5C4A3D">${esc(it.content) || '<i>(пусто)</i>'}</div>`
-                 + `</div>`;
-    }
-
-    groupsHtml += `<details style="margin-bottom:8px">`
-                + `<summary style="cursor:pointer;font-size:12px;font-weight:600;color:#8B4A5C;padding:6px 8px;background:#F7DDE1;border-radius:6px">`
-                + `📁 ${esc(groupName)} — ${statusBadge}`
-                + `</summary>`
-                + `<div style="padding:4px 4px 0 12px">${itemsHtml}</div>`
-                + `</details>`;
-  }
-  groupsHtml = reconciledHtml + groupsHtml;
-
-  const charCount = text.length;
-  const totalOk = blocks.filter(b => !b.isError).length;
-  const totalErr = blocks.length - totalOk;
-  const statsHtml = `<div style="font-size:11px;color:#A6837D;margin-bottom:8px">`
-                   + `📊 Групп (людей/разделов): <b>${groups.size}</b> · Файлов прочитано: <b>${totalOk}</b>`
-                   + (totalErr ? ` · <span style="color:#C97A5F">не прочитано: ${totalErr}</span>` : '')
-                   + (text.includes('ДАННЫЕ ОБРЕЗАНЫ') ? ` · <span style="color:#C97A5F">⚠️ есть обрезанные данные!</span>` : '')
-                   + `</div>`;
-
-  aiAddMsg('ai', statsHtml + (groupsHtml || `<i>Ничего не распознано.</i>`));
+  aiAddMsg('ai', html);
 }
 
 function aiHandleKey(e) {
