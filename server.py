@@ -682,7 +682,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             elapsed = _time.time() - t0
             resp.raise_for_status()
             data = resp.json()
-            text = "".join(c.get("message", {}).get("content", "") for c in data.get("choices", []))
+            text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
             print(f"  ✅ vision_extract({filename}): успех за {elapsed:.1f} сек, {len(text)} символов ответа")
             return text or '[vision: пустой ответ]'
         except req_lib.exceptions.Timeout:
@@ -727,21 +727,17 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         elapsed = _time.time() - t0
         resp.raise_for_status()
         data = resp.json()
-        text = "".join(c.get("message", {}).get("content", "") for c in data.get("choices", []))
+        text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
         print(f"  ✅ vision_extract({filename}): успех за {elapsed:.1f} сек, {len(text)} символов ответа")
         return text or '[vision: пустой ответ]'
     except req_lib.exceptions.Timeout:
         elapsed = _time.time() - t0
         print(f"  ⏱️ vision_extract({filename}): ТАЙМАУТ через {elapsed:.1f} сек (лимит 90с) — файл {payload_mb:.2f} МБ")
-        # Не повторяем тем же медленным способом — сразу быстрый текстовый фоллбэк
-        return extract_text_from_file(file_bytes, filename)
+        return f'[vision: таймаут после {elapsed:.0f} сек — файл {payload_mb:.1f} МБ, возможно слишком большой или сервис перегружен]'
     except Exception as e:
         elapsed = _time.time() - t0
         print(f"  ❌ vision_extract({filename}): ОШИБКА через {elapsed:.1f} сек — {type(e).__name__}: {e}")
-        try:
-            return extract_text_from_file(file_bytes, filename)
-        except Exception:
-            return f'[vision ошибка: {e}]'
+        return f'[vision ошибка: {type(e).__name__}: {e}]'
     finally:
         VISION_SEMAPHORE.release()
 
