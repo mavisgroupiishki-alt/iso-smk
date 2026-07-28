@@ -1427,6 +1427,49 @@ function aiShowTyping() {
 function aiRemoveTyping(){const t=document.getElementById('ai-typing');if(t)t.remove();}
 
 
+const COMPANY_ATT_SCOPE_PRESETS = {
+  'общестроительные работы': {
+    work_items: ['7.4.1','7.4.3','7.4.4'],
+    workers: [
+      {profession:'Каменщик',razryad:'IV',count:2},
+      {profession:'Бетонщик',razryad:'IV',count:2},
+      {profession:'Монтажник строительных конструкций',razryad:'IV',count:2},
+      {profession:'Электромонтажник',razryad:'III',count:1},
+      {profession:'Разнорабочий',razryad:'III',count:2}
+    ]
+  },
+  'сантехнические работы': {
+    work_items: ['7.8.1','7.8.2','7.8.3','7.8.4','7.9'],
+    workers: [
+      {profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2},
+      {profession:'Монтажник систем вентиляции и кондиционирования',razryad:'IV',count:2},
+      {profession:'Монтажник наружных трубопроводов',razryad:'IV',count:2}
+    ]
+  },
+  'электромонтажные работы': {
+    work_items: ['7.10','7.11','7.13'],
+    workers: [
+      {profession:'Электромонтажник',razryad:'IV',count:2},
+      {profession:'Монтажник систем автоматизации',razryad:'IV',count:2}
+    ]
+  }
+};
+
+function aiFindCompanyAttPreset(ca) {
+  const haystack = [
+    ca?.work_scope_text,
+    aiCurrentData?.certification?.scope,
+    ...(aiCurrentData?.work_types || [])
+  ].filter(Boolean).join(' ').toLowerCase().replace(/ё/g,'е');
+  for(const [name,preset] of Object.entries(COMPANY_ATT_SCOPE_PRESETS)) {
+    if(haystack.includes(name.replace(/ё/g,'е'))) return preset;
+  }
+  if(haystack.includes('общестроит')) return COMPANY_ATT_SCOPE_PRESETS['общестроительные работы'];
+  if(haystack.includes('сантех') || haystack.includes('водоснабж') || haystack.includes('канализац') || haystack.includes('отоплен') || haystack.includes('вентиляц')) return COMPANY_ATT_SCOPE_PRESETS['сантехнические работы'];
+  if(haystack.includes('электромонтаж') || haystack.includes('электрик') || haystack.includes('автоматизац')) return COMPANY_ATT_SCOPE_PRESETS['электромонтажные работы'];
+  return null;
+}
+
 const COMPANY_ATT_WORKER_RULES = {
   '7.2':   [{profession:'Землекоп',razryad:'III',count:2}],
   '7.3':   [{profession:'Бетонщик',razryad:'IV',count:2},{profession:'Арматурщик',razryad:'IV',count:2}],
@@ -1464,6 +1507,11 @@ function aiNormalizeCompanyAttestation() {
   const ca = aiCurrentData.company_attestation;
   if(!ca) return;
   ca.work_items = [...new Set((ca.work_items || []).filter(Boolean).map(String))];
+  const preset = aiFindCompanyAttPreset(ca);
+  if(!ca.work_items.length && preset) {
+    ca.work_items = [...preset.work_items];
+    ca.work_items_source = 'auto';
+  }
   const existing = Array.isArray(ca.workers) ? ca.workers.map(w => ({...w})) : [];
   const manualKeys = new Set(existing.filter(w => w.source !== 'auto').map(aiWorkerKey));
   const auto = [];
@@ -1471,6 +1519,7 @@ function aiNormalizeCompanyAttestation() {
     const exact = COMPANY_ATT_WORKER_RULES[code] || COMPANY_ATT_WORKER_RULES[code.split('.').slice(0,2).join('.') ] || [];
     exact.forEach(w => auto.push({...w, source:'auto'}));
   });
+  if(preset) preset.workers.forEach(w => auto.push({...w, source:'auto'}));
   const merged = new Map();
   [...auto, ...existing].forEach(w => {
     if(!w || !w.profession) return;
