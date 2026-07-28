@@ -210,6 +210,20 @@ input::placeholder{color:#CDB8AA}
 .empty .ei{font-size:40px;margin-bottom:12px}
 .empty p{font-size:13px}
 
+
+/* ── AI INPUT ACTIONS / EDITABLE WORKERS ── */
+.ai-input-actions{padding:4px 8px;border-top:.5px solid #EDE1D6;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ai-file-action{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:24px;padding:2px 8px;border-radius:5px;border:.5px solid #D4C4B8;background:transparent;font-size:10.5px;color:#A6837D;cursor:pointer;font-family:inherit;user-select:none;white-space:nowrap;flex:0 0 auto}
+.ai-file-action.raw{border-color:#C97B84;background:#F7DDE1;color:#8B4A5C}
+.ai-input-help{font-size:10px;color:#B49E93;line-height:1.25;flex:1 1 180px}
+.ai-worker-row{display:flex;align-items:center;gap:5px;padding:4px 0;border-bottom:1px solid #F1E8DF}
+.ai-worker-row:last-child{border-bottom:none}
+.ai-worker-main{flex:1;min-width:0;color:#5E6F51;font-weight:600}
+.ai-worker-note{display:block;font-size:9px;color:#A8938A;font-weight:400;margin-top:1px}
+.ai-mini-btn{border:1px solid #D9C8BC;background:#fff;color:#8B4A5C;border-radius:4px;padding:2px 5px;font-size:9px;cursor:pointer;flex:0 0 auto}
+.ai-worker-add{width:100%;margin-top:6px;border:1px dashed #C9B4A7;background:#FFFDFC;color:#8B4A5C;border-radius:5px;padding:5px;font-size:10px;cursor:pointer}
+.ai-missing-box{margin-top:7px;padding:7px 8px;border-radius:6px;background:#FFF4E8;border:1px solid #E8C5A8;color:#9A5C35;font-size:10px;line-height:1.4}
+
 @media(max-width:700px){
   #sidebar{display:none}
   .g2,.g3,.g4{grid-template-columns:1fr}
@@ -432,21 +446,21 @@ input::placeholder{color:#CDB8AA}
                 <textarea id="ai-input" rows="2" placeholder="Вставьте текст от эксперта или напишите правку..."
                   onkeydown="aiHandleKey(event)" oninput="aiResize(this)"
                   style="width:100%;padding:8px 11px;border:none;outline:none;resize:none;font-family:inherit;font-size:12.5px;line-height:1.5;max-height:100px;min-height:38px;background:transparent"></textarea>
-                <div style="padding:4px 8px;border-top:0.5px solid #EDE1D6;display:flex;align-items:center;gap:8px">
-                  <label style="display:flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:4px;border:0.5px solid #D4C4B8;background:transparent;font-size:10.5px;color:#A6837D;cursor:pointer;font-family:inherit;user-select:none">
+                <div class="ai-input-actions">
+                  <label class="ai-file-action">
                     📎 Прикрепить файл
                     <input type="file" multiple
                       accept=".txt,.docx,.pdf,.xlsx,.xls,.csv,.doc,.zip,.rar,.png,.jpg,.jpeg"
                       style="display:none"
                       id="ai-file-input">
                   </label>
-                  <label style="display:flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:4px;border:0.5px solid #C97B84;background:#F7DDE1;font-size:10.5px;color:#8B4A5C;cursor:pointer;font-family:inherit;user-select:none"
-                    title="Читает архив напрямую и показывает весь распознанный текст в чате как есть, БЕЗ участия Игоря — для проверки, что реально распозналось">
-                    🔍 Проверить архив (сырой текст)
+                  <label class="ai-file-action raw"
+                    title="Показывает распознанный текст архива без участия ИИгоря — удобно для сверки исходных данных">
+                    🔍 Проверить исходный архив
                     <input type="file" accept=".zip,.rar" style="display:none" id="ai-raw-check-input"
                       onchange="aiRawCheckArchive(this.files[0])">
                   </label>
-                  <span style="font-size:10px;color:#B49E93">pdf, png, jpg — читает ИИ · docx, xlsx, zip · Enter — отправить</span>
+                  <span class="ai-input-help">PDF/PNG/JPG читает ИИ · DOCX/XLSX/ZIP поддерживаются · Enter — отправить</span>
                 </div>
               </div>
               <button id="ai-send-btn" onclick="aiSend()"
@@ -1412,6 +1426,107 @@ function aiShowTyping() {
 }
 function aiRemoveTyping(){const t=document.getElementById('ai-typing');if(t)t.remove();}
 
+
+const COMPANY_ATT_WORKER_RULES = {
+  '7.2':   [{profession:'Землекоп',razryad:'III',count:2}],
+  '7.3':   [{profession:'Бетонщик',razryad:'IV',count:2},{profession:'Арматурщик',razryad:'IV',count:2}],
+  '7.4.1': [{profession:'Каменщик',razryad:'IV',count:2}],
+  '7.4.2': [{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
+  '7.4.3': [{profession:'Бетонщик',razryad:'IV',count:2},{profession:'Арматурщик',razryad:'IV',count:2}],
+  '7.4.4': [{profession:'Монтажник стальных конструкций',razryad:'IV',count:2},{profession:'Электрогазосварщик',razryad:'IV',count:1}],
+  '7.4.5': [{profession:'Плотник',razryad:'IV',count:2}],
+  '7.4.6': [{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
+  '7.5':   [{profession:'Маляр',razryad:'IV',count:2}],
+  '7.6':   [{profession:'Кровельщик',razryad:'IV',count:2}],
+  '7.7':   [{profession:'Штукатур',razryad:'IV',count:2},{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
+  '7.8.1': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
+  '7.8.2': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
+  '7.8.3': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
+  '7.8.4': [{profession:'Монтажник систем вентиляции и кондиционирования',razryad:'IV',count:2}],
+  '7.8.5': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
+  '7.9':   [{profession:'Монтажник наружных трубопроводов',razryad:'IV',count:2}],
+  '7.10':  [{profession:'Электромонтажник',razryad:'IV',count:2}],
+  '7.11':  [{profession:'Электромонтажник',razryad:'IV',count:2}],
+  '7.12':  [{profession:'Монтажник связи',razryad:'IV',count:2}],
+  '7.13':  [{profession:'Монтажник систем автоматизации',razryad:'IV',count:2}],
+  '7.15':  [{profession:'Монтажник технологических трубопроводов',razryad:'IV',count:2}],
+  '7.16':  [{profession:'Изолировщик',razryad:'IV',count:2}],
+  '7.19':  [{profession:'Дорожный рабочий',razryad:'III',count:2}],
+  '7.20':  [{profession:'Дорожный рабочий',razryad:'III',count:2}],
+  '7.21':  [{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
+  '7.24':  [{profession:'Дорожный рабочий',razryad:'III',count:2}]
+};
+
+function aiWorkerKey(w) {
+  return `${String(w.profession||'').trim().toLowerCase()}|${String(w.razryad||'').trim().toUpperCase()}`;
+}
+function aiNormalizeCompanyAttestation() {
+  const ca = aiCurrentData.company_attestation;
+  if(!ca) return;
+  ca.work_items = [...new Set((ca.work_items || []).filter(Boolean).map(String))];
+  const existing = Array.isArray(ca.workers) ? ca.workers.map(w => ({...w})) : [];
+  const manualKeys = new Set(existing.filter(w => w.source !== 'auto').map(aiWorkerKey));
+  const auto = [];
+  ca.work_items.forEach(code => {
+    const exact = COMPANY_ATT_WORKER_RULES[code] || COMPANY_ATT_WORKER_RULES[code.split('.').slice(0,2).join('.') ] || [];
+    exact.forEach(w => auto.push({...w, source:'auto'}));
+  });
+  const merged = new Map();
+  [...auto, ...existing].forEach(w => {
+    if(!w || !w.profession) return;
+    const key = aiWorkerKey(w);
+    const prev = merged.get(key);
+    if(!prev) merged.set(key, {...w, count:Number(w.count)||1});
+    else merged.set(key, {...prev, ...w, count:Math.max(Number(prev.count)||1, Number(w.count)||1), source:(w.source==='auto' && prev.source==='auto')?'auto':'manual'});
+  });
+  ca.workers = [...merged.values()].filter(w => !manualKeys.has(aiWorkerKey(w)) || w.source !== 'auto');
+}
+function aiValidateReadiness(data) {
+  const missing = [], warnings = [];
+  const company = data.company || {};
+  const product = data.certification?.standard || '';
+  if(!company.name) missing.push('название компании');
+  if(!company.form) missing.push('форма организации');
+  if(!company.unp) warnings.push('не указан УНП');
+  if(!company.director_fio) missing.push('ФИО директора');
+  if(!product) missing.push('выбранный продукт');
+  if(product === 'company_att') {
+    const ca = data.company_attestation || {};
+    if(!ca.is_cancellation) {
+      if(!(ca.work_items || []).length) missing.push('виды работ для аттестации');
+      if(!(ca.itr || []).length) missing.push('ИТР для Формы №2');
+      if(!(ca.workers || []).length) missing.push('рабочие для Формы №2');
+      (ca.workers || []).forEach((w,i) => {
+        if(!w.profession || !w.razryad || !Number(w.count)) missing.push(`рабочий №${i+1}: профессия, разряд и количество`);
+      });
+    } else if(!ca.old_attestat_number) missing.push('номер старого аттестата');
+  }
+  if(product === 'att' && !(data.attestation?.persons || []).length) missing.push('специалисты для аттестации');
+  return {ready: missing.length === 0, missing:[...new Set(missing)], warnings:[...new Set(warnings)]};
+}
+function aiAddCompanyWorker() {
+  const profession = prompt('Профессия рабочего:'); if(!profession) return;
+  const razryad = (prompt('Разряд (II–VI):','IV') || '').toUpperCase(); if(!razryad) return;
+  const count = Number(prompt('Количество человек:','1')); if(!count || count < 1) return;
+  aiCurrentData.company_attestation = aiCurrentData.company_attestation || {};
+  aiCurrentData.company_attestation.workers = aiCurrentData.company_attestation.workers || [];
+  aiCurrentData.company_attestation.workers.push({profession,razryad,count,source:'manual'});
+  aiNormalizeCompanyAttestation(); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
+}
+function aiEditCompanyWorker(index) {
+  const workers = aiCurrentData.company_attestation?.workers || []; const w = workers[index]; if(!w) return;
+  const profession = prompt('Профессия рабочего:',w.profession||''); if(!profession) return;
+  const razryad = (prompt('Разряд (II–VI):',w.razryad||'IV') || '').toUpperCase(); if(!razryad) return;
+  const count = Number(prompt('Количество человек:',String(w.count||1))); if(!count || count < 1) return;
+  workers[index] = {profession,razryad,count,source:'manual'};
+  aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
+}
+function aiDeleteCompanyWorker(index) {
+  const workers = aiCurrentData.company_attestation?.workers || []; if(!workers[index]) return;
+  if(!confirm(`Удалить рабочего «${workers[index].profession}»?`)) return;
+  workers.splice(index,1); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
+}
+
 function aiRenderCard(data) {
   if(data === null) {
     // Полная очистка карточки (для новой компании)
@@ -1425,28 +1540,37 @@ function aiRenderCard(data) {
     return;
   }
   if(!data) return;
-  // Мержим данные
-  if(data.company) aiCurrentData.company = {...(aiCurrentData.company||{}), ...Object.fromEntries(Object.entries(data.company).filter(([,v])=>v))};
-  if(data.certification) aiCurrentData.certification = {...(aiCurrentData.certification||{}), ...Object.fromEntries(Object.entries(data.certification).filter(([,v])=>v))};
-  if(data.dates) aiCurrentData.dates = {...(aiCurrentData.dates||{}), ...Object.fromEntries(Object.entries(data.dates).filter(([,v])=>v))};
-  if(data.staff && data.staff.length) aiCurrentData.staff = data.staff;
-  if(data.workers && data.workers.length) aiCurrentData.workers = data.workers;
-  if(data.work_types && data.work_types.length) aiCurrentData.work_types = data.work_types;
-  if(data.objects && data.objects.length) aiCurrentData.objects = data.objects;
-  if(data.suppliers && data.suppliers.length) aiCurrentData.suppliers = data.suppliers;
-  if(data.flags) aiCurrentData.flags = data.flags;
-  if(data.readiness) aiCurrentData.readiness = data.readiness;
-  if(data.attestation && data.attestation.persons) aiCurrentData.attestation = data.attestation;
-  if(data.company_attestation) aiCurrentData.company_attestation = data.company_attestation;
+  // Мержим данные. Важно: false, 0, null и пустые массивы — осознанные значения,
+  // поэтому отбрасываем только undefined. Это позволяет удалять ошибочные данные и менять флаги.
+  const mergeDefined = (base, patch) => {
+    const out = {...(base || {})};
+    Object.entries(patch || {}).forEach(([k,v]) => { if(v !== undefined) out[k] = v; });
+    return out;
+  };
+  if(data.company !== undefined) aiCurrentData.company = mergeDefined(aiCurrentData.company, data.company);
+  if(data.certification !== undefined) aiCurrentData.certification = mergeDefined(aiCurrentData.certification, data.certification);
+  if(data.dates !== undefined) aiCurrentData.dates = mergeDefined(aiCurrentData.dates, data.dates);
+  ['staff','workers','work_types','objects','suppliers','flags'].forEach(k => {
+    if(data[k] !== undefined) aiCurrentData[k] = Array.isArray(data[k]) ? data[k] : [];
+  });
+  if(data.readiness !== undefined) aiCurrentData.readiness = data.readiness;
+  if(data.attestation !== undefined) aiCurrentData.attestation = mergeDefined(aiCurrentData.attestation, data.attestation);
+  if(data.company_attestation !== undefined) {
+    const incoming = data.company_attestation || {};
+    aiCurrentData.company_attestation = mergeDefined(aiCurrentData.company_attestation, incoming);
+    ['work_items','workers','itr','experience_objects'].forEach(k => {
+      if(incoming[k] !== undefined) aiCurrentData.company_attestation[k] = Array.isArray(incoming[k]) ? incoming[k] : [];
+    });
+  }
+  aiNormalizeCompanyAttestation();
 
   // Автосохранение в постоянное хранилище — не блокируем рендер, ошибки молча логируем
   aiSaveCurrentCompany().catch(e => console.warn('autosave failed:', e));
 
-  const r = aiCurrentData.readiness;
+  const readiness = aiValidateReadiness(aiCurrentData);
   const st = document.getElementById('ai-card-status');
-  if(r==='ready') st.textContent='✅ Готово к генерации';
-  else if(r==='review') st.textContent='⚠️ Нужна проверка';
-  else if(r==='partial') st.textContent='📋 Данные получены частично';
+  if(readiness.ready) st.textContent = readiness.warnings.length ? '⚠️ Можно формировать, есть замечания' : '✅ Готово к генерации';
+  else st.textContent = '📋 Не хватает: ' + readiness.missing.slice(0,2).join(', ');
 
   // Собираем HTML карточки
   let html = '';
@@ -1578,13 +1702,16 @@ function aiRenderCard(data) {
     }
 
     const compWorkers = compAtt.workers || [];
+    html += '<div class="ai-sec">🦺 Рабочие для Формы №2 (' + compWorkers.length + ')</div><div>';
     if(compWorkers.length) {
-      html += '<div class="ai-sec">🦺 Рабочие (' + compWorkers.length + ')</div><div>';
-      compWorkers.forEach(w => {
-        html += `<div class="ai-df"><span class="ai-dv">${w.profession||'?'} — разряд ${w.razryad||'—'}, ${w.count||'?'} чел.</span></div>`;
+      compWorkers.forEach((w, idx) => {
+        const source = w.source === 'auto' ? 'Подобрано автоматически по виду работ' : 'Изменено экспертом';
+        html += `<div class="ai-worker-row"><div class="ai-worker-main">${w.profession||'?'} — разряд ${w.razryad||'—'}, ${w.count||'?'} чел.<span class="ai-worker-note">${source}</span></div><button class="ai-mini-btn" onclick="aiEditCompanyWorker(${idx})">Изменить</button><button class="ai-mini-btn" onclick="aiDeleteCompanyWorker(${idx})">Удалить</button></div>`;
       });
-      html += '</div>';
+    } else {
+      html += '<div class="ai-df" style="color:#C97A5F">Рабочие не определены. Добавьте вручную или выберите виды работ.</div>';
     }
+    html += '<button class="ai-worker-add" onclick="aiAddCompanyWorker()">+ Добавить рабочего</button></div>';
   }
 
   // Миниатюры загруженных фото — для быстрой проверки глазами, что ИИ прочитал верно
@@ -1618,11 +1745,15 @@ function aiRenderCard(data) {
 
   document.getElementById('ai-card-body').innerHTML = html || '<div style="color:#B49E93;text-align:center;padding:20px 10px">Передайте данные в чате →</div>';
 
-  // Кнопка генерации
+  // Кнопка генерации управляется фактической валидацией данных, а не текстовым статусом модели.
   const btn = document.getElementById('ai-gen-btn');
-  if(r==='ready'||r==='partial'||r==='review') {
-    btn.disabled = false;
-    btn.style.cssText = 'width:100%;height:36px;background:#A56B75;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s';
+  btn.disabled = !readiness.ready;
+  btn.title = readiness.ready ? (readiness.warnings.join(' • ') || 'Данные готовы') : 'Не заполнено: ' + readiness.missing.join(', ');
+  btn.style.cssText = readiness.ready
+    ? 'width:100%;height:36px;background:#A56B75;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s'
+    : 'width:100%;height:36px;background:#C299A8;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:not-allowed;transition:background .15s';
+  if(!readiness.ready && readiness.missing.length) {
+    document.getElementById('ai-card-body').insertAdjacentHTML('beforeend', `<div class="ai-missing-box"><b>Для формирования заполните:</b><br>${readiness.missing.join('<br>')}</div>`);
   }
 }
 
@@ -2001,8 +2132,14 @@ function selectProduct(key, label, short) {
 }
 
 async function aiGenerate() {
+  aiNormalizeCompanyAttestation();
+  const validation = aiValidateReadiness(aiCurrentData);
+  if(!validation.ready) {
+    aiAddMsg('ai', '❌ Нельзя сформировать пакет. Не заполнено:<br>• ' + validation.missing.join('<br>• '));
+    aiRenderCardFromCurrent();
+    return;
+  }
   const c = aiCurrentData.company;
-  if(!c || !c.name) { aiAddMsg('ai','Для генерации нужны данные компании.'); return; }
 
   // Передаём ai_data в существующий endpoint /api/generate
   // Определяем продукт из данных Игоря
