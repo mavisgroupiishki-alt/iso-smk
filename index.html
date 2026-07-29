@@ -2173,9 +2173,14 @@ function aiRenderCard(data) {
   if(data.company_attestation !== undefined) {
     const incoming = data.company_attestation || {};
     aiCurrentData.company_attestation = mergeDefined(aiCurrentData.company_attestation, incoming);
-    ['work_items','workers','itr','experience_objects'].forEach(k => {
+    ['work_items','workers','experience_objects'].forEach(k => {
       if(incoming[k] !== undefined) aiCurrentData.company_attestation[k] = Array.isArray(incoming[k]) ? incoming[k] : [];
     });
+    if(incoming.itr !== undefined) {
+      aiCurrentData.company_attestation.itr = aiMergeItrRecords(
+        aiCurrentData.company_attestation.itr, Array.isArray(incoming.itr) ? incoming.itr : [], false
+      );
+    }
   }
   aiNormalizeCompanyAttestation();
 
@@ -2382,6 +2387,71 @@ function aiParseResponse(raw) {
   } catch(e) { return {message: raw}; }
 }
 
+function aiHasMeaningfulValue(v) {
+  if(v === undefined || v === null) return false;
+  if(typeof v === 'string') return v.trim() !== '' && !['—','-'].includes(v.trim());
+  if(Array.isArray(v)) return v.length > 0;
+  if(typeof v === 'object') return Object.keys(v).length > 0;
+  return true;
+}
+
+function aiNormalizeFioKey(fio) {
+  return String(fio || '').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/gi,' ').trim().replace(/\s+/g,' ');
+}
+
+function aiMergeItrRecords(baseList, patchList, sourceAuthoritative=false) {
+  const order = [];
+  const map = new Map();
+  const put = (person, isPatch) => {
+    if(!person || typeof person !== 'object') return;
+    const key = aiNormalizeFioKey(person.fio) || `__row_${order.length}`;
+    if(!map.has(key)) { map.set(key, {}); order.push(key); }
+    const merged = {...map.get(key)};
+    Object.entries(person).forEach(([field, value]) => {
+      const accept = sourceAuthoritative && isPatch ? aiHasMeaningfulValue(value) : value !== undefined;
+      if(accept) merged[field] = Array.isArray(value) ? JSON.parse(JSON.stringify(value)) : value;
+    });
+    map.set(key, merged);
+  };
+  (Array.isArray(baseList) ? baseList : []).forEach(p => put(p, false));
+  (Array.isArray(patchList) ? patchList : []).forEach(p => put(p, true));
+  return order.map(key => map.get(key));
+}
+
+function aiMergeStructuredSource(baseData, sourceData) {
+  const base = JSON.parse(JSON.stringify(baseData || {}));
+  const source = sourceData || {};
+  ['company','certification','dates'].forEach(section => {
+    if(!source[section]) return;
+    base[section] = {...(base[section] || {})};
+    Object.entries(source[section]).forEach(([k,v]) => {
+      if(aiHasMeaningfulValue(v)) base[section][k] = JSON.parse(JSON.stringify(v));
+    });
+  });
+  if(source.company_attestation) {
+    const sca = source.company_attestation;
+    const bca = {...(base.company_attestation || {})};
+    Object.entries(sca).forEach(([k,v]) => {
+      if(k === 'itr') {
+        bca.itr = aiMergeItrRecords(bca.itr, v, true);
+      } else if(['work_items','workers'].includes(k)) {
+        if(Array.isArray(v) && v.length) bca[k] = JSON.parse(JSON.stringify(v));
+      } else if(aiHasMeaningfulValue(v)) {
+        bca[k] = JSON.parse(JSON.stringify(v));
+      }
+    });
+    base.company_attestation = bca;
+  }
+  if(Array.isArray(source._source_forms)) {
+    base._source_forms = [...new Set([...(base._source_forms || []), ...source._source_forms])];
+  }
+  return base;
+}
+
+function aiCombineStructuredSources(parts) {
+  return (parts || []).filter(Boolean).reduce((acc, part) => aiMergeStructuredSource(acc, part), {});
+}
+
 // Ищет сохранённую компанию по части названия среди сохранённых на сервере (для запросов вида "загрузи ОмиТрейд")
 async function aiFindSavedCompanyByName(query) {
   const q = query.toLowerCase();
@@ -2454,6 +2524,7 @@ async function aiSend() {
   // 4+ одновременных запросов к медленной vision-модели — падает по памяти/времени,
   // и вместо JSON приходит HTML-страница ошибки от Render)
   let filesContent = '';
+  let authoritativeSourceData = {};
   if(aiAttachedFiles.length > 0) {
     const total = aiAttachedFiles.length;
     const BATCH = 2;
@@ -2479,12 +2550,24 @@ async function aiSend() {
     filesContent = fileData.map(f =>
       `\n===== ФАЙЛ: ${f.name} =====\n${f.content}\n`
     ).join('\n');
+    authoritativeSourceData = aiCombineStructuredSources(fileData.map(f => f.structured_data));
+    if(Object.keys(authoritativeSourceData).length) {
+      // Completed Forms 1–5 are copied directly from Word tables and have priority
+      // over model guesses. This prevents loss of experience, inserts and attestations.
+      aiCurrentData = aiMergeStructuredSource(aiCurrentData, authoritativeSourceData);
+      aiRenderCardFromCurrent();
+    }
   }
 
   // Собираем контент для ИИ
   let content = '';
   if(savedCompanyContext) content += savedCompanyContext;
   if(filesContent) content += 'СОДЕРЖИМОЕ ФАЙЛОВ:' + filesContent + '\n\n';
+  if(Object.keys(authoritativeSourceData).length > 0) {
+    content += 'СТРУКТУРИРОВАННЫЕ ДАННЫЕ ИЗ ЗАПОЛНЕННЫХ ФОРМ 1–5 ' +
+      '(ИСТОЧНИК ИСТИНЫ, НЕ СОКРАЩАТЬ И НЕ ПЕРЕИМЕНОВЫВАТЬ):\n' +
+      JSON.stringify(authoritativeSourceData, null, 2) + '\n\n';
+  }
   if(Object.keys(aiCurrentData).length > 0) {
     content += 'ТЕКУЩИЕ ДАННЫЕ КАРТОЧКИ:\n' + JSON.stringify(aiCurrentData, null, 2) + '\n\n';
   }
@@ -2506,7 +2589,12 @@ async function aiSend() {
     const parsed = aiParseResponse(result.text);
     aiHistory.push({role:'assistant', content: result.text});
 
-    if(parsed.data) aiRenderCard(parsed.data);
+    if(parsed.data || Object.keys(authoritativeSourceData).length) {
+      const dataForCard = Object.keys(authoritativeSourceData).length
+        ? aiMergeStructuredSource(parsed.data || {}, authoritativeSourceData)
+        : parsed.data;
+      aiRenderCard(dataForCard);
+    }
     aiAddMsg('ai', parsed.message || result.text, parsed.questions);
 
   } catch(e) {
@@ -2566,7 +2654,7 @@ async function aiReadFile(file) {
         if(data.verified_match === false) {
           content = `⚠️ [Двойная проверка распознавания разошлась — сверьте с оригиналом]\n${content}`;
         }
-        resolve({ name: file.name, content });
+        resolve({ name: file.name, content, structured_data: data.structured_data || null });
       })
       .catch(err => resolve({
         name: file.name,
@@ -2683,7 +2771,8 @@ async function aiReadArchiveAsync(file) {
         aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ${lastMsg}`);
       } else if(tr.status === 'done') {
         aiUpdateMsg(progressMsgId, `✅ Архив «${file.name}» разобран`);
-        return {name: file.name, content: tr.text || '[Архив: данные не найдены]'};
+        return {name: file.name, content: tr.text || '[Архив: данные не найдены]',
+                structured_data: tr.structured_data || null};
       } else if(tr.status === 'error') {
         aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${tr.error || 'ошибка обработки'}`);
         return {name: file.name, content: '[Ошибка обработки архива: ' + (tr.error||'') + ']'};

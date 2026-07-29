@@ -16,6 +16,18 @@ except Exception as e:
     SMART_GENERATOR = False
     print(f"⚠️  Генератор не загружен: {e}")
 
+# Deterministic reader for completed company-attestation Forms 1–5.
+try:
+    from company_attestation_source_parser import (
+        parse_company_attestation_docx, merge_company_attestation_sources,
+        is_completed_attestation_form_text,
+    )
+except Exception as e:
+    parse_company_attestation_docx = None
+    merge_company_attestation_sources = None
+    is_completed_attestation_form_text = lambda _text: False
+    print(f"⚠️  Парсер заполненных Форм 1–5 не загружен: {e}")
+
 
 # Render: без persistent disk — храним в /tmp или рядом с приложением
 _DATA = Path('/data') if Path('/data').exists() else BASE_DIR/'_data'
@@ -1039,11 +1051,20 @@ def _reconcile_all_people(texts, api_key):
             print(f"  ⚠️ Сверка по «{person}» не удалась: {type(e).__name__}: {e} — отдаю как есть, без свода")
             return person, f"{num}) {person}\n" + '\n\n'.join(blocks)
 
+    # Completed Forms 1–5 can lie in the archive root. Earlier they were sent to
+    # _extract_company_details(), whose prompt intentionally keeps only company
+    # requisites and therefore silently discarded experience, labour-book inserts
+    # and attestations. Preserve such forms verbatim and summarize only the other
+    # general documents.
+    root_blocks = list(groups.get(None) or [])
+    completed_form_blocks = [b for b in root_blocks if is_completed_attestation_form_text(b)]
+    company_general_blocks = [b for b in root_blocks if b not in completed_form_blocks]
+
     results = {}
     with _TPE(max_workers=2) as ex:
         futures = {}
-        if None in groups:
-            futures[ex.submit(_extract_company_details, groups[None], api_key)] = '__company__'
+        if company_general_blocks:
+            futures[ex.submit(_extract_company_details, company_general_blocks, api_key)] = '__company__'
         for i, person in enumerate(people_order, 1):
             futures[ex.submit(reconcile_one, person, i)] = person
         for fut in _ac(futures):
@@ -1061,6 +1082,9 @@ def _reconcile_all_people(texts, api_key):
     final_parts = []
     if '__company__' in results:
         final_parts.append("=== 🏢 Реквизиты компании ===\n" + results['__company__'])
+    if completed_form_blocks:
+        final_parts.append("=== 📋 ЗАПОЛНЕННЫЕ ФОРМЫ 1–5 — ПЕРЕПИСАТЬ ДОСЛОВНО ===\n"
+                           + "\n\n".join(completed_form_blocks))
     for person in people_order:
         final_parts.append(results.get(person, f"{person}: [ошибка обработки]"))
     return final_parts
@@ -1108,7 +1132,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                 elif ext == 'pdf' or ext in TEXT_EXTS or ext in IMAGE_EXTS:
                     entries.append((name, fixed, info.file_size, 'skip_size'))
     except Exception as e:
-        return f'[Ошибка открытия архива: {e}]'
+        return {'text': f'[Ошибка открытия архива: {e}]', 'structured_data': {}}
 
     # Сначала текстовые (быстро), потом PDF и фото (медленно, vision) — чтобы данные из
     # docx были в карточке даже если распознавание сканов ещё не закончилось
@@ -1119,6 +1143,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
     total = len(to_process)
 
     texts = []
+    structured_fragments = []
     skipped_notes = [f"{fn.split('/')[-1]} ({sz//1024//1024} МБ)" for _, fn, sz, _ in skipped]
 
     text_entries = [e for e in to_process if e[3] == 'text']
@@ -1134,6 +1159,13 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
             p(f"Читаю {done_count[0]}/{total}: {short}")
             try:
                 data = z.read(raw_name)
+                if parse_company_attestation_docx and short.lower().endswith('.docx'):
+                    try:
+                        structured = parse_company_attestation_docx(data, short)
+                        if structured:
+                            structured_fragments.append(structured)
+                    except Exception as parse_error:
+                        print(f"  ⚠️ Не удалось структурно разобрать {short}: {parse_error}")
                 txt = extract_text_from_file(data, short)
                 if txt and len(txt) > 10 and not txt.startswith('['):
                     texts.append(f"--- {folder + '/' if folder else ''}{short} ---\n" + txt)
@@ -1248,7 +1280,16 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
         result += ('\n\n[Пропущены файлы крупнее лимита: ' + ', '.join(skipped_notes[:20]) + ']')
     if len(entries) > MAX_ITEMS:
         result += f'\n\n[В архиве {len(entries)} файлов, обработаны первые {MAX_ITEMS} — пришлите остальных отдельным заходом]'
-    return result or '[Архив: читаемых данных не найдено]'
+    structured_data = {}
+    if structured_fragments and merge_company_attestation_sources:
+        try:
+            structured_data = merge_company_attestation_sources(structured_fragments)
+        except Exception as merge_error:
+            print(f"  ⚠️ Не удалось объединить структурированные Формы 1–5: {merge_error}")
+    return {
+        'text': result or '[Архив: читаемых данных не найдено]',
+        'structured_data': structured_data,
+    }
 
 
 def _extract_archive_zip(file_bytes, filename, _depth=0):
@@ -1608,7 +1649,16 @@ class H(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     self._json({'success': False, 'error': f'Ошибка обработки файла: {e}'}, 500)
                     return
-                self._json({'success':True,'text':text,'filename':filename})
+                structured_data = {}
+                if parse_company_attestation_docx and filename.lower().endswith('.docx'):
+                    try:
+                        fragment = parse_company_attestation_docx(file_bytes, filename)
+                        if fragment and merge_company_attestation_sources:
+                            structured_data = merge_company_attestation_sources([fragment])
+                    except Exception as parse_error:
+                        print(f"  ⚠️ Структурный разбор {filename} не удался: {parse_error}")
+                self._json({'success':True,'text':text,'filename':filename,
+                            'structured_data': structured_data})
 
             elif p=='/api/extract-archive-async':
                 # Асинхронный разбор архива с поддержкой распознавания фото внутри (не только docx/pdf).
@@ -1662,8 +1712,15 @@ class H(http.server.BaseHTTPRequestHandler):
                         def on_prog(msg):
                             TASKS[_tid]['progress'] = (TASKS[_tid].get('progress') or [])[-30:] + [msg]
                             print(f"  [archive {_tid}] {msg}")
-                        result_text = extract_archive_with_vision(_bytes, _fn, _key, progress_cb=on_prog)
-                        TASKS[_tid].update({'status':'done','kind':'archive','text':result_text,'filename':_fn})
+                        result_bundle = extract_archive_with_vision(_bytes, _fn, _key, progress_cb=on_prog)
+                        if isinstance(result_bundle, dict):
+                            result_text = result_bundle.get('text', '')
+                            structured_data = result_bundle.get('structured_data') or {}
+                        else:
+                            result_text = str(result_bundle or '')
+                            structured_data = {}
+                        TASKS[_tid].update({'status':'done','kind':'archive','text':result_text,
+                                            'structured_data': structured_data,'filename':_fn})
                         _prune_tasks()
                     except Exception as _ex:
                         import traceback; traceback.print_exc()

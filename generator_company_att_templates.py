@@ -621,7 +621,8 @@ def render_forma5(company: dict, itr_list: list, as_of_date: str = None) -> byte
     xml = _replace_signature_and_date(xml, company, as_of_date)
     rows = _rows(xml)
     template_row = rows[2]
-    people = [p for p in itr_list if p.get('attestat_number') or p.get('attestat_full_text')]
+    people = [p for p in itr_list if (p.get('attestat_number') or p.get('attestat_full_text')
+                                           or p.get('attestat_form2_text') or p.get('attestat_form5_text'))]
     new_rows = []
     for i, person in enumerate(people, 1):
         new_rows.append(_build_row(template_row, [
@@ -658,7 +659,11 @@ def generate_company_attestation_package_v2(company: dict, attestation_data: dic
         print(f'  [company_att_v3 {step[0]}] {message}')
 
     org = _clean_company_name(company) or company.get('name', 'company')
-    itr_list = [dict(p) for p in (attestation_data.get('itr') or [])]
+    try:
+        from company_attestation_source_parser import merge_itr_records
+        itr_list = merge_itr_records(attestation_data.get('itr') or [])
+    except Exception:
+        itr_list = [dict(p) for p in (attestation_data.get('itr') or [])]
     work_items = resolve_work_items(attestation_data)
     workers = resolve_workers(attestation_data, work_items)
     as_of_date = attestation_data.get('as_of_date')
