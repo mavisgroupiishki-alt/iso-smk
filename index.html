@@ -1427,109 +1427,659 @@ function aiShowTyping() {
 function aiRemoveTyping(){const t=document.getElementById('ai-typing');if(t)t.remove();}
 
 
-const COMPANY_ATT_SCOPE_PRESETS = {
-  'общестроительные работы': {
-    work_items: ['7.4.1','7.4.3','7.4.4'],
-    workers: [
-      {profession:'Каменщик',razryad:'IV',count:2},
-      {profession:'Бетонщик',razryad:'IV',count:2},
-      {profession:'Монтажник строительных конструкций',razryad:'IV',count:2},
-      {profession:'Электромонтажник',razryad:'III',count:1},
-      {profession:'Разнорабочий',razryad:'III',count:2}
-    ]
-  },
-  'сантехнические работы': {
-    work_items: ['7.8.1','7.8.2','7.8.3','7.8.4','7.9'],
-    workers: [
-      {profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2},
-      {profession:'Монтажник систем вентиляции и кондиционирования',razryad:'IV',count:2},
-      {profession:'Монтажник наружных трубопроводов',razryad:'IV',count:2}
-    ]
-  },
-  'электромонтажные работы': {
-    work_items: ['7.10','7.11','7.13'],
-    workers: [
-      {profession:'Электромонтажник',razryad:'IV',count:2},
-      {profession:'Монтажник систем автоматизации',razryad:'IV',count:2}
-    ]
-  }
+const STANDARD_WORKER_RAZRYAD = 'III';
+const STANDARD_WORKER_COUNT = 1;
+
+// Стандартный справочник из «ОБРАЗЕЦ Сведения о рабочих (15).docx».
+const COMPANY_ATT_WORKER_RULES = {
+  "7.1": [],
+  "7.2": [
+    "Землекоп"
+  ],
+  "7.2.1": [
+    "Арматурщик",
+    "Бетонщик",
+    "Такелажник",
+    "Каменщик"
+  ],
+  "7.2.2": [
+    "Монтажник строительных конструкций",
+    "Машинист крана автомобильного",
+    "Стропальщик",
+    "Бетонщик",
+    "Плотник",
+    "Арматурщик"
+  ],
+  "7.2.3": [
+    "Монтажник строительных конструкций",
+    "Бетонщик",
+    "Плотник",
+    "Арматурщик"
+  ],
+  "7.3": [],
+  "7.3.1": [
+    "Арматурщик",
+    "Такелажник",
+    "Машинист башенного крана",
+    "Подсобный рабочий",
+    "Электросварщик ручной сварки",
+    "Слесарь строительный"
+  ],
+  "7.3.2": [
+    "Стропальщик",
+    "Монтажник строительных конструкций",
+    "Машинист крана"
+  ],
+  "7.3.3": [
+    "Монтажник строительных конструкций",
+    "Машинист крана"
+  ],
+  "7.3.4": [
+    "Подсобный рабочий",
+    "Стропальщик",
+    "Такелажник",
+    "Машинист"
+  ],
+  "7.4": [],
+  "7.4.1": [
+    "Монтажник строительных конструкций",
+    "Каменщик",
+    "Арматурщик",
+    "Электросварщик ручной сварки",
+    "Плотник",
+    "Такелажник",
+    "Подсобный рабочий",
+    "Машинист башенного крана"
+  ],
+  "7.4.2": [
+    "Бетонщик",
+    "Плотник",
+    "Арматурщик",
+    "Машинист башенного крана",
+    "Электросварщик ручной сварки",
+    "Такелажник",
+    "Подсобный рабочий",
+    "Слесарь строительный",
+    "Каменщик"
+  ],
+  "7.4.3": [
+    "Бетонщик",
+    "Арматурщик",
+    "Машинист башенного крана",
+    "Слесарь строительный",
+    "Электросварщик ручной сварки",
+    "Такелажник",
+    "Подсобный рабочий",
+    "Стропальщик",
+    "Каменщик"
+  ],
+  "7.4.4": [
+    "Монтажник строительных конструкций",
+    "Машинист крана автомобильного",
+    "Электросварщик ручной сварки"
+  ],
+  "7.4.5": [
+    "Монтажник строительных конструкций",
+    "Плотник",
+    "Подсобный рабочий"
+  ],
+  "7.4.6": [
+    "Машинист крана",
+    "Такелажник",
+    "Стропальщик",
+    "Монтажник строительных конструкций"
+  ],
+  "7.5": [
+    "Маляр",
+    "Подсобный рабочий",
+    "Машинист аппарата безвоздушного распыления",
+    "Машинист компрессора",
+    "Изолировщик на антикоррозионной изоляции"
+  ],
+  "7.6": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.1": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.2": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.3": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.4": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.5": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.7": [
+    "Изолировщик на термоизоляции"
+  ],
+  "7.8": [],
+  "7.8.1": [
+    "Монтажник санитарно-технических систем и оборудования",
+    "Подсобный рабочий"
+  ],
+  "7.8.2": [
+    "Монтажник санитарно-технических систем и оборудования",
+    "Подсобный рабочий"
+  ],
+  "7.8.3": [
+    "Монтажник санитарно-технических систем и оборудования",
+    "Слесарь",
+    "Подсобный рабочий"
+  ],
+  "7.8.4": [
+    "Монтажник систем вентиляции и пневмотранспорта",
+    "Подсобный рабочий",
+    "Монтажник санитарно-технических систем и оборудования"
+  ],
+  "7.8.5": [
+    "Монтажник систем газоснабжения"
+  ],
+  "7.9": [
+    "Монтажник наружных трубопроводов",
+    "Машинист крана-трубоукладчика",
+    "Электросварщик ручной сварки",
+    "Машинист автокрана",
+    "Машинист бульдозера",
+    "Стропальщик"
+  ],
+  "7.9.1": [
+    "Монтажник наружных трубопроводов",
+    "Машинист крана-трубоукладчика",
+    "Электросварщик ручной сварки",
+    "Машинист автокрана",
+    "Машинист бульдозера",
+    "Стропальщик"
+  ],
+  "7.9.2": [
+    "Монтажник наружных трубопроводов",
+    "Машинист крана-трубоукладчика",
+    "Электросварщик ручной сварки",
+    "Машинист автокрана",
+    "Машинист бульдозера",
+    "Стропальщик"
+  ],
+  "7.10": [
+    "Электромонтажник по кабельным сетям",
+    "Монтажник связи-кабельщик",
+    "Подсобный рабочий",
+    "Слесарь-электромонтажник"
+  ],
+  "7.11": [
+    "Монтажник связи-кабельщик",
+    "Электромонтажник по кабельным сетям",
+    "Такелажник",
+    "Землекоп",
+    "Электромонтажник по электрооборудованию, силовым и осветительным сетям",
+    "Машинист"
+  ],
+  "7.12": [
+    "Электромонтер охранно-пожарной сигнализации",
+    "Монтажник связи-кабельщик"
+  ],
+  "7.13": [
+    "Электромонтажник по электрооборудованию, силовым и осветительным сетям",
+    "Электросварщик ручной сварки",
+    "Монтажник приборов и систем автоматики"
+  ],
+  "7.14": [
+    "Монтажник систем холодоснабжения"
+  ],
+  "7.15": [
+    "Монтажник технологических трубопроводов",
+    "Машинист",
+    "Слесарь",
+    "Сварщик"
+  ],
+  "7.16": [
+    "Изолировщик на термоизоляции (теплоизоляции)",
+    "Штукатур",
+    "Подсобный рабочий"
+  ],
+  "7.19": [],
+  "7.19.1": [
+    "Дорожный рабочий",
+    "Машинист катка",
+    "Монтажник",
+    "Стропальщик"
+  ],
+  "7.19.2": [
+    "Машинист экскаватора",
+    "Дорожный рабочий",
+    "Землекоп"
+  ],
+  "7.19.3": [
+    "Маляр",
+    "Дорожный рабочий",
+    "Машинист разметочной машины"
+  ],
+  "7.24": [],
+  "7.24.1": [
+    "Дорожный рабочий",
+    "Плиточник",
+    "Подсобный рабочий",
+    "Стропальщик"
+  ],
+  "7.24.2": [
+    "Дорожный рабочий",
+    "Асфальтобетонщик",
+    "Машинист"
+  ]
 };
 
-function aiFindCompanyAttPreset(ca) {
-  const haystack = [
+const COMPANY_ATT_WORK_SUBCODES = {
+  "7.2": [
+    "7.2.1",
+    "7.2.2",
+    "7.2.3"
+  ],
+  "7.3": [
+    "7.3.1",
+    "7.3.2",
+    "7.3.3",
+    "7.3.4"
+  ],
+  "7.4": [
+    "7.4.1",
+    "7.4.2",
+    "7.4.3",
+    "7.4.4",
+    "7.4.5",
+    "7.4.6"
+  ],
+  "7.6": [
+    "7.6.1",
+    "7.6.2",
+    "7.6.3",
+    "7.6.4",
+    "7.6.5"
+  ],
+  "7.8": [
+    "7.8.1",
+    "7.8.2",
+    "7.8.3",
+    "7.8.4",
+    "7.8.5"
+  ],
+  "7.9": [
+    "7.9.1",
+    "7.9.2"
+  ],
+  "7.19": [
+    "7.19.1",
+    "7.19.2",
+    "7.19.3"
+  ],
+  "7.24": [
+    "7.24.1",
+    "7.24.2"
+  ]
+};
+
+const COMPANY_ATT_WORKER_PRESETS = {
+  "общестрой_без_фасадов": [
+    {
+      "profession": "Монтажник строительных конструкций",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Монтажник строительных конструкций",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Плотник",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Слесарь строительный",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Стропальщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Арматурщик",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Арматурщик",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Электросварщик ручной сварки",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Электросварщик ручной сварки",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Каменщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Такелажник",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Бетонщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Подсобный рабочий",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Маляр",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Маляр",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на антикоррозионной изоляции",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на антикоррозионной изоляции",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Кровельщик по металлическим кровлям",
+      "razryad": "III",
+      "count": 2
+    },
+    {
+      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Штукатур",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Землекоп",
+      "razryad": "IV",
+      "count": 1
+    }
+  ],
+  "общестрой_с_фасадами": [
+    {
+      "profession": "Монтажник строительных конструкций",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Монтажник строительных конструкций",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Плотник",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Слесарь строительный",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Стропальщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Арматурщик",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Арматурщик",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Электросварщик ручной сварки",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Электросварщик ручной сварки",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Каменщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Такелажник",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Бетонщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Подсобный рабочий",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Маляр",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на антикоррозионной изоляции",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на антикоррозионной изоляции",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Кровельщик по металлическим кровлям",
+      "razryad": "III",
+      "count": 2
+    },
+    {
+      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на термоизоляции",
+      "razryad": "III",
+      "count": 2
+    }
+  ]
+};
+
+const COMPANY_ATT_SCOPE_PRESETS = {
+  'общестроительные работы': {work_items:['7.2','7.3','7.4','7.5','7.6']},
+  'сантехнические работы': {work_items:['7.8','7.9']},
+  'электромонтажные работы': {work_items:['7.10','7.11','7.12','7.13']},
+  'дорожные работы': {work_items:['7.19']},
+  'благоустройство территории': {work_items:['7.24']}
+};
+
+function aiScopeText(ca) {
+  return [
     ca?.work_scope_text,
     aiCurrentData?.certification?.scope,
     ...(aiCurrentData?.work_types || [])
   ].filter(Boolean).join(' ').toLowerCase().replace(/ё/g,'е');
-  for(const [name,preset] of Object.entries(COMPANY_ATT_SCOPE_PRESETS)) {
-    if(haystack.includes(name.replace(/ё/g,'е'))) return preset;
+}
+
+function aiFindCompanyAttPreset(ca) {
+  const haystack = aiScopeText(ca);
+  if(haystack.includes('общестроит') || haystack.trim() === 'общестрой') {
+    const withFacade = haystack.includes('фасад') || (ca?.work_items || []).includes('7.7');
+    return {
+      ...COMPANY_ATT_SCOPE_PRESETS['общестроительные работы'],
+      workerPreset: withFacade ? 'общестрой_с_фасадами' : 'общестрой_без_фасадов',
+      withFacade
+    };
   }
-  if(haystack.includes('общестроит')) return COMPANY_ATT_SCOPE_PRESETS['общестроительные работы'];
   if(haystack.includes('сантех') || haystack.includes('водоснабж') || haystack.includes('канализац') || haystack.includes('отоплен') || haystack.includes('вентиляц')) return COMPANY_ATT_SCOPE_PRESETS['сантехнические работы'];
-  if(haystack.includes('электромонтаж') || haystack.includes('электрик') || haystack.includes('автоматизац')) return COMPANY_ATT_SCOPE_PRESETS['электромонтажные работы'];
+  if(haystack.includes('электромонтаж') || haystack.includes('электрик') || haystack.includes('электроснабж') || haystack.includes('слаботоч') || haystack.includes('автоматизац')) return COMPANY_ATT_SCOPE_PRESETS['электромонтажные работы'];
+  if(haystack.includes('благоустрой')) return COMPANY_ATT_SCOPE_PRESETS['благоустройство территории'];
+  if(haystack.includes('дорог') || haystack.includes('дорожн')) return COMPANY_ATT_SCOPE_PRESETS['дорожные работы'];
   return null;
 }
 
-const COMPANY_ATT_WORKER_RULES = {
-  '7.2':   [{profession:'Землекоп',razryad:'III',count:2}],
-  '7.3':   [{profession:'Бетонщик',razryad:'IV',count:2},{profession:'Арматурщик',razryad:'IV',count:2}],
-  '7.4.1': [{profession:'Каменщик',razryad:'IV',count:2}],
-  '7.4.2': [{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
-  '7.4.3': [{profession:'Бетонщик',razryad:'IV',count:2},{profession:'Арматурщик',razryad:'IV',count:2}],
-  '7.4.4': [{profession:'Монтажник стальных конструкций',razryad:'IV',count:2},{profession:'Электрогазосварщик',razryad:'IV',count:1}],
-  '7.4.5': [{profession:'Плотник',razryad:'IV',count:2}],
-  '7.4.6': [{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
-  '7.5':   [{profession:'Маляр',razryad:'IV',count:2}],
-  '7.6':   [{profession:'Кровельщик',razryad:'IV',count:2}],
-  '7.7':   [{profession:'Штукатур',razryad:'IV',count:2},{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
-  '7.8.1': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
-  '7.8.2': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
-  '7.8.3': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
-  '7.8.4': [{profession:'Монтажник систем вентиляции и кондиционирования',razryad:'IV',count:2}],
-  '7.8.5': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
-  '7.9':   [{profession:'Монтажник наружных трубопроводов',razryad:'IV',count:2}],
-  '7.10':  [{profession:'Электромонтажник',razryad:'IV',count:2}],
-  '7.11':  [{profession:'Электромонтажник',razryad:'IV',count:2}],
-  '7.12':  [{profession:'Монтажник связи',razryad:'IV',count:2}],
-  '7.13':  [{profession:'Монтажник систем автоматизации',razryad:'IV',count:2}],
-  '7.15':  [{profession:'Монтажник технологических трубопроводов',razryad:'IV',count:2}],
-  '7.16':  [{profession:'Изолировщик',razryad:'IV',count:2}],
-  '7.19':  [{profession:'Дорожный рабочий',razryad:'III',count:2}],
-  '7.20':  [{profession:'Дорожный рабочий',razryad:'III',count:2}],
-  '7.21':  [{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
-  '7.24':  [{profession:'Дорожный рабочий',razryad:'III',count:2}]
-};
-
 function aiWorkerKey(w) {
-  return `${String(w.profession||'').trim().toLowerCase()}|${String(w.razryad||'').trim().toUpperCase()}`;
+  return `${String(w.profession||'').trim().toLowerCase().replace(/ё/g,'е')}|${String(w.razryad||'').trim().toUpperCase()}`;
 }
+
+function aiExpandedWorkerRuleCodes(workItems) {
+  const result = [];
+  (workItems || []).forEach(raw => {
+    const code = String(raw || '').trim();
+    if(!code) return;
+    const parts = code.split('.');
+    const parent = parts.length >= 3 ? parts.slice(0,2).join('.') : code;
+    [parent, code].forEach(c => { if(c && !result.includes(c)) result.push(c); });
+    (COMPANY_ATT_WORK_SUBCODES[code] || []).forEach(c => { if(!result.includes(c)) result.push(c); });
+  });
+  return result;
+}
+
+function aiBuildStandardWorkers(workItems) {
+  const professions = [];
+  const seen = new Set();
+  aiExpandedWorkerRuleCodes(workItems).forEach(code => {
+    (COMPANY_ATT_WORKER_RULES[code] || []).forEach(profession => {
+      const key = String(profession).trim().toLowerCase().replace(/ё/g,'е');
+      if(key && !seen.has(key)) {
+        seen.add(key);
+        professions.push({
+          profession,
+          razryad: STANDARD_WORKER_RAZRYAD,
+          count: STANDARD_WORKER_COUNT,
+          source:'auto'
+        });
+      }
+    });
+  });
+  return professions;
+}
+
 function aiNormalizeCompanyAttestation() {
   const ca = aiCurrentData.company_attestation;
   if(!ca) return;
+
   ca.work_items = [...new Set((ca.work_items || []).filter(Boolean).map(String))];
-  const preset = aiFindCompanyAttPreset(ca);
-  if(!ca.work_items.length && preset) {
-    ca.work_items = [...preset.work_items];
+  let preset = aiFindCompanyAttPreset(ca);
+  const commonCodes = ['7.2','7.3','7.4','7.5','7.6'];
+  if(!preset && commonCodes.every(code => ca.work_items.includes(code))) {
+    const withFacade = ca.work_items.includes('7.7');
+    preset = {
+      ...COMPANY_ATT_SCOPE_PRESETS['общестроительные работы'],
+      workerPreset: withFacade ? 'общестрой_с_фасадами' : 'общестрой_без_фасадов',
+      withFacade
+    };
+  }
+  const workItemsSource = String(ca.work_items_source || '').toLowerCase();
+  const workItemsExact = ['document_exact','manual_exact'].includes(workItemsSource);
+
+  if(preset && !workItemsExact) {
+    ca.work_items = [...new Set([...ca.work_items, ...preset.work_items])];
+    if(preset.withFacade && !ca.work_items.includes('7.7')) ca.work_items.push('7.7');
     ca.work_items_source = 'auto';
   }
+
   const existing = Array.isArray(ca.workers) ? ca.workers.map(w => ({...w})) : [];
-  const manualKeys = new Set(existing.filter(w => w.source !== 'auto').map(aiWorkerKey));
-  const auto = [];
-  ca.work_items.forEach(code => {
-    const exact = COMPANY_ATT_WORKER_RULES[code] || COMPANY_ATT_WORKER_RULES[code.split('.').slice(0,2).join('.') ] || [];
-    exact.forEach(w => auto.push({...w, source:'auto'}));
-  });
-  if(preset) preset.workers.forEach(w => auto.push({...w, source:'auto'}));
+  const confirmedWorkers = existing.filter(w => ['document','manual','expert'].includes(String(w.source || '').toLowerCase()));
+  const documentWorkers = confirmedWorkers.filter(w => String(w.source || '').toLowerCase() === 'document');
+  const excludedWorkerKeys = new Set((ca.excluded_workers || []).map(String));
+
+  let autoWorkers = [];
+  // Загруженная заполненная Форма №2 является источником истины.
+  if(!documentWorkers.length) {
+    if(preset?.workerPreset) {
+      autoWorkers = (COMPANY_ATT_WORKER_PRESETS[preset.workerPreset] || []).map(w => ({...w,source:'auto'}));
+    } else {
+      autoWorkers = aiBuildStandardWorkers(ca.work_items);
+    }
+    autoWorkers = autoWorkers.filter(w => !excludedWorkerKeys.has(aiWorkerKey(w)));
+  }
+
   const merged = new Map();
-  [...auto, ...existing].forEach(w => {
+  [...autoWorkers, ...confirmedWorkers].forEach(w => {
     if(!w || !w.profession) return;
-    const key = aiWorkerKey(w);
+    const normalized = {
+      ...w,
+      profession: String(w.profession).trim(),
+      razryad: String(w.razryad || STANDARD_WORKER_RAZRYAD).trim().toUpperCase(),
+      count: Math.max(1, Number(w.count) || STANDARD_WORKER_COUNT)
+    };
+    const key = aiWorkerKey(normalized);
+    const source = String(normalized.source || '').toLowerCase();
     const prev = merged.get(key);
-    if(!prev) merged.set(key, {...w, count:Number(w.count)||1});
-    else merged.set(key, {...prev, ...w, count:Math.max(Number(prev.count)||1, Number(w.count)||1), source:(w.source==='auto' && prev.source==='auto')?'auto':'manual'});
+    if(!prev || ['document','manual','expert'].includes(source)) {
+      merged.set(key, normalized);
+    } else {
+      merged.set(key, {...prev,count:Math.max(Number(prev.count)||1, normalized.count)});
+    }
   });
-  ca.workers = [...merged.values()].filter(w => !manualKeys.has(aiWorkerKey(w)) || w.source !== 'auto');
+
+  ca.workers = [...merged.values()];
+  ca.excluded_workers = [...excludedWorkerKeys];
+
+  const itrCount = Array.isArray(ca.itr) ? ca.itr.length : 0;
+  const workerCount = ca.workers.reduce((sum,w) => sum + (Number(w.count) || 0), 0);
+  ca.staff_total = Math.max(Number(ca.staff_total) || 0, itrCount + workerCount);
 }
+
 function aiValidateReadiness(data) {
   const missing = [], warnings = [];
   const company = data.company || {};
@@ -1559,7 +2109,11 @@ function aiAddCompanyWorker() {
   const count = Number(prompt('Количество человек:','1')); if(!count || count < 1) return;
   aiCurrentData.company_attestation = aiCurrentData.company_attestation || {};
   aiCurrentData.company_attestation.workers = aiCurrentData.company_attestation.workers || [];
-  aiCurrentData.company_attestation.workers.push({profession,razryad,count,source:'manual'});
+  const newWorker = {profession,razryad,count,source:'manual'};
+  aiCurrentData.company_attestation.workers.push(newWorker);
+  const excluded = new Set((aiCurrentData.company_attestation.excluded_workers || []).map(String));
+  excluded.delete(aiWorkerKey(newWorker));
+  aiCurrentData.company_attestation.excluded_workers = [...excluded];
   aiNormalizeCompanyAttestation(); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
 }
 function aiEditCompanyWorker(index) {
@@ -1567,13 +2121,25 @@ function aiEditCompanyWorker(index) {
   const profession = prompt('Профессия рабочего:',w.profession||''); if(!profession) return;
   const razryad = (prompt('Разряд (II–VI):',w.razryad||'IV') || '').toUpperCase(); if(!razryad) return;
   const count = Number(prompt('Количество человек:',String(w.count||1))); if(!count || count < 1) return;
-  workers[index] = {profession,razryad,count,source:'manual'};
-  aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
+  const ca = aiCurrentData.company_attestation;
+  const excluded = new Set((ca.excluded_workers || []).map(String));
+  const oldKey = aiWorkerKey(w);
+  if(String(w.source || '').toLowerCase() === 'auto') excluded.add(oldKey);
+  const updated = {profession,razryad,count,source:'manual'};
+  const newKey = aiWorkerKey(updated);
+  if(newKey !== oldKey) excluded.delete(newKey);
+  ca.excluded_workers = [...excluded];
+  workers[index] = updated;
+  aiNormalizeCompanyAttestation(); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
 }
 function aiDeleteCompanyWorker(index) {
   const workers = aiCurrentData.company_attestation?.workers || []; if(!workers[index]) return;
   if(!confirm(`Удалить рабочего «${workers[index].profession}»?`)) return;
-  workers.splice(index,1); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
+  const ca = aiCurrentData.company_attestation;
+  const excluded = new Set((ca.excluded_workers || []).map(String));
+  excluded.add(aiWorkerKey(workers[index]));
+  ca.excluded_workers = [...excluded];
+  workers.splice(index,1); aiNormalizeCompanyAttestation(); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
 }
 
 function aiRenderCard(data) {

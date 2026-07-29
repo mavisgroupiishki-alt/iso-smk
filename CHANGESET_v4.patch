@@ -1,0 +1,1394 @@
+--- /mnt/data/att_v3/generator_company_att.py	2026-07-28 13:33:03.000000000 +0000
++++ /mnt/data/att_v4/generator_company_att.py	2026-07-29 06:34:20.175174638 +0000
+@@ -102,28 +102,173 @@
+     'общестроительный': ['7.2', '7.3', '7.4', '7.5', '7.6'],
+ }
+ 
+-# Канонические наборы рабочих для первичного заполнения Формы №2.
+-# Общестрой перенесён дословно из принятого пользователем образца
+-# «АК СтройФемили»: 16 профессий, II=1, III=7, IV=8.
++# Стандартный справочник рабочих для Формы №2.
++# Источник: пользовательский документ «ОБРАЗЕЦ Сведения о рабочих (15).docx».
++# В нём для каждого кода работ 7.* задан перечень профессий. Когда в источнике
++# не указан разряд/количество, приложение использует безопасный редактируемый
++# стандарт: III разряд, 1 человек. Пользователь может изменить или удалить строку.
++STANDARD_WORKER_RAZRYAD = 'III'
++STANDARD_WORKER_COUNT = 1
++
++COMPANY_ATT_WORKER_RULES = {'7.1': [],
++ '7.2': ['Землекоп'],
++ '7.2.1': ['Арматурщик', 'Бетонщик', 'Такелажник', 'Каменщик'],
++ '7.2.2': ['Монтажник строительных конструкций',
++           'Машинист крана автомобильного',
++           'Стропальщик',
++           'Бетонщик',
++           'Плотник',
++           'Арматурщик'],
++ '7.2.3': ['Монтажник строительных конструкций', 'Бетонщик', 'Плотник', 'Арматурщик'],
++ '7.3': [],
++ '7.3.1': ['Арматурщик',
++           'Такелажник',
++           'Машинист башенного крана',
++           'Подсобный рабочий',
++           'Электросварщик ручной сварки',
++           'Слесарь строительный'],
++ '7.3.2': ['Стропальщик', 'Монтажник строительных конструкций', 'Машинист крана'],
++ '7.3.3': ['Монтажник строительных конструкций', 'Машинист крана'],
++ '7.3.4': ['Подсобный рабочий', 'Стропальщик', 'Такелажник', 'Машинист'],
++ '7.4': [],
++ '7.4.1': ['Монтажник строительных конструкций',
++           'Каменщик',
++           'Арматурщик',
++           'Электросварщик ручной сварки',
++           'Плотник',
++           'Такелажник',
++           'Подсобный рабочий',
++           'Машинист башенного крана'],
++ '7.4.2': ['Бетонщик',
++           'Плотник',
++           'Арматурщик',
++           'Машинист башенного крана',
++           'Электросварщик ручной сварки',
++           'Такелажник',
++           'Подсобный рабочий',
++           'Слесарь строительный',
++           'Каменщик'],
++ '7.4.3': ['Бетонщик',
++           'Арматурщик',
++           'Машинист башенного крана',
++           'Слесарь строительный',
++           'Электросварщик ручной сварки',
++           'Такелажник',
++           'Подсобный рабочий',
++           'Стропальщик',
++           'Каменщик'],
++ '7.4.4': ['Монтажник строительных конструкций', 'Машинист крана автомобильного', 'Электросварщик ручной сварки'],
++ '7.4.5': ['Монтажник строительных конструкций', 'Плотник', 'Подсобный рабочий'],
++ '7.4.6': ['Машинист крана', 'Такелажник', 'Стропальщик', 'Монтажник строительных конструкций'],
++ '7.5': ['Маляр',
++         'Подсобный рабочий',
++         'Машинист аппарата безвоздушного распыления',
++         'Машинист компрессора',
++         'Изолировщик на антикоррозионной изоляции'],
++ '7.6': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
++ '7.6.1': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
++ '7.6.2': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
++ '7.6.3': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
++ '7.6.4': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
++ '7.6.5': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
++ '7.7': ['Изолировщик на термоизоляции'],
++ '7.8': [],
++ '7.8.1': ['Монтажник санитарно-технических систем и оборудования', 'Подсобный рабочий'],
++ '7.8.2': ['Монтажник санитарно-технических систем и оборудования', 'Подсобный рабочий'],
++ '7.8.3': ['Монтажник санитарно-технических систем и оборудования', 'Слесарь', 'Подсобный рабочий'],
++ '7.8.4': ['Монтажник систем вентиляции и пневмотранспорта',
++           'Подсобный рабочий',
++           'Монтажник санитарно-технических систем и оборудования'],
++ '7.8.5': ['Монтажник систем газоснабжения'],
++ '7.9': ['Монтажник наружных трубопроводов',
++         'Машинист крана-трубоукладчика',
++         'Электросварщик ручной сварки',
++         'Машинист автокрана',
++         'Машинист бульдозера',
++         'Стропальщик'],
++ '7.9.1': ['Монтажник наружных трубопроводов',
++           'Машинист крана-трубоукладчика',
++           'Электросварщик ручной сварки',
++           'Машинист автокрана',
++           'Машинист бульдозера',
++           'Стропальщик'],
++ '7.9.2': ['Монтажник наружных трубопроводов',
++           'Машинист крана-трубоукладчика',
++           'Электросварщик ручной сварки',
++           'Машинист автокрана',
++           'Машинист бульдозера',
++           'Стропальщик'],
++ '7.10': ['Электромонтажник по кабельным сетям',
++          'Монтажник связи-кабельщик',
++          'Подсобный рабочий',
++          'Слесарь-электромонтажник'],
++ '7.11': ['Монтажник связи-кабельщик',
++          'Электромонтажник по кабельным сетям',
++          'Такелажник',
++          'Землекоп',
++          'Электромонтажник по электрооборудованию, силовым и осветительным сетям',
++          'Машинист'],
++ '7.12': ['Электромонтер охранно-пожарной сигнализации', 'Монтажник связи-кабельщик'],
++ '7.13': ['Электромонтажник по электрооборудованию, силовым и осветительным сетям',
++          'Электросварщик ручной сварки',
++          'Монтажник приборов и систем автоматики'],
++ '7.14': ['Монтажник систем холодоснабжения'],
++ '7.15': ['Монтажник технологических трубопроводов', 'Машинист', 'Слесарь', 'Сварщик'],
++ '7.16': ['Изолировщик на термоизоляции (теплоизоляции)', 'Штукатур', 'Подсобный рабочий'],
++ '7.19': [],
++ '7.19.1': ['Дорожный рабочий', 'Машинист катка', 'Монтажник', 'Стропальщик'],
++ '7.19.2': ['Машинист экскаватора', 'Дорожный рабочий', 'Землекоп'],
++ '7.19.3': ['Маляр', 'Дорожный рабочий', 'Машинист разметочной машины'],
++ '7.24': [],
++ '7.24.1': ['Дорожный рабочий', 'Плиточник', 'Подсобный рабочий', 'Стропальщик'],
++ '7.24.2': ['Дорожный рабочий', 'Асфальтобетонщик', 'Машинист']}
++
++# Точные стандартные таблицы из страниц 4–5 источника.
++# Одна профессия может встречаться в нескольких разрядах — в готовой Форме №2
++# эти записи объединяются в одну строку с заполнением нескольких колонок.
+ COMPANY_ATT_WORKER_PRESETS = {
+-    'общестрой': [
+-        {'profession': 'Монтажник строительных конструкций', 'razryad': 'III', 'count': 1},
+-        {'profession': 'Плотник-бетонщик', 'razryad': 'III', 'count': 1},
+-        {'profession': 'Слесарь строительный', 'razryad': 'III', 'count': 1},
+-        {'profession': 'Стропальщик', 'razryad': 'IV', 'count': 1},
+-        {'profession': 'Арматурщик', 'razryad': 'IV', 'count': 1},
+-        {'profession': 'Электросварщик ручной сварки', 'razryad': 'III', 'count': 1},
+-        {'profession': 'Каменщик', 'razryad': 'IV', 'count': 1},
+-        {'profession': 'Такелажник', 'razryad': 'III', 'count': 1},
+-        {'profession': 'Бетонщик', 'razryad': 'III', 'count': 1},
+-        {'profession': 'Подсобный рабочий', 'razryad': 'II', 'count': 1},
+-        {'profession': 'Маляр', 'razryad': 'III', 'count': 1},
+-        {'profession': 'Изолировщик на антикоррозионной изоляции', 'razryad': 'IV', 'count': 1},
+-        {'profession': 'Кровельщик по металлическим кровлям', 'razryad': 'IV', 'count': 1},
+-        {'profession': 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов', 'razryad': 'IV', 'count': 1},
+-        {'profession': 'Штукатур', 'razryad': 'IV', 'count': 1},
+-        {'profession': 'Землекоп', 'razryad': 'IV', 'count': 1},
+-    ],
++    'общестрой_без_фасадов': [{'profession': 'Монтажник строительных конструкций', 'razryad': 'III', 'count': 1},
++ {'profession': 'Монтажник строительных конструкций', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Плотник', 'razryad': 'II', 'count': 1},
++ {'profession': 'Слесарь строительный', 'razryad': 'III', 'count': 1},
++ {'profession': 'Стропальщик', 'razryad': 'II', 'count': 1},
++ {'profession': 'Арматурщик', 'razryad': 'III', 'count': 1},
++ {'profession': 'Арматурщик', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Электросварщик ручной сварки', 'razryad': 'III', 'count': 1},
++ {'profession': 'Электросварщик ручной сварки', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Каменщик', 'razryad': 'II', 'count': 1},
++ {'profession': 'Такелажник', 'razryad': 'II', 'count': 1},
++ {'profession': 'Бетонщик', 'razryad': 'II', 'count': 1},
++ {'profession': 'Подсобный рабочий', 'razryad': 'II', 'count': 1},
++ {'profession': 'Маляр', 'razryad': 'II', 'count': 1},
++ {'profession': 'Маляр', 'razryad': 'III', 'count': 1},
++ {'profession': 'Изолировщик на антикоррозионной изоляции', 'razryad': 'III', 'count': 1},
++ {'profession': 'Изолировщик на антикоррозионной изоляции', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Кровельщик по металлическим кровлям', 'razryad': 'III', 'count': 2},
++ {'profession': 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов', 'razryad': 'III', 'count': 1},
++ {'profession': 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Штукатур', 'razryad': 'III', 'count': 1},
++ {'profession': 'Землекоп', 'razryad': 'IV', 'count': 1}],
++    'общестрой_с_фасадами': [{'profession': 'Монтажник строительных конструкций', 'razryad': 'III', 'count': 1},
++ {'profession': 'Монтажник строительных конструкций', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Плотник', 'razryad': 'II', 'count': 1},
++ {'profession': 'Слесарь строительный', 'razryad': 'III', 'count': 1},
++ {'profession': 'Стропальщик', 'razryad': 'II', 'count': 1},
++ {'profession': 'Арматурщик', 'razryad': 'III', 'count': 1},
++ {'profession': 'Арматурщик', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Электросварщик ручной сварки', 'razryad': 'III', 'count': 1},
++ {'profession': 'Электросварщик ручной сварки', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Каменщик', 'razryad': 'II', 'count': 1},
++ {'profession': 'Такелажник', 'razryad': 'II', 'count': 1},
++ {'profession': 'Бетонщик', 'razryad': 'II', 'count': 1},
++ {'profession': 'Подсобный рабочий', 'razryad': 'II', 'count': 1},
++ {'profession': 'Маляр', 'razryad': 'II', 'count': 1},
++ {'profession': 'Изолировщик на антикоррозионной изоляции', 'razryad': 'III', 'count': 1},
++ {'profession': 'Изолировщик на антикоррозионной изоляции', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Кровельщик по металлическим кровлям', 'razryad': 'III', 'count': 2},
++ {'profession': 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов', 'razryad': 'III', 'count': 1},
++ {'profession': 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов', 'razryad': 'IV', 'count': 1},
++ {'profession': 'Изолировщик на термоизоляции', 'razryad': 'III', 'count': 2}],
+ }
+ 
+ 
+@@ -131,35 +276,48 @@
+     return re.sub(r'\s+', ' ', str(value or '').lower().replace('ё', 'е')).strip()
+ 
+ 
+-def is_common_construction_scope(attestation_data: dict) -> bool:
+-    haystack = ' '.join([
++def _scope_text(attestation_data: dict) -> str:
++    return _norm_text(' '.join([
+         str(attestation_data.get('work_scope_text') or ''),
+         str(attestation_data.get('scope') or ''),
+-    ])
+-    text = _norm_text(haystack)
++    ]))
++
++
++def is_common_construction_scope(attestation_data: dict) -> bool:
++    text = _scope_text(attestation_data)
+     return 'общестроит' in text or text == 'общестрой'
+ 
+ 
++def is_facade_scope(attestation_data: dict, work_items: list = None) -> bool:
++    text = _scope_text(attestation_data)
++    return 'фасад' in text or '7.7' in set(work_items or [])
++
++
+ def resolve_work_items(attestation_data: dict) -> list:
+-    """Возвращает полный, дедуплицированный перечень кодов.
++    """Возвращает полный дедуплицированный перечень кодов видов работ.
+ 
+-    Если пользователь выбрал общий раздел «Общестроительные работы», набор 7.2–7.6
+-    применяется даже когда ИИ успел записать лишь несколько подпунктов 7.4.*.
+-    Явный перечень из уже заполненного заявления сохраняется, когда
+-    work_items_source='document'.
++    Общие названия разворачиваются в стандартные наборы. Режимы document_exact
++    и manual_exact сохраняют переданный перечень без расширения.
+     """
+     explicit = [str(x).strip() for x in (attestation_data.get('work_items') or []) if str(x).strip()]
+     source = _norm_text(attestation_data.get('work_items_source'))
+-    # Только явный режим *_exact запрещает расширение общего раздела. Обычный
+-    # source=document не должен закреплять ошибочно распознанные 2–3 пункта вместо
+-    # полного набора «Общестроительные работы».
+     if source in ('document_exact', 'manual_exact'):
+         return list(dict.fromkeys(explicit))
+ 
+     resolved = list(explicit)
+-    scope = str(attestation_data.get('work_scope_text') or '')
+-    if is_common_construction_scope(attestation_data):
+-        resolved.extend(COMMON_BUNDLES['общестрой'])
++    scope = _scope_text(attestation_data)
++    if 'общестроит' in scope or scope == 'общестрой':
++        resolved.extend(['7.2', '7.3', '7.4', '7.5', '7.6'])
++        if 'фасад' in scope:
++            resolved.append('7.7')
++    elif any(k in scope for k in ('сантех', 'водоснабж', 'канализац', 'отоплен', 'вентиляц')):
++        resolved.extend(['7.8', '7.9'])
++    elif any(k in scope for k in ('электромонтаж', 'электрик', 'электроснабж', 'слаботоч', 'автоматизац')):
++        resolved.extend(['7.10', '7.11', '7.12', '7.13'])
++    elif any(k in scope for k in ('дорог', 'дорожн')):
++        resolved.append('7.19')
++    elif 'благоустрой' in scope:
++        resolved.append('7.24')
+     elif source == 'document':
+         return list(dict.fromkeys(explicit))
+     elif scope:
+@@ -175,7 +333,11 @@
+ 
+ def merge_workers(workers: list) -> list:
+     """Объединяет одинаковую профессию+разряд без суммирования дублей.
+-    При повторе берётся максимальное количество, как просил пользователь."""
++
++    Автоматические повторы берут максимальное количество. Строка из документа,
++    ручная или экспертная правка заменяет автоматическую, в том числе позволяет
++    уменьшить количество.
++    """
+     merged = {}
+     order = []
+     for raw in workers or []:
+@@ -183,51 +345,125 @@
+             continue
+         item = dict(raw)
+         item['profession'] = str(item.get('profession')).strip()
+-        item['razryad'] = str(item.get('razryad') or '').strip().upper()
++        item['razryad'] = str(item.get('razryad') or STANDARD_WORKER_RAZRYAD).strip().upper()
+         try:
+-            item['count'] = max(1, int(item.get('count') or 1))
++            item['count'] = max(1, int(item.get('count') or STANDARD_WORKER_COUNT))
+         except (TypeError, ValueError):
+-            item['count'] = 1
++            item['count'] = STANDARD_WORKER_COUNT
+         key = _worker_key(item)
++        source = _norm_text(item.get('source'))
+         if key not in merged:
+             order.append(key)
+             merged[key] = item
++        elif source in ('document', 'manual', 'expert'):
++            merged[key] = item
+         else:
+             prev = merged[key]
+             prev['count'] = max(prev.get('count', 1), item['count'])
+-            if item.get('source') and item.get('source') != 'auto':
+-                prev['source'] = item['source']
+     return [merged[k] for k in order]
+ 
+ 
+-def resolve_workers(attestation_data: dict, work_items: list) -> list:
+-    """Приоритет: заполненная исходная Форма №2/ручная правка → автоподстановка.
++def group_workers_for_form(workers: list) -> list:
++    """Группирует несколько разрядов одной профессии в одну строку Формы №2."""
++    grouped = {}
++    order = []
++    for worker in merge_workers(workers):
++        profession = str(worker.get('profession') or '').strip()
++        key = _norm_text(profession)
++        if not key:
++            continue
++        if key not in grouped:
++            order.append(key)
++            grouped[key] = {
++                'profession': profession,
++                'counts': {r: 0 for r in RAZRYAD_COLUMNS},
++                'total': 0,
++            }
++        razryad = str(worker.get('razryad') or '').upper().strip()
++        count = max(0, int(worker.get('count') or 0))
++        if razryad in RAZRYAD_COLUMNS:
++            grouped[key]['counts'][razryad] += count
++            grouped[key]['total'] += count
++    return [grouped[k] for k in order]
+ 
+-    Рабочие с source=document/manual считаются подтверждёнными. Старый неполный
+-    фронтенд-пресет source=auto заменяется полным каноническим набором.
+-    """
++
++def _expanded_worker_rule_codes(work_items: list) -> list:
++    """Добавляет родительскую категорию и подпункты выбранной категории."""
++    categories = CLASSIFIER['punkt_7_smr']['categories']
++    result = []
++    for raw_code in work_items or []:
++        code = str(raw_code).strip()
++        if not code:
++            continue
++        parent = _get_category_code(code)
++        for candidate in (parent, code):
++            if candidate not in result:
++                result.append(candidate)
++        category = categories.get(code)
++        if category:
++            for sub_code in category.get('sub', {}):
++                if sub_code not in result:
++                    result.append(sub_code)
++        # Пользовательский справочник содержит новые подпункты, которых может ещё
++        # не быть в старой версии classifier_company_att.json (например 7.19.1–7.19.3).
++        for sub_code in COMPANY_ATT_WORKER_RULES:
++            if sub_code.startswith(code + '.') and sub_code not in result:
++                result.append(sub_code)
++    return result
++
++
++def build_standard_workers(work_items: list) -> list:
++    """Строит стандартный редактируемый состав по всем выбранным кодам."""
++    professions = []
++    seen = set()
++    for code in _expanded_worker_rule_codes(work_items):
++        for profession in COMPANY_ATT_WORKER_RULES.get(code, []):
++            key = _norm_text(profession)
++            if key and key not in seen:
++                seen.add(key)
++                professions.append(profession)
++    return [
++        {
++            'profession': profession,
++            'razryad': STANDARD_WORKER_RAZRYAD,
++            'count': STANDARD_WORKER_COUNT,
++            'source': 'auto',
++        }
++        for profession in professions
++    ]
++
++
++def resolve_workers(attestation_data: dict, work_items: list) -> list:
++    """Источник истины: заполненная Форма №2 → ручные правки → стандарт по видам работ."""
+     incoming = [dict(w) for w in (attestation_data.get('workers') or []) if isinstance(w, dict)]
+     confirmed = [w for w in incoming if _norm_text(w.get('source')) in ('document', 'manual', 'expert')]
+-    excluded_raw = attestation_data.get('excluded_workers') or []
++    document_workers = [w for w in confirmed if _norm_text(w.get('source')) == 'document']
++
++    # Если пользователь загрузил готовую Форму №2, не расширяем её стандартом.
++    if document_workers:
++        return merge_workers(confirmed)
++
+     excluded = set()
+-    for item in excluded_raw:
++    for item in attestation_data.get('excluded_workers') or []:
+         if isinstance(item, dict):
+             excluded.add(_worker_key(item))
+         else:
+             parts = str(item or '').split('|', 1)
+             excluded.add((_norm_text(parts[0]), (parts[1] if len(parts) > 1 else '').strip().upper()))
+ 
+-    if is_common_construction_scope(attestation_data) or set(COMMON_BUNDLES['общестрой']).issubset(set(work_items)):
+-        auto = [dict(w, source='auto') for w in COMPANY_ATT_WORKER_PRESETS['общестрой']]
+-        auto = [w for w in auto if _worker_key(w) not in excluded]
+-        # Полный канонический набор является базой; подтверждённые строки поверх него
+-        # меняют количество/разряд, но не дают ИИ потерять остальные профессии.
+-        return merge_workers(auto + confirmed)
++    common_codes = {'7.2', '7.3', '7.4', '7.5', '7.6'}
++    use_common_preset = is_common_construction_scope(attestation_data) or common_codes.issubset(set(work_items or []))
++    if use_common_preset:
++        preset_key = 'общестрой_с_фасадами' if is_facade_scope(attestation_data, work_items) else 'общестрой_без_фасадов'
++        auto = [dict(w, source='auto') for w in COMPANY_ATT_WORKER_PRESETS[preset_key]]
++    else:
++        auto = build_standard_workers(work_items)
++
++    auto = [w for w in auto if _worker_key(w) not in excluded]
++    if not auto and incoming:
++        auto = [w for w in incoming if _norm_text(w.get('source')) == 'auto']
++    return merge_workers(auto + confirmed)
+ 
+-    if confirmed:
+-        return merge_workers(confirmed)
+-    # Для иных направлений сохраняем рассчитанный фронтендом набор, но дедуплицируем.
+-    return merge_workers(incoming)
+ 
+ 
+ def find_work_items(query: str, max_items=10):
+@@ -720,22 +956,20 @@
+                          "строительно-монтажных работ, работающих по основному месту работы:", size=26))
+ 
+     if workers:
+-        # Реальная структура: № | Профессия | II | III | IV | V | VI | Итого — ширины из СК76/Асецкий
++        # Реальная структура: № | Профессия | II | III | IV | V | VI | Итого.
++        # Несколько разрядов одной профессии объединяются в одну строку.
+         w_widths = [548, 4254, 749, 749, 749, 749, 750, 1505]
+         w_headers = ["№ п/п", "Наименование профессий рабочих"] + RAZRYAD_COLUMNS + ["Итого"]
+         w_rows = []
+         totals = {r: 0 for r in RAZRYAD_COLUMNS}
+-        for i, w in enumerate(workers, 1):
+-            razr = str(w.get('razryad', '')).upper().strip()
+-            count = int(w.get('count') or 0)
++        grouped_workers = group_workers_for_form(workers)
++        for i, w in enumerate(grouped_workers, 1):
+             row = [str(i), w.get('profession', '')]
+             for r in RAZRYAD_COLUMNS:
+-                if r == razr:
+-                    row.append(str(count) if count else '')
+-                    totals[r] += count
+-                else:
+-                    row.append('')
+-            row.append(str(count) if count else '')
++                count = int((w.get('counts') or {}).get(r) or 0)
++                row.append(str(count) if count else '')
++                totals[r] += count
++            row.append(str(w.get('total') or '') if w.get('total') else '')
+             w_rows.append(row)
+         total_row = ["", "Итого по разрядам:"] + [str(totals[r]) if totals[r] else '' for r in RAZRYAD_COLUMNS] + [str(sum(totals.values()))]
+         w_rows.append(total_row)
+--- /mnt/data/att_v3/index.html	2026-07-28 13:33:03.000000000 +0000
++++ /mnt/data/att_v4/index.html	2026-07-29 06:34:28.627174399 +0000
+@@ -1427,159 +1427,654 @@
+ function aiRemoveTyping(){const t=document.getElementById('ai-typing');if(t)t.remove();}
+ 
+ 
++const STANDARD_WORKER_RAZRYAD = 'III';
++const STANDARD_WORKER_COUNT = 1;
++
++// Стандартный справочник из «ОБРАЗЕЦ Сведения о рабочих (15).docx».
++const COMPANY_ATT_WORKER_RULES = {
++  "7.1": [],
++  "7.2": [
++    "Землекоп"
++  ],
++  "7.2.1": [
++    "Арматурщик",
++    "Бетонщик",
++    "Такелажник",
++    "Каменщик"
++  ],
++  "7.2.2": [
++    "Монтажник строительных конструкций",
++    "Машинист крана автомобильного",
++    "Стропальщик",
++    "Бетонщик",
++    "Плотник",
++    "Арматурщик"
++  ],
++  "7.2.3": [
++    "Монтажник строительных конструкций",
++    "Бетонщик",
++    "Плотник",
++    "Арматурщик"
++  ],
++  "7.3": [],
++  "7.3.1": [
++    "Арматурщик",
++    "Такелажник",
++    "Машинист башенного крана",
++    "Подсобный рабочий",
++    "Электросварщик ручной сварки",
++    "Слесарь строительный"
++  ],
++  "7.3.2": [
++    "Стропальщик",
++    "Монтажник строительных конструкций",
++    "Машинист крана"
++  ],
++  "7.3.3": [
++    "Монтажник строительных конструкций",
++    "Машинист крана"
++  ],
++  "7.3.4": [
++    "Подсобный рабочий",
++    "Стропальщик",
++    "Такелажник",
++    "Машинист"
++  ],
++  "7.4": [],
++  "7.4.1": [
++    "Монтажник строительных конструкций",
++    "Каменщик",
++    "Арматурщик",
++    "Электросварщик ручной сварки",
++    "Плотник",
++    "Такелажник",
++    "Подсобный рабочий",
++    "Машинист башенного крана"
++  ],
++  "7.4.2": [
++    "Бетонщик",
++    "Плотник",
++    "Арматурщик",
++    "Машинист башенного крана",
++    "Электросварщик ручной сварки",
++    "Такелажник",
++    "Подсобный рабочий",
++    "Слесарь строительный",
++    "Каменщик"
++  ],
++  "7.4.3": [
++    "Бетонщик",
++    "Арматурщик",
++    "Машинист башенного крана",
++    "Слесарь строительный",
++    "Электросварщик ручной сварки",
++    "Такелажник",
++    "Подсобный рабочий",
++    "Стропальщик",
++    "Каменщик"
++  ],
++  "7.4.4": [
++    "Монтажник строительных конструкций",
++    "Машинист крана автомобильного",
++    "Электросварщик ручной сварки"
++  ],
++  "7.4.5": [
++    "Монтажник строительных конструкций",
++    "Плотник",
++    "Подсобный рабочий"
++  ],
++  "7.4.6": [
++    "Машинист крана",
++    "Такелажник",
++    "Стропальщик",
++    "Монтажник строительных конструкций"
++  ],
++  "7.5": [
++    "Маляр",
++    "Подсобный рабочий",
++    "Машинист аппарата безвоздушного распыления",
++    "Машинист компрессора",
++    "Изолировщик на антикоррозионной изоляции"
++  ],
++  "7.6": [
++    "Кровельщик по металлическим кровлям",
++    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
++  ],
++  "7.6.1": [
++    "Кровельщик по металлическим кровлям",
++    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
++  ],
++  "7.6.2": [
++    "Кровельщик по металлическим кровлям",
++    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
++  ],
++  "7.6.3": [
++    "Кровельщик по металлическим кровлям",
++    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
++  ],
++  "7.6.4": [
++    "Кровельщик по металлическим кровлям",
++    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
++  ],
++  "7.6.5": [
++    "Кровельщик по металлическим кровлям",
++    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
++  ],
++  "7.7": [
++    "Изолировщик на термоизоляции"
++  ],
++  "7.8": [],
++  "7.8.1": [
++    "Монтажник санитарно-технических систем и оборудования",
++    "Подсобный рабочий"
++  ],
++  "7.8.2": [
++    "Монтажник санитарно-технических систем и оборудования",
++    "Подсобный рабочий"
++  ],
++  "7.8.3": [
++    "Монтажник санитарно-технических систем и оборудования",
++    "Слесарь",
++    "Подсобный рабочий"
++  ],
++  "7.8.4": [
++    "Монтажник систем вентиляции и пневмотранспорта",
++    "Подсобный рабочий",
++    "Монтажник санитарно-технических систем и оборудования"
++  ],
++  "7.8.5": [
++    "Монтажник систем газоснабжения"
++  ],
++  "7.9": [
++    "Монтажник наружных трубопроводов",
++    "Машинист крана-трубоукладчика",
++    "Электросварщик ручной сварки",
++    "Машинист автокрана",
++    "Машинист бульдозера",
++    "Стропальщик"
++  ],
++  "7.9.1": [
++    "Монтажник наружных трубопроводов",
++    "Машинист крана-трубоукладчика",
++    "Электросварщик ручной сварки",
++    "Машинист автокрана",
++    "Машинист бульдозера",
++    "Стропальщик"
++  ],
++  "7.9.2": [
++    "Монтажник наружных трубопроводов",
++    "Машинист крана-трубоукладчика",
++    "Электросварщик ручной сварки",
++    "Машинист автокрана",
++    "Машинист бульдозера",
++    "Стропальщик"
++  ],
++  "7.10": [
++    "Электромонтажник по кабельным сетям",
++    "Монтажник связи-кабельщик",
++    "Подсобный рабочий",
++    "Слесарь-электромонтажник"
++  ],
++  "7.11": [
++    "Монтажник связи-кабельщик",
++    "Электромонтажник по кабельным сетям",
++    "Такелажник",
++    "Землекоп",
++    "Электромонтажник по электрооборудованию, силовым и осветительным сетям",
++    "Машинист"
++  ],
++  "7.12": [
++    "Электромонтер охранно-пожарной сигнализации",
++    "Монтажник связи-кабельщик"
++  ],
++  "7.13": [
++    "Электромонтажник по электрооборудованию, силовым и осветительным сетям",
++    "Электросварщик ручной сварки",
++    "Монтажник приборов и систем автоматики"
++  ],
++  "7.14": [
++    "Монтажник систем холодоснабжения"
++  ],
++  "7.15": [
++    "Монтажник технологических трубопроводов",
++    "Машинист",
++    "Слесарь",
++    "Сварщик"
++  ],
++  "7.16": [
++    "Изолировщик на термоизоляции (теплоизоляции)",
++    "Штукатур",
++    "Подсобный рабочий"
++  ],
++  "7.19": [],
++  "7.19.1": [
++    "Дорожный рабочий",
++    "Машинист катка",
++    "Монтажник",
++    "Стропальщик"
++  ],
++  "7.19.2": [
++    "Машинист экскаватора",
++    "Дорожный рабочий",
++    "Землекоп"
++  ],
++  "7.19.3": [
++    "Маляр",
++    "Дорожный рабочий",
++    "Машинист разметочной машины"
++  ],
++  "7.24": [],
++  "7.24.1": [
++    "Дорожный рабочий",
++    "Плиточник",
++    "Подсобный рабочий",
++    "Стропальщик"
++  ],
++  "7.24.2": [
++    "Дорожный рабочий",
++    "Асфальтобетонщик",
++    "Машинист"
++  ]
++};
++
++const COMPANY_ATT_WORK_SUBCODES = {
++  "7.2": [
++    "7.2.1",
++    "7.2.2",
++    "7.2.3"
++  ],
++  "7.3": [
++    "7.3.1",
++    "7.3.2",
++    "7.3.3",
++    "7.3.4"
++  ],
++  "7.4": [
++    "7.4.1",
++    "7.4.2",
++    "7.4.3",
++    "7.4.4",
++    "7.4.5",
++    "7.4.6"
++  ],
++  "7.6": [
++    "7.6.1",
++    "7.6.2",
++    "7.6.3",
++    "7.6.4",
++    "7.6.5"
++  ],
++  "7.8": [
++    "7.8.1",
++    "7.8.2",
++    "7.8.3",
++    "7.8.4",
++    "7.8.5"
++  ],
++  "7.9": [
++    "7.9.1",
++    "7.9.2"
++  ],
++  "7.19": [
++    "7.19.1",
++    "7.19.2",
++    "7.19.3"
++  ],
++  "7.24": [
++    "7.24.1",
++    "7.24.2"
++  ]
++};
++
++const COMPANY_ATT_WORKER_PRESETS = {
++  "общестрой_без_фасадов": [
++    {
++      "profession": "Монтажник строительных конструкций",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Монтажник строительных конструкций",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Плотник",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Слесарь строительный",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Стропальщик",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Арматурщик",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Арматурщик",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Электросварщик ручной сварки",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Электросварщик ручной сварки",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Каменщик",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Такелажник",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Бетонщик",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Подсобный рабочий",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Маляр",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Маляр",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Изолировщик на антикоррозионной изоляции",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Изолировщик на антикоррозионной изоляции",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Кровельщик по металлическим кровлям",
++      "razryad": "III",
++      "count": 2
++    },
++    {
++      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Штукатур",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Землекоп",
++      "razryad": "IV",
++      "count": 1
++    }
++  ],
++  "общестрой_с_фасадами": [
++    {
++      "profession": "Монтажник строительных конструкций",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Монтажник строительных конструкций",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Плотник",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Слесарь строительный",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Стропальщик",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Арматурщик",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Арматурщик",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Электросварщик ручной сварки",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Электросварщик ручной сварки",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Каменщик",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Такелажник",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Бетонщик",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Подсобный рабочий",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Маляр",
++      "razryad": "II",
++      "count": 1
++    },
++    {
++      "profession": "Изолировщик на антикоррозионной изоляции",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Изолировщик на антикоррозионной изоляции",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Кровельщик по металлическим кровлям",
++      "razryad": "III",
++      "count": 2
++    },
++    {
++      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
++      "razryad": "III",
++      "count": 1
++    },
++    {
++      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
++      "razryad": "IV",
++      "count": 1
++    },
++    {
++      "profession": "Изолировщик на термоизоляции",
++      "razryad": "III",
++      "count": 2
++    }
++  ]
++};
++
+ const COMPANY_ATT_SCOPE_PRESETS = {
+-  'общестроительные работы': {
+-    // Полный набор из принятого образца «АК СтройФемили»:
+-    // разделы 7.2–7.6 и 16 рабочих (II=1, III=7, IV=8).
+-    work_items: ['7.2','7.3','7.4','7.5','7.6'],
+-    workers: [
+-      {profession:'Монтажник строительных конструкций',razryad:'III',count:1},
+-      {profession:'Плотник-бетонщик',razryad:'III',count:1},
+-      {profession:'Слесарь строительный',razryad:'III',count:1},
+-      {profession:'Стропальщик',razryad:'IV',count:1},
+-      {profession:'Арматурщик',razryad:'IV',count:1},
+-      {profession:'Электросварщик ручной сварки',razryad:'III',count:1},
+-      {profession:'Каменщик',razryad:'IV',count:1},
+-      {profession:'Такелажник',razryad:'III',count:1},
+-      {profession:'Бетонщик',razryad:'III',count:1},
+-      {profession:'Подсобный рабочий',razryad:'II',count:1},
+-      {profession:'Маляр',razryad:'III',count:1},
+-      {profession:'Изолировщик на антикоррозионной изоляции',razryad:'IV',count:1},
+-      {profession:'Кровельщик по металлическим кровлям',razryad:'IV',count:1},
+-      {profession:'Кровельщик по рулонным кровлям и по кровлям из штучных материалов',razryad:'IV',count:1},
+-      {profession:'Штукатур',razryad:'IV',count:1},
+-      {profession:'Землекоп',razryad:'IV',count:1}
+-    ]
+-  },
+-  'сантехнические работы': {
+-    work_items: ['7.8.1','7.8.2','7.8.3','7.8.4','7.9'],
+-    workers: [
+-      {profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2},
+-      {profession:'Монтажник систем вентиляции и кондиционирования',razryad:'IV',count:2},
+-      {profession:'Монтажник наружных трубопроводов',razryad:'IV',count:2}
+-    ]
+-  },
+-  'электромонтажные работы': {
+-    work_items: ['7.10','7.11','7.13'],
+-    workers: [
+-      {profession:'Электромонтажник',razryad:'IV',count:2},
+-      {profession:'Монтажник систем автоматизации',razryad:'IV',count:2}
+-    ]
+-  }
++  'общестроительные работы': {work_items:['7.2','7.3','7.4','7.5','7.6']},
++  'сантехнические работы': {work_items:['7.8','7.9']},
++  'электромонтажные работы': {work_items:['7.10','7.11','7.12','7.13']},
++  'дорожные работы': {work_items:['7.19']},
++  'благоустройство территории': {work_items:['7.24']}
+ };
+ 
+-function aiFindCompanyAttPreset(ca) {
+-  const haystack = [
++function aiScopeText(ca) {
++  return [
+     ca?.work_scope_text,
+     aiCurrentData?.certification?.scope,
+     ...(aiCurrentData?.work_types || [])
+   ].filter(Boolean).join(' ').toLowerCase().replace(/ё/g,'е');
+-  for(const [name,preset] of Object.entries(COMPANY_ATT_SCOPE_PRESETS)) {
+-    if(haystack.includes(name.replace(/ё/g,'е'))) return preset;
++}
++
++function aiFindCompanyAttPreset(ca) {
++  const haystack = aiScopeText(ca);
++  if(haystack.includes('общестроит') || haystack.trim() === 'общестрой') {
++    const withFacade = haystack.includes('фасад') || (ca?.work_items || []).includes('7.7');
++    return {
++      ...COMPANY_ATT_SCOPE_PRESETS['общестроительные работы'],
++      workerPreset: withFacade ? 'общестрой_с_фасадами' : 'общестрой_без_фасадов',
++      withFacade
++    };
+   }
+-  if(haystack.includes('общестроит')) return COMPANY_ATT_SCOPE_PRESETS['общестроительные работы'];
+   if(haystack.includes('сантех') || haystack.includes('водоснабж') || haystack.includes('канализац') || haystack.includes('отоплен') || haystack.includes('вентиляц')) return COMPANY_ATT_SCOPE_PRESETS['сантехнические работы'];
+-  if(haystack.includes('электромонтаж') || haystack.includes('электрик') || haystack.includes('автоматизац')) return COMPANY_ATT_SCOPE_PRESETS['электромонтажные работы'];
++  if(haystack.includes('электромонтаж') || haystack.includes('электрик') || haystack.includes('электроснабж') || haystack.includes('слаботоч') || haystack.includes('автоматизац')) return COMPANY_ATT_SCOPE_PRESETS['электромонтажные работы'];
++  if(haystack.includes('благоустрой')) return COMPANY_ATT_SCOPE_PRESETS['благоустройство территории'];
++  if(haystack.includes('дорог') || haystack.includes('дорожн')) return COMPANY_ATT_SCOPE_PRESETS['дорожные работы'];
+   return null;
+ }
+ 
+-const COMPANY_ATT_WORKER_RULES = {
+-  '7.2':   [{profession:'Землекоп',razryad:'III',count:2}],
+-  '7.3':   [{profession:'Бетонщик',razryad:'IV',count:2},{profession:'Арматурщик',razryad:'IV',count:2}],
+-  '7.4.1': [{profession:'Каменщик',razryad:'IV',count:2}],
+-  '7.4.2': [{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
+-  '7.4.3': [{profession:'Бетонщик',razryad:'IV',count:2},{profession:'Арматурщик',razryad:'IV',count:2}],
+-  '7.4.4': [{profession:'Монтажник стальных конструкций',razryad:'IV',count:2},{profession:'Электрогазосварщик',razryad:'IV',count:1}],
+-  '7.4.5': [{profession:'Плотник',razryad:'IV',count:2}],
+-  '7.4.6': [{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
+-  '7.5':   [{profession:'Маляр',razryad:'IV',count:2}],
+-  '7.6':   [{profession:'Кровельщик',razryad:'IV',count:2}],
+-  '7.7':   [{profession:'Штукатур',razryad:'IV',count:2},{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
+-  '7.8.1': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
+-  '7.8.2': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
+-  '7.8.3': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
+-  '7.8.4': [{profession:'Монтажник систем вентиляции и кондиционирования',razryad:'IV',count:2}],
+-  '7.8.5': [{profession:'Монтажник санитарно-технических систем и оборудования',razryad:'IV',count:2}],
+-  '7.9':   [{profession:'Монтажник наружных трубопроводов',razryad:'IV',count:2}],
+-  '7.10':  [{profession:'Электромонтажник',razryad:'IV',count:2}],
+-  '7.11':  [{profession:'Электромонтажник',razryad:'IV',count:2}],
+-  '7.12':  [{profession:'Монтажник связи',razryad:'IV',count:2}],
+-  '7.13':  [{profession:'Монтажник систем автоматизации',razryad:'IV',count:2}],
+-  '7.15':  [{profession:'Монтажник технологических трубопроводов',razryad:'IV',count:2}],
+-  '7.16':  [{profession:'Изолировщик',razryad:'IV',count:2}],
+-  '7.19':  [{profession:'Дорожный рабочий',razryad:'III',count:2}],
+-  '7.20':  [{profession:'Дорожный рабочий',razryad:'III',count:2}],
+-  '7.21':  [{profession:'Монтажник строительных конструкций',razryad:'IV',count:2}],
+-  '7.24':  [{profession:'Дорожный рабочий',razryad:'III',count:2}]
+-};
+-
+ function aiWorkerKey(w) {
+-  return `${String(w.profession||'').trim().toLowerCase()}|${String(w.razryad||'').trim().toUpperCase()}`;
++  return `${String(w.profession||'').trim().toLowerCase().replace(/ё/g,'е')}|${String(w.razryad||'').trim().toUpperCase()}`;
+ }
++
++function aiExpandedWorkerRuleCodes(workItems) {
++  const result = [];
++  (workItems || []).forEach(raw => {
++    const code = String(raw || '').trim();
++    if(!code) return;
++    const parts = code.split('.');
++    const parent = parts.length >= 3 ? parts.slice(0,2).join('.') : code;
++    [parent, code].forEach(c => { if(c && !result.includes(c)) result.push(c); });
++    (COMPANY_ATT_WORK_SUBCODES[code] || []).forEach(c => { if(!result.includes(c)) result.push(c); });
++  });
++  return result;
++}
++
++function aiBuildStandardWorkers(workItems) {
++  const professions = [];
++  const seen = new Set();
++  aiExpandedWorkerRuleCodes(workItems).forEach(code => {
++    (COMPANY_ATT_WORKER_RULES[code] || []).forEach(profession => {
++      const key = String(profession).trim().toLowerCase().replace(/ё/g,'е');
++      if(key && !seen.has(key)) {
++        seen.add(key);
++        professions.push({
++          profession,
++          razryad: STANDARD_WORKER_RAZRYAD,
++          count: STANDARD_WORKER_COUNT,
++          source:'auto'
++        });
++      }
++    });
++  });
++  return professions;
++}
++
+ function aiNormalizeCompanyAttestation() {
+   const ca = aiCurrentData.company_attestation;
+   if(!ca) return;
+ 
+   ca.work_items = [...new Set((ca.work_items || []).filter(Boolean).map(String))];
+-  const preset = aiFindCompanyAttPreset(ca);
++  let preset = aiFindCompanyAttPreset(ca);
++  const commonCodes = ['7.2','7.3','7.4','7.5','7.6'];
++  if(!preset && commonCodes.every(code => ca.work_items.includes(code))) {
++    const withFacade = ca.work_items.includes('7.7');
++    preset = {
++      ...COMPANY_ATT_SCOPE_PRESETS['общестроительные работы'],
++      workerPreset: withFacade ? 'общестрой_с_фасадами' : 'общестрой_без_фасадов',
++      withFacade
++    };
++  }
+   const workItemsSource = String(ca.work_items_source || '').toLowerCase();
+   const workItemsExact = ['document_exact','manual_exact'].includes(workItemsSource);
+ 
+-  // Общий выбранный раздел должен разворачиваться полностью, даже если ИИ успел
+-  // записать только несколько кодов. Только явный режим *_exact сохраняет узкий список.
+   if(preset && !workItemsExact) {
+     ca.work_items = [...new Set([...ca.work_items, ...preset.work_items])];
++    if(preset.withFacade && !ca.work_items.includes('7.7')) ca.work_items.push('7.7');
+     ca.work_items_source = 'auto';
+   }
+ 
+   const existing = Array.isArray(ca.workers) ? ca.workers.map(w => ({...w})) : [];
+   const confirmedWorkers = existing.filter(w => ['document','manual','expert'].includes(String(w.source || '').toLowerCase()));
++  const documentWorkers = confirmedWorkers.filter(w => String(w.source || '').toLowerCase() === 'document');
+   const excludedWorkerKeys = new Set((ca.excluded_workers || []).map(String));
+-  let autoWorkers = [];
+ 
+-  // Для общестроя используем один канонический набор из исходной Формы №2.
+-  // Не смешиваем его со старыми неполными автоматическими пресетами.
+-  if(preset === COMPANY_ATT_SCOPE_PRESETS['общестроительные работы']) {
+-    autoWorkers = preset.workers.map(w => ({...w, source:'auto'}));
+-  } else {
+-    ca.work_items.forEach(code => {
+-      const exact = COMPANY_ATT_WORKER_RULES[code]
+-        || COMPANY_ATT_WORKER_RULES[code.split('.').slice(0,2).join('.')]
+-        || [];
+-      exact.forEach(w => autoWorkers.push({...w, source:'auto'}));
+-    });
+-    if(preset) preset.workers.forEach(w => autoWorkers.push({...w, source:'auto'}));
++  let autoWorkers = [];
++  // Загруженная заполненная Форма №2 является источником истины.
++  if(!documentWorkers.length) {
++    if(preset?.workerPreset) {
++      autoWorkers = (COMPANY_ATT_WORKER_PRESETS[preset.workerPreset] || []).map(w => ({...w,source:'auto'}));
++    } else {
++      autoWorkers = aiBuildStandardWorkers(ca.work_items);
++    }
++    autoWorkers = autoWorkers.filter(w => !excludedWorkerKeys.has(aiWorkerKey(w)));
+   }
+ 
+-  autoWorkers = autoWorkers.filter(w => !excludedWorkerKeys.has(aiWorkerKey(w)));
+-
+-  // Подтверждённые пользователем/документом строки имеют приоритет. Дубли по
+-  // профессии+разряду не суммируются, берётся максимальное количество.
+   const merged = new Map();
+   [...autoWorkers, ...confirmedWorkers].forEach(w => {
+     if(!w || !w.profession) return;
+-    const key = aiWorkerKey(w);
+     const normalized = {
+       ...w,
+       profession: String(w.profession).trim(),
+-      razryad: String(w.razryad || '').trim().toUpperCase(),
+-      count: Math.max(1, Number(w.count) || 1)
++      razryad: String(w.razryad || STANDARD_WORKER_RAZRYAD).trim().toUpperCase(),
++      count: Math.max(1, Number(w.count) || STANDARD_WORKER_COUNT)
+     };
++    const key = aiWorkerKey(normalized);
++    const source = String(normalized.source || '').toLowerCase();
+     const prev = merged.get(key);
+-    if(!prev) merged.set(key, normalized);
+-    else merged.set(key, {
+-      ...prev,
+-      ...normalized,
+-      count: Math.max(Number(prev.count) || 1, normalized.count),
+-      source: ['document','manual','expert'].includes(String(normalized.source || '').toLowerCase())
+-        ? normalized.source
+-        : prev.source
+-    });
++    if(!prev || ['document','manual','expert'].includes(source)) {
++      merged.set(key, normalized);
++    } else {
++      merged.set(key, {...prev,count:Math.max(Number(prev.count)||1, normalized.count)});
++    }
+   });
++
+   ca.workers = [...merged.values()];
+   ca.excluded_workers = [...excludedWorkerKeys];
+ 
+-  // Численность не может быть меньше ИТР + рабочих из Формы №2.
+   const itrCount = Array.isArray(ca.itr) ? ca.itr.length : 0;
+   const workerCount = ca.workers.reduce((sum,w) => sum + (Number(w.count) || 0), 0);
+   ca.staff_total = Math.max(Number(ca.staff_total) || 0, itrCount + workerCount);
+@@ -1628,9 +2123,11 @@
+   const count = Number(prompt('Количество человек:',String(w.count||1))); if(!count || count < 1) return;
+   const ca = aiCurrentData.company_attestation;
+   const excluded = new Set((ca.excluded_workers || []).map(String));
+-  if(String(w.source || '').toLowerCase() === 'auto') excluded.add(aiWorkerKey(w));
++  const oldKey = aiWorkerKey(w);
++  if(String(w.source || '').toLowerCase() === 'auto') excluded.add(oldKey);
+   const updated = {profession,razryad,count,source:'manual'};
+-  excluded.delete(aiWorkerKey(updated));
++  const newKey = aiWorkerKey(updated);
++  if(newKey !== oldKey) excluded.delete(newKey);
+   ca.excluded_workers = [...excluded];
+   workers[index] = updated;
+   aiNormalizeCompanyAttestation(); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
+--- /mnt/data/att_v3/server.py	2026-07-28 13:33:03.000000000 +0000
++++ /mnt/data/att_v4/server.py	2026-07-29 06:30:17.939181508 +0000
+@@ -230,9 +230,10 @@
+ АТТЕСТАЦИЯ КОМПАНИИ (продукт "company_att"):
+ - Документы (СТРОГО эти 5, или 6 при генподряде — БЕЗ отдельной "Описи" и БЕЗ отдельных "Сведений о рабочих", их больше нет как самостоятельных файлов): 1.Заявление (с ФИО директора И главного бухгалтера — поле glavbukh_fio), 2.Форма №2 (ИТР — раздел 1, И рабочие — раздел 2 в ТОЙ ЖЕ форме), 3.Форма №3 (Трудовые), 4.Форма №4 (Дипломы), 5.Форма №5 (Аттестаты — сводка уже полученных индивидуальных аттестатов), 6.Форма №6 (Опыт генподрядчика — только если указана категория, при любой категории включая 4-ю).
+ - Документы теперь собираются программно (реальные таблицы Word) — твоя единственная задача здесь: правильно и полно заполнить JSON (company_attestation.itr[] и .workers[]), само формирование текста документа больше не на тебе.
+-- КРИТИЧНО ДЛЯ ФОРМЫ №2: НЕ запрашивай штатное расписание, трудовые книжки, приказы или списки персонала только ради первичного заполнения рабочих. Рабочие автоматически подбираются приложением по выбранным видам работ и затем могут быть вручную исправлены пользователем. Если вид работ понятен, обязательно заполни company_attestation.work_items и/или company_attestation.work_scope_text и НЕ добавляй вопрос о документах рабочих.
+-- Если пользователь указал общий раздел без кодов, всё равно заполни work_scope_text точной формулировкой. Для фраз «общестроительные работы», «сантехнические работы», «электромонтажные работы» приложение само развернёт нужные строки и рабочих. Не оставляй одновременно пустыми work_items и work_scope_text.
+-- Для «Общестроительные работы» при отсутствии более точного перечня ставь work_scope_text="Общестроительные работы"; не проси подтверждающие документы рабочих до этапа проверки фактического состава.
++- КРИТИЧНО ДЛЯ ФОРМЫ №2: НЕ запрашивай штатное расписание, трудовые книжки, приказы или списки персонала только ради первичного заполнения рабочих. В приложении установлен стандартный справочник «вид работ 7.* → профессии рабочих» для общестроя, фасадов, ВИК/вентиляции, наружных сетей, электрики, связи, автоматизации, холодоснабжения, технологических трубопроводов, теплоизоляции, дорог и благоустройства. Если в справочнике нет точного разряда/количества, приложение ставит редактируемый стандарт III разряд, 1 человек.
++- Если вид работ понятен, обязательно заполни company_attestation.work_items и/или company_attestation.work_scope_text и НЕ добавляй вопрос о документах рабочих. Документы о фактическом персонале нужны только на этапе проверки/корректировки, а не для разблокировки формирования пакета.
++- Если пользователь указал общий раздел без кодов, всё равно заполни work_scope_text точной формулировкой. Для фраз «общестроительные работы», «сантехнические работы», «электромонтажные работы», «дорожные работы», «благоустройство территории» приложение само развернёт нужные строки и рабочих. Не оставляй одновременно пустыми work_items и work_scope_text.
++- Для «Общестроительные работы» при отсутствии более точного перечня ставь work_scope_text="Общестроительные работы"; стандартный состав берётся из пользовательского образца сведений о рабочих и не требует отдельного запроса документов до этапа сверки фактического состава.
+ - КРИТИЧНО — КАК ОТЛИЧИТЬ ИТР ОТ РАБОЧЕГО (частая ошибка, из-за которой терялись реальные люди): НЕ угадывай роль по внешнему виду фото или по тому как человека называли раньше в разговоре. Единственный надёжный признак — специализация в ЕГО СОБСТВЕННОМ квалификационном аттестате специалиста (если он есть на фото/скане): если там написано "прораб"/"мастер"/"главный инженер"/"производитель работ" — это ИТР (иди в itr[]), даже если человек физически работает руками на объекте. В workers[] попадают только реальные рабочие профессии (каменщик, плотник-бетонщик, электромонтажник и т.п.) БЕЗ собственного аттестата специалиста. Если сомневаешься — спроси у клиента прямо "у этого человека есть аттестат прораба/мастера или нет", не молчи и не угадывай.
+ - Если клиент грузит большой архив (20+ фото) — сразу предупреди: "Для надёжности лучше присылайте по одному человеку за раз (2-3 фото), это снижает риск ошибок при распознавании — либо продолжаем этим архивом, но тогда после разбора я покажу вам ПОЛНЫЙ список кто у меня получился и как классифицирован (ИТР/рабочий), сверьте прежде чем формировать пакет".
+ - В отличие от аттестации специалиста (там опись не наша зона) — для КОМПАНИИ вспомогательные формы делаем МЫ, но именно программно, не сочиняя текст.
+--- /mnt/data/att_v3/generator_company_att_templates.py	2026-07-28 13:33:03.000000000 +0000
++++ /mnt/data/att_v4/generator_company_att_templates.py	2026-07-29 06:32:44.563177350 +0000
+@@ -395,7 +395,16 @@
+     cleaned = [str(x) for x in raw_lines if str(x).strip()]
+     if not cleaned:
+         cleaned = ['']
+-    new_paras = ''.join(_replace_para_text(style_para, line) for line in cleaned)
++    def set_para_text(para_xml: str, line: str) -> str:
++        if re.search(r'<w:t\b', para_xml):
++            return _replace_para_text(para_xml, line)
++        # В шаблоне пустые ячейки разрядов часто содержат абзац без <w:t>.
++        # Добавляем текстовый run, иначе значение разряда визуально не появляется.
++        run = f'<w:r><w:t xml:space="preserve">{_esc(line)}</w:t></w:r>'
++        if '</w:p>' in para_xml:
++            return para_xml.replace('</w:p>', run + '</w:p>', 1)
++        return f'<w:p>{run}</w:p>'
++    new_paras = ''.join(set_para_text(style_para, line) for line in cleaned)
+     return f'{tc_pr}{new_paras}</w:tc>'
+ 
+ 
+@@ -551,22 +560,18 @@
+         if old_total_idx is not None:
+             worker_template_row = rows2[w_header_idx + 3]
+             old_worker_rows = rows2[w_header_idx + 3:old_total_idx + 1]
+-            from generator_company_att import RAZRYAD_COLUMNS
++            from generator_company_att import RAZRYAD_COLUMNS, group_workers_for_form
+             totals = {r: 0 for r in RAZRYAD_COLUMNS}
+             new_worker_rows = []
+-            for i, worker in enumerate(workers, 1):
+-                razryad = str(worker.get('razryad') or '').upper().strip()
+-                try:
+-                    count = max(1, int(worker.get('count') or 1))
+-                except (TypeError, ValueError):
+-                    count = 1
++            grouped_workers = group_workers_for_form(workers)
++            for i, worker in enumerate(grouped_workers, 1):
+                 cells = [str(i), worker.get('profession', '')]
++                counts = worker.get('counts') or {}
+                 for r in RAZRYAD_COLUMNS:
+-                    value = count if r == razryad else ''
+-                    cells.append(str(value) if value != '' else '')
+-                    if r == razryad:
+-                        totals[r] += count
+-                cells.append(str(count))
++                    count = max(0, int(counts.get(r) or 0))
++                    cells.append(str(count) if count else '')
++                    totals[r] += count
++                cells.append(str(worker.get('total') or '') if worker.get('total') else '')
+                 new_worker_rows.append(_build_row(worker_template_row, cells))
+             total_cells = ['', 'Итого по разрядам:'] + [str(totals[r]) if totals[r] else '' for r in RAZRYAD_COLUMNS] + [str(sum(totals.values()))]
+             new_worker_rows.append(_build_row(rows2[old_total_idx], total_cells))
+--- /tmp/classifier_old.json	2026-07-29 06:35:10.459173213 +0000
++++ /mnt/data/att_v4/classifier_company_att.json	2026-07-29 06:33:41.847175725 +0000
+@@ -115,45 +115,48 @@
+         }
+       },
+       "7.7": {
+-        "text": "устройство тепловой изоляции наружных ограждающих конструкций и облицовка фасадов",
++        "text": "устройство тепловой изоляции наружных ограждающих конструкций",
+         "sub": {}
+       },
+       "7.8": {
+-        "text": "монтаж внутренних инженерных систем",
++        "text": "монтаж внутренних инженерных систем зданий и сооружений",
+         "sub": {
+-          "7.8.1": "водоснабжение",
+-          "7.8.2": "канализация и водостоки",
+-          "7.8.3": "отопление и теплоснабжение",
+-          "7.8.4": "вентиляция и кондиционирование воздуха",
+-          "7.8.5": "газоснабжение (жилищный фонд)"
++          "7.8.1": "монтаж систем водоснабжения, за исключением устройства пожарных кранов на автоматических установках пожаротушения",
++          "7.8.2": "монтаж систем канализации и водостоков",
++          "7.8.3": "монтаж систем отопления и теплоснабжения вентиляционных установок",
++          "7.8.4": "монтаж систем вентиляции и кондиционирования воздуха, за исключением систем противодымной вентиляции",
++          "7.8.5": "монтаж систем газоснабжения объектов жилищного фонда"
+         }
+       },
+       "7.9": {
+-        "text": "монтаж наружных инженерных сетей и сооружений: водоснабжение, канализация, тепловые сети",
+-        "sub": {}
++        "text": "монтаж наружных инженерных сетей и сооружений",
++        "sub": {
++          "7.9.1": "монтаж сетей водоснабжения и канализации",
++          "7.9.2": "монтаж тепловых сетей"
++        }
+       },
+       "7.10": {
+-        "text": "монтаж внутренних систем электроснабжения и распределительных устройств",
++        "text": "монтаж внутренних систем электроснабжения",
+         "sub": {}
+       },
+       "7.11": {
+-        "text": "монтаж наружных сетей электроснабжения и подстанций",
++        "text": "монтаж наружных сетей электроснабжения, трансформаторных подстанций и распределительных устройств",
+         "sub": {}
+       },
+       "7.12": {
+-        "text": "устройство систем связи, сигнализации и видеонаблюдения",
++        "text": "устройство систем связи и сигнализации, видеонаблюдения, за исключением систем автоматической пожарной сигнализации, систем оповещения и управления эвакуацией людей при пожаре",
+         "sub": {}
+       },
+       "7.13": {
+-        "text": "монтаж систем автоматизации",
++        "text": "монтаж систем автоматизации, за исключением потенциально опасных объектов, технических устройств",
+         "sub": {}
+       },
+       "7.14": {
+-        "text": "монтаж систем холодоснабжения",
++        "text": "монтаж систем холодоснабжения, за исключением потенциально опасных объектов, технических устройств",
+         "sub": {}
+       },
+       "7.15": {
+-        "text": "монтаж технологических трубопроводов и оборудования",
++        "text": "монтаж технологических трубопроводов и оборудования, за исключением потенциально опасных объектов, технических устройств",
+         "sub": {}
+       },
+       "7.16": {
+@@ -169,8 +172,12 @@
+         "sub": {}
+       },
+       "7.19": {
+-        "text": "устройство автомобильных дорог и улиц населённых пунктов",
+-        "sub": {}
++        "text": "устройство дорог",
++        "sub": {
++          "7.19.1": "устройство автомобильных дорог, улиц населенных пунктов",
++          "7.19.2": "устройство лесохозяйственных дорог",
++          "7.19.3": "нанесение дорожной разметки, установка дорожных знаков"
++        }
+       },
+       "7.20": {
+         "text": "устройство аэродромов",
+@@ -189,8 +196,11 @@
+         "sub": {}
+       },
+       "7.24": {
+-        "text": "благоустройство территории: дорожные одежды из тротуарных плит и асфальтобетонные покрытия",
+-        "sub": {}
++        "text": "благоустройство территории",
++        "sub": {
++          "7.24.1": "дорожные одежды с покрытием из плит тротуарных",
++          "7.24.2": "асфальтобетонные покрытия"
++        }
+       }
+     }
+   },

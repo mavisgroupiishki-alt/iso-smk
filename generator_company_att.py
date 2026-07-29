@@ -102,6 +102,369 @@ COMMON_BUNDLES = {
     'общестроительный': ['7.2', '7.3', '7.4', '7.5', '7.6'],
 }
 
+# Стандартный справочник рабочих для Формы №2.
+# Источник: пользовательский документ «ОБРАЗЕЦ Сведения о рабочих (15).docx».
+# В нём для каждого кода работ 7.* задан перечень профессий. Когда в источнике
+# не указан разряд/количество, приложение использует безопасный редактируемый
+# стандарт: III разряд, 1 человек. Пользователь может изменить или удалить строку.
+STANDARD_WORKER_RAZRYAD = 'III'
+STANDARD_WORKER_COUNT = 1
+
+COMPANY_ATT_WORKER_RULES = {'7.1': [],
+ '7.2': ['Землекоп'],
+ '7.2.1': ['Арматурщик', 'Бетонщик', 'Такелажник', 'Каменщик'],
+ '7.2.2': ['Монтажник строительных конструкций',
+           'Машинист крана автомобильного',
+           'Стропальщик',
+           'Бетонщик',
+           'Плотник',
+           'Арматурщик'],
+ '7.2.3': ['Монтажник строительных конструкций', 'Бетонщик', 'Плотник', 'Арматурщик'],
+ '7.3': [],
+ '7.3.1': ['Арматурщик',
+           'Такелажник',
+           'Машинист башенного крана',
+           'Подсобный рабочий',
+           'Электросварщик ручной сварки',
+           'Слесарь строительный'],
+ '7.3.2': ['Стропальщик', 'Монтажник строительных конструкций', 'Машинист крана'],
+ '7.3.3': ['Монтажник строительных конструкций', 'Машинист крана'],
+ '7.3.4': ['Подсобный рабочий', 'Стропальщик', 'Такелажник', 'Машинист'],
+ '7.4': [],
+ '7.4.1': ['Монтажник строительных конструкций',
+           'Каменщик',
+           'Арматурщик',
+           'Электросварщик ручной сварки',
+           'Плотник',
+           'Такелажник',
+           'Подсобный рабочий',
+           'Машинист башенного крана'],
+ '7.4.2': ['Бетонщик',
+           'Плотник',
+           'Арматурщик',
+           'Машинист башенного крана',
+           'Электросварщик ручной сварки',
+           'Такелажник',
+           'Подсобный рабочий',
+           'Слесарь строительный',
+           'Каменщик'],
+ '7.4.3': ['Бетонщик',
+           'Арматурщик',
+           'Машинист башенного крана',
+           'Слесарь строительный',
+           'Электросварщик ручной сварки',
+           'Такелажник',
+           'Подсобный рабочий',
+           'Стропальщик',
+           'Каменщик'],
+ '7.4.4': ['Монтажник строительных конструкций', 'Машинист крана автомобильного', 'Электросварщик ручной сварки'],
+ '7.4.5': ['Монтажник строительных конструкций', 'Плотник', 'Подсобный рабочий'],
+ '7.4.6': ['Машинист крана', 'Такелажник', 'Стропальщик', 'Монтажник строительных конструкций'],
+ '7.5': ['Маляр',
+         'Подсобный рабочий',
+         'Машинист аппарата безвоздушного распыления',
+         'Машинист компрессора',
+         'Изолировщик на антикоррозионной изоляции'],
+ '7.6': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
+ '7.6.1': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
+ '7.6.2': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
+ '7.6.3': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
+ '7.6.4': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
+ '7.6.5': ['Кровельщик по металлическим кровлям', 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов'],
+ '7.7': ['Изолировщик на термоизоляции'],
+ '7.8': [],
+ '7.8.1': ['Монтажник санитарно-технических систем и оборудования', 'Подсобный рабочий'],
+ '7.8.2': ['Монтажник санитарно-технических систем и оборудования', 'Подсобный рабочий'],
+ '7.8.3': ['Монтажник санитарно-технических систем и оборудования', 'Слесарь', 'Подсобный рабочий'],
+ '7.8.4': ['Монтажник систем вентиляции и пневмотранспорта',
+           'Подсобный рабочий',
+           'Монтажник санитарно-технических систем и оборудования'],
+ '7.8.5': ['Монтажник систем газоснабжения'],
+ '7.9': ['Монтажник наружных трубопроводов',
+         'Машинист крана-трубоукладчика',
+         'Электросварщик ручной сварки',
+         'Машинист автокрана',
+         'Машинист бульдозера',
+         'Стропальщик'],
+ '7.9.1': ['Монтажник наружных трубопроводов',
+           'Машинист крана-трубоукладчика',
+           'Электросварщик ручной сварки',
+           'Машинист автокрана',
+           'Машинист бульдозера',
+           'Стропальщик'],
+ '7.9.2': ['Монтажник наружных трубопроводов',
+           'Машинист крана-трубоукладчика',
+           'Электросварщик ручной сварки',
+           'Машинист автокрана',
+           'Машинист бульдозера',
+           'Стропальщик'],
+ '7.10': ['Электромонтажник по кабельным сетям',
+          'Монтажник связи-кабельщик',
+          'Подсобный рабочий',
+          'Слесарь-электромонтажник'],
+ '7.11': ['Монтажник связи-кабельщик',
+          'Электромонтажник по кабельным сетям',
+          'Такелажник',
+          'Землекоп',
+          'Электромонтажник по электрооборудованию, силовым и осветительным сетям',
+          'Машинист'],
+ '7.12': ['Электромонтер охранно-пожарной сигнализации', 'Монтажник связи-кабельщик'],
+ '7.13': ['Электромонтажник по электрооборудованию, силовым и осветительным сетям',
+          'Электросварщик ручной сварки',
+          'Монтажник приборов и систем автоматики'],
+ '7.14': ['Монтажник систем холодоснабжения'],
+ '7.15': ['Монтажник технологических трубопроводов', 'Машинист', 'Слесарь', 'Сварщик'],
+ '7.16': ['Изолировщик на термоизоляции (теплоизоляции)', 'Штукатур', 'Подсобный рабочий'],
+ '7.19': [],
+ '7.19.1': ['Дорожный рабочий', 'Машинист катка', 'Монтажник', 'Стропальщик'],
+ '7.19.2': ['Машинист экскаватора', 'Дорожный рабочий', 'Землекоп'],
+ '7.19.3': ['Маляр', 'Дорожный рабочий', 'Машинист разметочной машины'],
+ '7.24': [],
+ '7.24.1': ['Дорожный рабочий', 'Плиточник', 'Подсобный рабочий', 'Стропальщик'],
+ '7.24.2': ['Дорожный рабочий', 'Асфальтобетонщик', 'Машинист']}
+
+# Точные стандартные таблицы из страниц 4–5 источника.
+# Одна профессия может встречаться в нескольких разрядах — в готовой Форме №2
+# эти записи объединяются в одну строку с заполнением нескольких колонок.
+COMPANY_ATT_WORKER_PRESETS = {
+    'общестрой_без_фасадов': [{'profession': 'Монтажник строительных конструкций', 'razryad': 'III', 'count': 1},
+ {'profession': 'Монтажник строительных конструкций', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Плотник', 'razryad': 'II', 'count': 1},
+ {'profession': 'Слесарь строительный', 'razryad': 'III', 'count': 1},
+ {'profession': 'Стропальщик', 'razryad': 'II', 'count': 1},
+ {'profession': 'Арматурщик', 'razryad': 'III', 'count': 1},
+ {'profession': 'Арматурщик', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Электросварщик ручной сварки', 'razryad': 'III', 'count': 1},
+ {'profession': 'Электросварщик ручной сварки', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Каменщик', 'razryad': 'II', 'count': 1},
+ {'profession': 'Такелажник', 'razryad': 'II', 'count': 1},
+ {'profession': 'Бетонщик', 'razryad': 'II', 'count': 1},
+ {'profession': 'Подсобный рабочий', 'razryad': 'II', 'count': 1},
+ {'profession': 'Маляр', 'razryad': 'II', 'count': 1},
+ {'profession': 'Маляр', 'razryad': 'III', 'count': 1},
+ {'profession': 'Изолировщик на антикоррозионной изоляции', 'razryad': 'III', 'count': 1},
+ {'profession': 'Изолировщик на антикоррозионной изоляции', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Кровельщик по металлическим кровлям', 'razryad': 'III', 'count': 2},
+ {'profession': 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов', 'razryad': 'III', 'count': 1},
+ {'profession': 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Штукатур', 'razryad': 'III', 'count': 1},
+ {'profession': 'Землекоп', 'razryad': 'IV', 'count': 1}],
+    'общестрой_с_фасадами': [{'profession': 'Монтажник строительных конструкций', 'razryad': 'III', 'count': 1},
+ {'profession': 'Монтажник строительных конструкций', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Плотник', 'razryad': 'II', 'count': 1},
+ {'profession': 'Слесарь строительный', 'razryad': 'III', 'count': 1},
+ {'profession': 'Стропальщик', 'razryad': 'II', 'count': 1},
+ {'profession': 'Арматурщик', 'razryad': 'III', 'count': 1},
+ {'profession': 'Арматурщик', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Электросварщик ручной сварки', 'razryad': 'III', 'count': 1},
+ {'profession': 'Электросварщик ручной сварки', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Каменщик', 'razryad': 'II', 'count': 1},
+ {'profession': 'Такелажник', 'razryad': 'II', 'count': 1},
+ {'profession': 'Бетонщик', 'razryad': 'II', 'count': 1},
+ {'profession': 'Подсобный рабочий', 'razryad': 'II', 'count': 1},
+ {'profession': 'Маляр', 'razryad': 'II', 'count': 1},
+ {'profession': 'Изолировщик на антикоррозионной изоляции', 'razryad': 'III', 'count': 1},
+ {'profession': 'Изолировщик на антикоррозионной изоляции', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Кровельщик по металлическим кровлям', 'razryad': 'III', 'count': 2},
+ {'profession': 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов', 'razryad': 'III', 'count': 1},
+ {'profession': 'Кровельщик по рулонным кровлям и по кровлям из штучных материалов', 'razryad': 'IV', 'count': 1},
+ {'profession': 'Изолировщик на термоизоляции', 'razryad': 'III', 'count': 2}],
+}
+
+
+def _norm_text(value) -> str:
+    return re.sub(r'\s+', ' ', str(value or '').lower().replace('ё', 'е')).strip()
+
+
+def _scope_text(attestation_data: dict) -> str:
+    return _norm_text(' '.join([
+        str(attestation_data.get('work_scope_text') or ''),
+        str(attestation_data.get('scope') or ''),
+    ]))
+
+
+def is_common_construction_scope(attestation_data: dict) -> bool:
+    text = _scope_text(attestation_data)
+    return 'общестроит' in text or text == 'общестрой'
+
+
+def is_facade_scope(attestation_data: dict, work_items: list = None) -> bool:
+    text = _scope_text(attestation_data)
+    return 'фасад' in text or '7.7' in set(work_items or [])
+
+
+def resolve_work_items(attestation_data: dict) -> list:
+    """Возвращает полный дедуплицированный перечень кодов видов работ.
+
+    Общие названия разворачиваются в стандартные наборы. Режимы document_exact
+    и manual_exact сохраняют переданный перечень без расширения.
+    """
+    explicit = [str(x).strip() for x in (attestation_data.get('work_items') or []) if str(x).strip()]
+    source = _norm_text(attestation_data.get('work_items_source'))
+    if source in ('document_exact', 'manual_exact'):
+        return list(dict.fromkeys(explicit))
+
+    resolved = list(explicit)
+    scope = _scope_text(attestation_data)
+    if 'общестроит' in scope or scope == 'общестрой':
+        resolved.extend(['7.2', '7.3', '7.4', '7.5', '7.6'])
+        if 'фасад' in scope:
+            resolved.append('7.7')
+    elif any(k in scope for k in ('сантех', 'водоснабж', 'канализац', 'отоплен', 'вентиляц')):
+        resolved.extend(['7.8', '7.9'])
+    elif any(k in scope for k in ('электромонтаж', 'электрик', 'электроснабж', 'слаботоч', 'автоматизац')):
+        resolved.extend(['7.10', '7.11', '7.12', '7.13'])
+    elif any(k in scope for k in ('дорог', 'дорожн')):
+        resolved.append('7.19')
+    elif 'благоустрой' in scope:
+        resolved.append('7.24')
+    elif source == 'document':
+        return list(dict.fromkeys(explicit))
+    elif scope:
+        resolved.extend(code for code, _ in find_work_items(scope, max_items=50))
+    return list(dict.fromkeys(resolved))
+
+
+def _worker_key(worker: dict) -> tuple:
+    profession = _norm_text(worker.get('profession'))
+    razryad = str(worker.get('razryad') or '').strip().upper()
+    return profession, razryad
+
+
+def merge_workers(workers: list) -> list:
+    """Объединяет одинаковую профессию+разряд без суммирования дублей.
+
+    Автоматические повторы берут максимальное количество. Строка из документа,
+    ручная или экспертная правка заменяет автоматическую, в том числе позволяет
+    уменьшить количество.
+    """
+    merged = {}
+    order = []
+    for raw in workers or []:
+        if not isinstance(raw, dict) or not str(raw.get('profession') or '').strip():
+            continue
+        item = dict(raw)
+        item['profession'] = str(item.get('profession')).strip()
+        item['razryad'] = str(item.get('razryad') or STANDARD_WORKER_RAZRYAD).strip().upper()
+        try:
+            item['count'] = max(1, int(item.get('count') or STANDARD_WORKER_COUNT))
+        except (TypeError, ValueError):
+            item['count'] = STANDARD_WORKER_COUNT
+        key = _worker_key(item)
+        source = _norm_text(item.get('source'))
+        if key not in merged:
+            order.append(key)
+            merged[key] = item
+        elif source in ('document', 'manual', 'expert'):
+            merged[key] = item
+        else:
+            prev = merged[key]
+            prev['count'] = max(prev.get('count', 1), item['count'])
+    return [merged[k] for k in order]
+
+
+def group_workers_for_form(workers: list) -> list:
+    """Группирует несколько разрядов одной профессии в одну строку Формы №2."""
+    grouped = {}
+    order = []
+    for worker in merge_workers(workers):
+        profession = str(worker.get('profession') or '').strip()
+        key = _norm_text(profession)
+        if not key:
+            continue
+        if key not in grouped:
+            order.append(key)
+            grouped[key] = {
+                'profession': profession,
+                'counts': {r: 0 for r in RAZRYAD_COLUMNS},
+                'total': 0,
+            }
+        razryad = str(worker.get('razryad') or '').upper().strip()
+        count = max(0, int(worker.get('count') or 0))
+        if razryad in RAZRYAD_COLUMNS:
+            grouped[key]['counts'][razryad] += count
+            grouped[key]['total'] += count
+    return [grouped[k] for k in order]
+
+
+def _expanded_worker_rule_codes(work_items: list) -> list:
+    """Добавляет родительскую категорию и подпункты выбранной категории."""
+    categories = CLASSIFIER['punkt_7_smr']['categories']
+    result = []
+    for raw_code in work_items or []:
+        code = str(raw_code).strip()
+        if not code:
+            continue
+        parent = _get_category_code(code)
+        for candidate in (parent, code):
+            if candidate not in result:
+                result.append(candidate)
+        category = categories.get(code)
+        if category:
+            for sub_code in category.get('sub', {}):
+                if sub_code not in result:
+                    result.append(sub_code)
+        # Пользовательский справочник содержит новые подпункты, которых может ещё
+        # не быть в старой версии classifier_company_att.json (например 7.19.1–7.19.3).
+        for sub_code in COMPANY_ATT_WORKER_RULES:
+            if sub_code.startswith(code + '.') and sub_code not in result:
+                result.append(sub_code)
+    return result
+
+
+def build_standard_workers(work_items: list) -> list:
+    """Строит стандартный редактируемый состав по всем выбранным кодам."""
+    professions = []
+    seen = set()
+    for code in _expanded_worker_rule_codes(work_items):
+        for profession in COMPANY_ATT_WORKER_RULES.get(code, []):
+            key = _norm_text(profession)
+            if key and key not in seen:
+                seen.add(key)
+                professions.append(profession)
+    return [
+        {
+            'profession': profession,
+            'razryad': STANDARD_WORKER_RAZRYAD,
+            'count': STANDARD_WORKER_COUNT,
+            'source': 'auto',
+        }
+        for profession in professions
+    ]
+
+
+def resolve_workers(attestation_data: dict, work_items: list) -> list:
+    """Источник истины: заполненная Форма №2 → ручные правки → стандарт по видам работ."""
+    incoming = [dict(w) for w in (attestation_data.get('workers') or []) if isinstance(w, dict)]
+    confirmed = [w for w in incoming if _norm_text(w.get('source')) in ('document', 'manual', 'expert')]
+    document_workers = [w for w in confirmed if _norm_text(w.get('source')) == 'document']
+
+    # Если пользователь загрузил готовую Форму №2, не расширяем её стандартом.
+    if document_workers:
+        return merge_workers(confirmed)
+
+    excluded = set()
+    for item in attestation_data.get('excluded_workers') or []:
+        if isinstance(item, dict):
+            excluded.add(_worker_key(item))
+        else:
+            parts = str(item or '').split('|', 1)
+            excluded.add((_norm_text(parts[0]), (parts[1] if len(parts) > 1 else '').strip().upper()))
+
+    common_codes = {'7.2', '7.3', '7.4', '7.5', '7.6'}
+    use_common_preset = is_common_construction_scope(attestation_data) or common_codes.issubset(set(work_items or []))
+    if use_common_preset:
+        preset_key = 'общестрой_с_фасадами' if is_facade_scope(attestation_data, work_items) else 'общестрой_без_фасадов'
+        auto = [dict(w, source='auto') for w in COMPANY_ATT_WORKER_PRESETS[preset_key]]
+    else:
+        auto = build_standard_workers(work_items)
+
+    auto = [w for w in auto if _worker_key(w) not in excluded]
+    if not auto and incoming:
+        auto = [w for w in incoming if _norm_text(w.get('source')) == 'auto']
+    return merge_workers(auto + confirmed)
+
+
 
 def find_work_items(query: str, max_items=10):
     q = query.lower()
@@ -159,35 +522,121 @@ def render_work_items_lines(work_items: list) -> list:
 
 
 def calculate_stazh(periods: list, as_of_date: str = None) -> dict:
-    """Календарный расчёт стажа (Приказ №91): 30 дней=месяц, 12 месяцев=год."""
-    from datetime import datetime as _dt
+    """Календарный расчёт стажа: 30 дней = месяц, 12 месяцев = год.
+
+    Учитываются только периоды, которые не помечены relevant=false. Пересекающиеся
+    периоды объединяются, чтобы один и тот же день не засчитывался дважды.
+    """
+    from datetime import datetime as _dt, timedelta as _td
 
     def _parse(d):
         if not d:
             return None
         for fmt in ('%d.%m.%Y', '%d.%m.%y', '%Y-%m-%d'):
             try:
-                return _dt.strptime(d.strip(), fmt)
-            except (ValueError, AttributeError):
+                return _dt.strptime(str(d).strip(), fmt)
+            except (ValueError, TypeError, AttributeError):
                 continue
         return None
 
     today = _parse(as_of_date) or _dt.now()
-    total_days = 0
+    intervals = []
     for period in (periods or []):
+        if not isinstance(period, dict) or period.get('relevant') is False:
+            continue
         start = _parse(period.get('start'))
         end = _parse(period.get('end')) or today
         if not start or end < start:
             continue
-        total_days += (end - start).days + 1
+        intervals.append((start, end))
 
+    intervals.sort(key=lambda x: x[0])
+    merged = []
+    for start, end in intervals:
+        if not merged or start > merged[-1][1] + _td(days=1):
+            merged.append([start, end])
+        elif end > merged[-1][1]:
+            merged[-1][1] = end
+
+    total_days = sum((end - start).days + 1 for start, end in merged)
     months, days = divmod(total_days, 30)
     years, months = divmod(months, 12)
+    display = f"{years} лет {months} мес. {days} дн." if years or months else f"{days} дн."
     return {
         'years': years, 'months': months, 'days': days,
-        'total_years_rounded': round(years + months / 12 + days / 365, 1),
-        'display': f"{years} лет {months} мес. {days} дн." if years or months else f"{days} дн.",
+        'total_years_rounded': round(total_days / 365, 1),
+        'display': display,
     }
+
+
+def select_relevant_periods(person: dict, periods: list) -> list:
+    """Отбирает периоды именно по заявляемому направлению/роли.
+
+    Явные флаги relevant=true/false имеют приоритет. Если флагов нет, для
+    общестроительных руководящих ролей учитываются прораб/производитель работ,
+    мастер, начальник участка, главный инженер и строительные заместители
+    директора. Для проектировщика и сметчика применяются отдельные группы.
+    Заполненный готовый стаж из Формы №2 всё равно имеет больший приоритет и сюда
+    не попадает — эта функция нужна только когда стаж требуется рассчитать.
+    """
+    target = _norm_text(' '.join([
+        str(person.get('position') or ''),
+        str(person.get('attestat_specialization') or ''),
+        str(person.get('requested_specialization') or ''),
+    ]))
+    management_markers = (
+        'прораб', 'производитель работ', 'мастер', 'начальник участка',
+        'главный инженер', 'заместитель директора-главный инженер',
+        'зам директора-главный инженер', 'заместитель директора по строитель',
+        'зам директора по строитель', 'руководитель в области строитель',
+    )
+    design_markers = ('проектиров', 'проектирован')
+    estimate_markers = ('смет',)
+
+    if any(m in target for m in design_markers):
+        wanted = design_markers
+    elif any(m in target for m in estimate_markers):
+        wanted = estimate_markers
+    elif any(m in target for m in management_markers) or 'общестроит' in target:
+        wanted = management_markers
+    else:
+        wanted = ()
+
+    selected = []
+    for period in periods or []:
+        if not isinstance(period, dict) or period.get('relevant') is False:
+            continue
+        if period.get('relevant') is True:
+            selected.append(period)
+            continue
+        if not wanted:
+            selected.append(period)
+            continue
+        position = _norm_text(period.get('position') or period.get('job_title'))
+        if any(marker in position for marker in wanted):
+            selected.append(period)
+            continue
+        # Период директора в строительной организации учитывается только при
+        # явной отметке строительной деятельности работодателя.
+        if 'директор' in position and any(x in _norm_text(period.get('employer_activity')) for x in ('строител', 'смр')):
+            selected.append(period)
+    return selected
+
+
+def calculate_current_company_stazh(periods: list, company: dict, as_of_date: str = None) -> dict:
+    """Стаж у текущего юрлица — только периоды с is_current_employer=true либо
+    с employer, совпадающим с названием/УНП компании. Не берём просто последний период."""
+    company_name = _norm_text(company.get('name'))
+    company_unp = re.sub(r'\D', '', str(company.get('unp') or ''))
+    selected = []
+    for period in periods or []:
+        if not isinstance(period, dict):
+            continue
+        employer = _norm_text(period.get('employer'))
+        employer_unp = re.sub(r'\D', '', str(period.get('employer_unp') or ''))
+        if period.get('is_current_employer') is True or (company_name and company_name in employer) or (company_unp and company_unp == employer_unp):
+            selected.append(period)
+    return calculate_stazh(selected, as_of_date=as_of_date)
 
 
 def check_category_requirements(category, staff_total: int, has_smetchik: bool,
@@ -507,22 +956,20 @@ def gen_form2_itr(company: dict, itr_list: list, workers: list, work_scope_text:
                          "строительно-монтажных работ, работающих по основному месту работы:", size=26))
 
     if workers:
-        # Реальная структура: № | Профессия | II | III | IV | V | VI | Итого — ширины из СК76/Асецкий
+        # Реальная структура: № | Профессия | II | III | IV | V | VI | Итого.
+        # Несколько разрядов одной профессии объединяются в одну строку.
         w_widths = [548, 4254, 749, 749, 749, 749, 750, 1505]
         w_headers = ["№ п/п", "Наименование профессий рабочих"] + RAZRYAD_COLUMNS + ["Итого"]
         w_rows = []
         totals = {r: 0 for r in RAZRYAD_COLUMNS}
-        for i, w in enumerate(workers, 1):
-            razr = str(w.get('razryad', '')).upper().strip()
-            count = int(w.get('count') or 0)
+        grouped_workers = group_workers_for_form(workers)
+        for i, w in enumerate(grouped_workers, 1):
             row = [str(i), w.get('profession', '')]
             for r in RAZRYAD_COLUMNS:
-                if r == razr:
-                    row.append(str(count) if count else '')
-                    totals[r] += count
-                else:
-                    row.append('')
-            row.append(str(count) if count else '')
+                count = int((w.get('counts') or {}).get(r) or 0)
+                row.append(str(count) if count else '')
+                totals[r] += count
+            row.append(str(w.get('total') or '') if w.get('total') else '')
             w_rows.append(row)
         total_row = ["", "Итого по разрядам:"] + [str(totals[r]) if totals[r] else '' for r in RAZRYAD_COLUMNS] + [str(sum(totals.values()))]
         w_rows.append(total_row)
@@ -654,13 +1101,16 @@ def generate_company_attestation_package(company: dict, attestation_data: dict, 
 
     for person in itr_list:
         periods = person.get('employment_periods')
-        if periods and not person.get('stage_years'):
-            calc = calculate_stazh(periods, as_of_date=attestation_data.get('as_of_date'))
+        # Значения, дословно переписанные из уже заполненной Формы №2, не пересчитываем.
+        relevant_periods = select_relevant_periods(person, periods or [])
+        if relevant_periods and not person.get('stage_years'):
+            calc = calculate_stazh(relevant_periods, as_of_date=attestation_data.get('as_of_date'))
             person['stage_years'] = calc['display']
-        if periods and not person.get('stage_years_here'):
-            last_period = periods[-1] if periods else None
-            if last_period:
-                calc_here = calculate_stazh([last_period], as_of_date=attestation_data.get('as_of_date'))
+        if relevant_periods and not person.get('stage_years_here'):
+            calc_here = calculate_current_company_stazh(
+                relevant_periods, company, as_of_date=attestation_data.get('as_of_date')
+            )
+            if calc_here['years'] or calc_here['months'] or calc_here['days']:
                 person['stage_years_here'] = calc_here['display']
 
     warnings = []
@@ -705,12 +1155,10 @@ def generate_company_attestation_package(company: dict, attestation_data: dict, 
         })
         return {'docs': docs, 'warnings': warnings}
 
-    work_items = attestation_data.get('work_items') or []
-    if not work_items and attestation_data.get('work_scope_text'):
-        found = find_work_items(attestation_data['work_scope_text'])
-        work_items = [code for code, _ in found]
+    work_items = resolve_work_items(attestation_data)
+    workers = resolve_workers(attestation_data, work_items)
     if not work_items:
-        work_items = ['7.4.1']
+        warnings.append('Не определены виды работ для заявления. Заполните work_items или work_scope_text.')
 
     p("1. Заявление")
     docs.append({'name': f"{org} - 1. Заявление.docx",
