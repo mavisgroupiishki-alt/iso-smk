@@ -2013,9 +2013,65 @@ function aiBuildStandardWorkers(workItems) {
   return professions;
 }
 
+function aiStageTextLines(value) {
+  const values = Array.isArray(value) ? value : [value];
+  const out = [];
+  values.forEach(item => {
+    if(item === undefined || item === null) return;
+    String(item).split(/[\r\n]+/).forEach(part => {
+      const text = part.replace(/\s+/g,' ').trim();
+      if(text && !['—','-','–'].includes(text)) out.push(text);
+    });
+  });
+  return out;
+}
+
+function aiNormalizeItrStage(person) {
+  if(!person || typeof person !== 'object') return person;
+
+  const form2Lines = aiStageTextLines(person.stage_form2_text);
+  const legacyLines = aiStageTextLines(person.stage_years);
+  const legacySource = String(person.stage_source || '').toLowerCase();
+
+  // Completed Form №2 is only an independent reference. The backend must calculate
+  // the live result from employment_periods extracted from the labour book.
+  if(!aiHasMeaningfulValue(person.stage_reference_total)) {
+    person.stage_reference_total = form2Lines[0]
+      || (['document','document_reference'].includes(legacySource) ? legacyLines[0] : '');
+  }
+  if(!aiHasMeaningfulValue(person.stage_reference_here)) {
+    person.stage_reference_here = form2Lines[1]
+      || (['document','document_reference'].includes(legacySource) ? legacyLines[1] : '');
+  }
+
+  if(['document','document_reference'].includes(legacySource)) {
+    person.stage_years = '';
+    person.stage_years_here = '';
+    person.stage_source = 'document_reference';
+    person.stage_is_final = false;
+  }
+
+  if(!Array.isArray(person.employment_periods)) person.employment_periods = [];
+  if(!Array.isArray(person.uncertain_fields)) person.uncertain_fields = [];
+  return person;
+}
+
+function aiPersonHasFinalStage(person) {
+  if(!person) return false;
+  aiNormalizeItrStage(person);
+  return String(person.stage_source || '').toLowerCase() === 'calculated'
+    && person.stage_is_final === true
+    && !person.stage_needs_review
+    && aiHasMeaningfulValue(person.stage_years)
+    && aiHasMeaningfulValue(person.stage_years_here);
+}
+
+
 function aiNormalizeCompanyAttestation() {
   const ca = aiCurrentData.company_attestation;
   if(!ca) return;
+
+  if(Array.isArray(ca.itr)) ca.itr = ca.itr.map(p => aiNormalizeItrStage({...p}));
 
   ca.work_items = [...new Set((ca.work_items || []).filter(Boolean).map(String))];
   let preset = aiFindCompanyAttPreset(ca);
@@ -2172,15 +2228,47 @@ function aiRenderCard(data) {
   if(data.attestation !== undefined) aiCurrentData.attestation = mergeDefined(aiCurrentData.attestation, data.attestation);
   if(data.company_attestation !== undefined) {
     const incoming = data.company_attestation || {};
-    aiCurrentData.company_attestation = mergeDefined(aiCurrentData.company_attestation, incoming);
-    ['work_items','workers','experience_objects'].forEach(k => {
-      if(incoming[k] !== undefined) aiCurrentData.company_attestation[k] = Array.isArray(incoming[k]) ? incoming[k] : [];
+    const previous = aiCurrentData.company_attestation || {};
+    // Коллекции обрабатываем отдельно. Раньше mergeDefined сначала целиком заменял
+    // itr/workers/work_items неполным ответом ИИ, и только потом пытался их объединить —
+    // к этому моменту исходный стаж и трудовые уже были потеряны.
+    const scalarPatch = {};
+    Object.entries(incoming).forEach(([k,v]) => {
+      if(!['itr','work_items','workers','experience_objects'].includes(k)) scalarPatch[k] = v;
     });
+    aiCurrentData.company_attestation = mergeDefined(previous, scalarPatch);
+
     if(incoming.itr !== undefined) {
       aiCurrentData.company_attestation.itr = aiMergeItrRecords(
-        aiCurrentData.company_attestation.itr, Array.isArray(incoming.itr) ? incoming.itr : [], false
+        previous.itr, Array.isArray(incoming.itr) ? incoming.itr : [], false
       );
+    } else if(previous.itr !== undefined) {
+      aiCurrentData.company_attestation.itr = previous.itr;
     }
+
+    ['work_items','workers','experience_objects'].forEach(k => {
+      if(incoming[k] === undefined) {
+        if(previous[k] !== undefined) aiCurrentData.company_attestation[k] = previous[k];
+        return;
+      }
+      const incomingList = Array.isArray(incoming[k]) ? incoming[k] : [];
+      if(k === 'workers') {
+        const hasDocumentWorkers = Array.isArray(previous.workers) && previous.workers.some(w => String(w?.source || '').toLowerCase() === 'document');
+        const incomingIsAuthoritative = incomingList.some(w => ['document','manual','expert'].includes(String(w?.source || '').toLowerCase()));
+        aiCurrentData.company_attestation.workers = hasDocumentWorkers && !incomingIsAuthoritative
+          ? previous.workers : incomingList;
+      } else if(k === 'work_items') {
+        const previousExact = ['document_exact','manual_exact'].includes(String(previous.work_items_source || '').toLowerCase());
+        const incomingExact = ['document_exact','manual_exact'].includes(String(incoming.work_items_source || '').toLowerCase());
+        aiCurrentData.company_attestation.work_items = previousExact && !incomingExact
+          ? previous.work_items : incomingList;
+        if(previousExact && !incomingExact) {
+          aiCurrentData.company_attestation.work_items_source = previous.work_items_source;
+        }
+      } else {
+        aiCurrentData.company_attestation[k] = incomingList;
+      }
+    });
   }
   aiNormalizeCompanyAttestation();
 
@@ -2295,8 +2383,8 @@ function aiRenderCard(data) {
           ['Учебное заведение', p.diploma_institution],
           ['Специальность', p.diploma_speciality],
           ['Квалификация', p.diploma_qualification],
-          ['Стаж по деятельности', p.stage_years],
-          ['Стаж у нанимателя', p.stage_years_here],
+          ['Стаж по деятельности', p.stage_years || (p.stage_reference_total ? `${p.stage_reference_total} (справочно, будет пересчитан)` : '')],
+          ['Стаж у нанимателя', p.stage_years_here || (p.stage_reference_here ? `${p.stage_reference_here} (справочно, будет пересчитан)` : '')],
           ['Трудовая книжка №', p.trudovaya_number],
           ['Приказ о приёме', p.order_number ? `№${p.order_number}${p.hire_date ? ' от '+p.hire_date : ''}` : ''],
           ['Аттестат №', p.attestat_number],
@@ -2402,14 +2490,30 @@ function aiNormalizeFioKey(fio) {
 function aiMergeItrRecords(baseList, patchList, sourceAuthoritative=false) {
   const order = [];
   const map = new Map();
+  const cloneValue = value => Array.isArray(value) || (value && typeof value === 'object')
+    ? JSON.parse(JSON.stringify(value)) : value;
   const put = (person, isPatch) => {
     if(!person || typeof person !== 'object') return;
     const key = aiNormalizeFioKey(person.fio) || `__row_${order.length}`;
     if(!map.has(key)) { map.set(key, {}); order.push(key); }
     const merged = {...map.get(key)};
+    const existingSource = String(merged.source || '').toLowerCase();
+    const incomingSource = String(person.source || '').toLowerCase();
+    const existingIsDocument = existingSource === 'document';
+    const incomingCanOverrideDocument = ['document','manual','expert'].includes(incomingSource);
+
     Object.entries(person).forEach(([field, value]) => {
-      const accept = sourceAuthoritative && isPatch ? aiHasMeaningfulValue(value) : value !== undefined;
-      if(accept) merged[field] = Array.isArray(value) ? JSON.parse(JSON.stringify(value)) : value;
+      if(value === undefined) return;
+      const meaningful = aiHasMeaningfulValue(value);
+      let accept = sourceAuthoritative && isPatch ? meaningful : true;
+
+      // Заполненные Формы №2–5 — источник истины. Неполный ответ модели не должен
+      // стирать стаж, трудовые книжки, вкладыши, дипломы или аттестаты пустой строкой.
+      if(isPatch && existingIsDocument && !incomingCanOverrideDocument) {
+        if(aiHasMeaningfulValue(merged[field])) accept = false;
+        else accept = meaningful;
+      }
+      if(accept) merged[field] = cloneValue(value);
     });
     map.set(key, merged);
   };
@@ -2479,6 +2583,89 @@ async function aiDetectCompanyLookupQuery(text) {
     if (name && textLower.includes(name)) return name;
   }
   return null;
+}
+
+function aiIsRedundantWorkerQuestion(text) {
+  const value = String(text || '').toLowerCase().replace(/ё/g,'е');
+  return /(?:уточн|укажите|сообщите|нужн)[\s\S]{0,180}(?:количеств|разряд)[\s\S]{0,180}рабоч/.test(value)
+    || /рабоч[\s\S]{0,180}(?:количеств|разряд)[\s\S]{0,180}(?:уточн|укажите|сообщите)/.test(value);
+}
+
+function aiRemoveRedundantWorkerRequest(message) {
+  let text = String(message || '');
+  // Удаляем отдельный нумерованный пункт с просьбой указать количество/разряды.
+  text = text.replace(/(?:^|\n)\s*\d+[.)]\s*[^\n]*(?:количеств|разряд)[^\n]*рабоч[^\n]*(?=\n|$)/gim, '\n');
+  // И обычное предложение, если модель сформулировала вопрос без списка.
+  text = text.replace(/(?:уточните|укажите|сообщите|нужно указать|необходимо указать)[^.!?\n]{0,240}(?:количество|разряды)[^.!?\n]{0,240}рабоч[^.!?\n]*[.!?]?/gim, '');
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function aiIsRedundantStageRequest(text) {
+  const value = String(text || '').toLowerCase().replace(/ё/g,'е');
+  return /employment_periods|точн(?:ые|ых)\s+дат|ставлю\s*[«"]?01\.01|фото\s+трудов|скан(?:ы|ов)?\s+трудов|стаж\s+(?:кажется|выглядит)\s+неполн|пересчитаю[^.!?\n]{0,120}точн/.test(value)
+    || /почему[^.!?\n]{0,120}стаж[^.!?\n]{0,120}неполн/.test(value);
+}
+
+function aiRemoveRedundantStageRequest(message) {
+  let text = String(message || '');
+  // Удаляем абзацы/пункты, где модель просит даты или объясняет employment_periods,
+  // когда готовые две строки стажа уже находятся в карточке.
+  text = text.replace(/(?:^|\n)\s*\d+[.)]\s*[^\n]*(?:точн(?:ые|ых)\s+дат|employment_periods|01\.01|фото\s+трудов|скан(?:ы|ов)?\s+трудов)[^\n]*(?=\n|$)/gim, '\n');
+  text = text.replace(/[^\n]*(?:employment_periods|ставлю\s*[«"]?01\.01|пришлите[^\n]*(?:фото|скан)[^\n]*трудов|нужн[^\n]*точн[^\n]*дат)[^\n]*(?=\n|$)/gim, '');
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function aiFinalizeCompanyAttestationReply(parsed) {
+  const result = {...(parsed || {})};
+  const isCompanyAtt = aiCurrentData.certification?.standard === 'company_att';
+  if(!isCompanyAtt) return result;
+
+  const ca = aiCurrentData.company_attestation || {};
+  const hasAutoWorkers = Array.isArray(ca.work_items) && ca.work_items.length > 0
+    && Array.isArray(ca.workers) && ca.workers.length > 0;
+  const itr = Array.isArray(ca.itr) ? ca.itr : [];
+  const allStageReady = itr.length > 0 && itr.every(aiPersonHasFinalStage);
+  const hasLabourData = itr.some(p =>
+    (Array.isArray(p?.employment_periods) && p.employment_periods.length > 0)
+    || aiHasMeaningfulValue(p?.trudovaya_number)
+    || (Array.isArray(p?.trudovye_numbers) && p.trudovye_numbers.length > 0)
+  );
+
+  const originalQuestions = Array.isArray(result.questions) ? result.questions : [];
+  result.questions = originalQuestions.filter(q => {
+    const text = typeof q === 'string' ? q : (q?.text || q?.question || '');
+    if(hasAutoWorkers && aiIsRedundantWorkerQuestion(text)) return false;
+    // Once labour-book data is present, incomplete chronology must not block the
+    // package: the generator will calculate the confirmed part and mark review
+    // fields yellow. Ask for labour books only when there is no labour source at all.
+    if(hasLabourData && aiIsRedundantStageRequest(text)) return false;
+    return true;
+  });
+
+  const originalMessage = String(result.message || '');
+  const hadWorkerRequest = hasAutoWorkers && (
+    aiIsRedundantWorkerQuestion(originalMessage)
+    || result.questions.length !== originalQuestions.length
+  );
+  const hadStageRequest = hasLabourData && aiIsRedundantStageRequest(originalMessage);
+
+  let cleaned = originalMessage;
+  if(hadWorkerRequest) cleaned = aiRemoveRedundantWorkerRequest(cleaned);
+  if(hadStageRequest) cleaned = aiRemoveRedundantStageRequest(cleaned);
+
+  const confirmations = [];
+  if(hadWorkerRequest) confirmations.push('Рабочие для Формы №2 уже подставлены автоматически по выбранным видам работ.');
+  if(hadStageRequest) confirmations.push(allStageReady
+    ? 'Стаж рассчитан автоматически по точным периодам из трудовой книжки.'
+    : 'Стаж будет рассчитан автоматически по подтверждённым периодам трудовой; неполные или неуверенные данные в пакете выделятся жёлтым.');
+
+  if((hadWorkerRequest || hadStageRequest) && (!cleaned || aiIsRedundantStageRequest(cleaned))) {
+    cleaned = confirmations.join('\n\n');
+  } else if(confirmations.length) {
+    cleaned += (cleaned ? '\n\n' : '') + confirmations.join('\n\n');
+  }
+  result.message = cleaned;
+  return result;
 }
 
 async function aiSend() {
@@ -2586,8 +2773,7 @@ async function aiSend() {
 
     if(!result.success) throw new Error(result.error || 'Ошибка сервера');
 
-    const parsed = aiParseResponse(result.text);
-    aiHistory.push({role:'assistant', content: result.text});
+    let parsed = aiParseResponse(result.text);
 
     if(parsed.data || Object.keys(authoritativeSourceData).length) {
       const dataForCard = Object.keys(authoritativeSourceData).length
@@ -2595,6 +2781,11 @@ async function aiSend() {
         : parsed.data;
       aiRenderCard(dataForCard);
     }
+    // После детерминированной нормализации карточки удаляем бессмысленный запрос
+    // количества/разрядов: эти данные уже рассчитаны справочником приложения.
+    parsed = aiFinalizeCompanyAttestationReply(parsed);
+    const cleanHistoryPayload = JSON.stringify(parsed);
+    aiHistory.push({role:'assistant', content: cleanHistoryPayload});
     aiAddMsg('ai', parsed.message || result.text, parsed.questions);
 
   } catch(e) {

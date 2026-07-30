@@ -288,8 +288,13 @@ def _parse_form2(doc) -> dict:
                 "education_full_text": education,
                 "diplomas": diplomas,
                 "diploma_number": diplomas[0].get("number", "") if diplomas else _extract_number(" ".join(education), "diploma"),
-                "stage_years": stage[0] if len(stage) > 0 else "",
-                "stage_years_here": stage[1] if len(stage) > 1 else "",
+                # The completed Form 2 is only a reference. The live values are
+                # calculated independently from labour-book employment periods.
+                "stage_reference_total": stage[0] if len(stage) > 0 else "",
+                "stage_reference_here": stage[1] if len(stage) > 1 else "",
+                "stage_form2_text": stage,
+                "stage_source": "document_reference" if stage else "",
+                "stage_is_final": False,
                 "trudovye_numbers": labour_docs,
                 "trudovaya_number": labour_docs[0] if labour_docs else "",
                 "trudovaya_form2_text": labour,
@@ -412,8 +417,8 @@ def _merge_person(base: dict, patch: dict, source_wins: bool = True) -> dict:
     out = deepcopy(base or {})
     list_fields = {
         "education_full_text", "diplomas", "diploma_numbers", "trudovye_numbers",
-        "trudovaya_form2_text", "attestat_form2_text", "attestat_form5_text",
-        "employment_periods", "attestats",
+        "stage_form2_text", "trudovaya_form2_text", "attestat_form2_text", "attestat_form5_text",
+        "employment_periods", "attestats", "stage_review_reasons",
     }
     for key, value in (patch or {}).items():
         if not _nonempty(value):
@@ -421,7 +426,7 @@ def _merge_person(base: dict, patch: dict, source_wins: bool = True) -> dict:
         if key in list_fields:
             existing = out.get(key) or []
             if source_wins and key in {
-                "education_full_text", "diploma_numbers", "trudovye_numbers",
+                "education_full_text", "diploma_numbers", "trudovye_numbers", "stage_form2_text",
                 "trudovaya_form2_text", "attestat_form2_text", "attestat_form5_text",
             }:
                 out[key] = deepcopy(value)

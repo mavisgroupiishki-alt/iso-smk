@@ -1,0 +1,1906 @@
+--- a/index.html
++++ b/index.html
+@@ -2028,34 +2028,44 @@
+ 
+ function aiNormalizeItrStage(person) {
+   if(!person || typeof person !== 'object') return person;
+-  if(!aiHasMeaningfulValue(person.stage_years)) {
+-    person.stage_years = person.stage_total || person.total_stage || person.experience_total || person.stazh_total || person.stage_years;
+-  }
+-  if(!aiHasMeaningfulValue(person.stage_years_here)) {
+-    person.stage_years_here = person.stage_company || person.company_stage || person.experience_here || person.stazh_here || person.stage_years_here;
+-  }
+-  const sourceLines = aiStageTextLines(person.stage_form2_text);
+-  const combined = aiStageTextLines(person.stage_years);
+-  if(combined.length > 1 && !aiHasMeaningfulValue(person.stage_years_here)) {
+-    person.stage_years = combined[0];
+-    person.stage_years_here = combined[1];
+-  } else if(combined.length === 1 && aiHasMeaningfulValue(person.stage_years)) {
+-    person.stage_years = combined[0];
+-  }
+-  if(!aiHasMeaningfulValue(person.stage_years) && sourceLines.length) person.stage_years = sourceLines[0];
+-  if(!aiHasMeaningfulValue(person.stage_years_here) && sourceLines.length > 1) person.stage_years_here = sourceLines[1];
+-  if(sourceLines.length || String(person.stage_source || '').toLowerCase() === 'document') {
+-    person.stage_source = 'document';
+-    person.stage_is_final = aiHasMeaningfulValue(person.stage_years) && aiHasMeaningfulValue(person.stage_years_here);
+-  }
++
++  const form2Lines = aiStageTextLines(person.stage_form2_text);
++  const legacyLines = aiStageTextLines(person.stage_years);
++  const legacySource = String(person.stage_source || '').toLowerCase();
++
++  // Completed Form №2 is only an independent reference. The backend must calculate
++  // the live result from employment_periods extracted from the labour book.
++  if(!aiHasMeaningfulValue(person.stage_reference_total)) {
++    person.stage_reference_total = form2Lines[0]
++      || (['document','document_reference'].includes(legacySource) ? legacyLines[0] : '');
++  }
++  if(!aiHasMeaningfulValue(person.stage_reference_here)) {
++    person.stage_reference_here = form2Lines[1]
++      || (['document','document_reference'].includes(legacySource) ? legacyLines[1] : '');
++  }
++
++  if(['document','document_reference'].includes(legacySource)) {
++    person.stage_years = '';
++    person.stage_years_here = '';
++    person.stage_source = 'document_reference';
++    person.stage_is_final = false;
++  }
++
++  if(!Array.isArray(person.employment_periods)) person.employment_periods = [];
++  if(!Array.isArray(person.uncertain_fields)) person.uncertain_fields = [];
+   return person;
+ }
+ 
+ function aiPersonHasFinalStage(person) {
+   if(!person) return false;
+   aiNormalizeItrStage(person);
+-  return aiHasMeaningfulValue(person.stage_years) && aiHasMeaningfulValue(person.stage_years_here);
+-}
++  return String(person.stage_source || '').toLowerCase() === 'calculated'
++    && person.stage_is_final === true
++    && !person.stage_needs_review
++    && aiHasMeaningfulValue(person.stage_years)
++    && aiHasMeaningfulValue(person.stage_years_here);
++}
++
+ 
+ function aiNormalizeCompanyAttestation() {
+   const ca = aiCurrentData.company_attestation;
+@@ -2373,8 +2383,8 @@
+           ['Учебное заведение', p.diploma_institution],
+           ['Специальность', p.diploma_speciality],
+           ['Квалификация', p.diploma_qualification],
+-          ['Стаж по деятельности', p.stage_years],
+-          ['Стаж у нанимателя', p.stage_years_here],
++          ['Стаж по деятельности', p.stage_years || (p.stage_reference_total ? `${p.stage_reference_total} (справочно, будет пересчитан)` : '')],
++          ['Стаж у нанимателя', p.stage_years_here || (p.stage_reference_here ? `${p.stage_reference_here} (справочно, будет пересчитан)` : '')],
+           ['Трудовая книжка №', p.trudovaya_number],
+           ['Приказ о приёме', p.order_number ? `№${p.order_number}${p.hire_date ? ' от '+p.hire_date : ''}` : ''],
+           ['Аттестат №', p.attestat_number],
+@@ -2615,12 +2625,20 @@
+     && Array.isArray(ca.workers) && ca.workers.length > 0;
+   const itr = Array.isArray(ca.itr) ? ca.itr : [];
+   const allStageReady = itr.length > 0 && itr.every(aiPersonHasFinalStage);
++  const hasLabourData = itr.some(p =>
++    (Array.isArray(p?.employment_periods) && p.employment_periods.length > 0)
++    || aiHasMeaningfulValue(p?.trudovaya_number)
++    || (Array.isArray(p?.trudovye_numbers) && p.trudovye_numbers.length > 0)
++  );
+ 
+   const originalQuestions = Array.isArray(result.questions) ? result.questions : [];
+   result.questions = originalQuestions.filter(q => {
+     const text = typeof q === 'string' ? q : (q?.text || q?.question || '');
+     if(hasAutoWorkers && aiIsRedundantWorkerQuestion(text)) return false;
+-    if(allStageReady && aiIsRedundantStageRequest(text)) return false;
++    // Once labour-book data is present, incomplete chronology must not block the
++    // package: the generator will calculate the confirmed part and mark review
++    // fields yellow. Ask for labour books only when there is no labour source at all.
++    if(hasLabourData && aiIsRedundantStageRequest(text)) return false;
+     return true;
+   });
+ 
+@@ -2629,7 +2647,7 @@
+     aiIsRedundantWorkerQuestion(originalMessage)
+     || result.questions.length !== originalQuestions.length
+   );
+-  const hadStageRequest = allStageReady && aiIsRedundantStageRequest(originalMessage);
++  const hadStageRequest = hasLabourData && aiIsRedundantStageRequest(originalMessage);
+ 
+   let cleaned = originalMessage;
+   if(hadWorkerRequest) cleaned = aiRemoveRedundantWorkerRequest(cleaned);
+@@ -2637,7 +2655,9 @@
+ 
+   const confirmations = [];
+   if(hadWorkerRequest) confirmations.push('Рабочие для Формы №2 уже подставлены автоматически по выбранным видам работ.');
+-  if(hadStageRequest) confirmations.push('Стаж уже перенесён из заполненной Формы №2 и не требует повторного расчёта.');
++  if(hadStageRequest) confirmations.push(allStageReady
++    ? 'Стаж рассчитан автоматически по точным периодам из трудовой книжки.'
++    : 'Стаж будет рассчитан автоматически по подтверждённым периодам трудовой; неполные или неуверенные данные в пакете выделятся жёлтым.');
+ 
+   if((hadWorkerRequest || hadStageRequest) && (!cleaned || aiIsRedundantStageRequest(cleaned))) {
+     cleaned = confirmations.join('\n\n');
+--- a/server.py
++++ b/server.py
+@@ -234,10 +234,10 @@
+ - Оба продукта технически реализованы. НЕ путай их и НЕ подменяй один другим молча.
+ - Если клиент прислал архив с несколькими людьми (диплом+трудовая) и файлом "Перечень копий" — почти всегда это данные для company_att (Форма №2/3/4/5 берут именно такие данные по каждому ИТР), но перед этим убедись что у людей уже есть или готовятся индивидуальные аттестаты (продукт "att") — Форма №5 ссылается на них.
+ - ВСЕГДА используй данные о стаже/образовании, если они уже написаны в присланном файле — не спрашивай то, что уже есть.
+-- КРИТИЧНО — ЗАПОЛНЕННЫЕ ФОРМЫ №1–5 ЯВЛЯЮТСЯ ИСТОЧНИКОМ ИСТИНЫ: если пользователь прислал уже заполненные Заявление/Форму №2/Форму №3/Форму №4/Форму №5, переписывай из них данные ДОСЛОВНО и не "улучшай" должности, названия учреждений, номера документов, виды работ, рабочих или стаж.
++- КРИТИЧНО — ЗАПОЛНЕННЫЕ ФОРМЫ №1–5 ЯВЛЯЮТСЯ ИСТОЧНИКОМ ИСТИНЫ для реквизитов, должностей, образования, трудовых книжек, аттестатов, видов работ и рабочих. Единственное исключение — две итоговые строки стажа в Форме №2: их сохраняй только как справочную сверку, а фактический стаж всегда рассчитывает бэкенд по хронологии трудовой книжки.
+ - Из заполненного Заявления перенеси ВСЮ шапку: полное наименование, адрес, р/с, банк, БИК, УНП, телефон, e-mail; перенеси ВСЕ перечисленные коды видов работ, а не только несколько первых. В таком случае поставь company_attestation.work_items_source="document".
+ - Из заполненной Формы №2 перенеси ВСЕХ ИТР и ВСЕХ рабочих, их точные должности, разряды, количество и итоговые значения. Для рабочих поставь source="document". Не заменяй "Производитель работ (прораб)" на "Инженер по строительству" и не сокращай "Заместитель директора-главный инженер" до "Главный инженер".
+-- Если в заполненной Форме №2 уже указан стаж двумя строками (общий по заявляемому виду и у данного юрлица), сохрани stage_years и stage_years_here ДОСЛОВНО. Бэкенд рассчитывает стаж только когда эти поля отсутствуют.
++- Если в заполненной Форме №2 уже указан стаж двумя строками, сохрани его ТОЛЬКО как stage_reference_total и stage_reference_here для контрольного сравнения. Никогда не записывай эти цифры как рассчитанный стаж: stage_years и stage_years_here бэкенд всегда рассчитывает сам по записям трудовой книжки.
+ - Если у человека несколько дипломов, трудовых книжек/вкладышей или несколько строк аттестата — сохрани ВСЕ значения в diplomas[], trudovye_numbers[], trudovaya_form2_text, attestat_form2_text и attestat_form5_text. Не оставляй только последний документ.
+ - Текст аттестата в Форме №2 и Форме №5 может отличаться: в attestat_form2_text перенеси ровно колонку 7 Формы №2, а в attestat_form5_text — ровно колонку 4 Формы №5 со сроком действия. Не подменяй одно другим.
+ - Во всех формах подпись берётся только из текущих company.name/form/director_fio/director_position. Никогда не оставляй реквизиты или директора из шаблона.
+@@ -257,19 +257,18 @@
+ - Генподряд (пункт 6) НИКОГДА не бывает без пункта 7 — если клиент просит генподряд, обязательно спроси и заяви виды работ тоже.
+ - Простой подряд (только пункт 7, без генподряда) — вполне самостоятельный вариант, category остаётся null/не указан.
+ - Категорию (1-4) называет клиент, но ты ОБЯЗАН проверить реалистичность по штату: 4я=от 10 чел, 3я=от 50, 2я=от 150, 1я=от 600 (по основному месту работы), плюс обязательный аттестованный сметчик для любой категории генподряда, плюс для категорий 1-3 — 2 подтверждённых объекта (введены в эксплуатацию не позднее 5 лет назад, генподрядчик привлекал субподряд, текущий ремонт не считается) и стаж владения предыдущей категорией (3я нужен 1 год на 4й, 2я — 2 года на 3й, 1я — 5 лет на 2й). Если что-то не сходится — прямо предупреди клиента и предложи реалистичный вариант (например начать с 4й категории), не формируй пакет с заведомо провальной категорией молча.
+-- РАСЧЁТ СТАЖА ПО РОЛЯМ (для Формы ИТР) — стаж считается не общий, а по совокупности конкретных должностей:
+-  прораб + мастер + начальник участка + зам.директора по строительству + зам.директора-главный инженер + главный инженер — сумма стажа по этим должностям.
+-  Директор: если он НЕ закрывает своим аттестатом ни одно направление работ — стаж не важен, ставь любой. Если закрывает — считай стаж как директор в строительной фирме (можно проверить по факту что фирма была строительной, если есть сомнения — предложи справку-расшифровку).
+-  Руководитель в области строительства (генподряд): минимум 5 лет на руководящих должностях — тот же список должностей что выше.
+-  Зам.директора-ГИ: тот же список должностей, аналогично директору по логике "закрывает направление или нет".
+-  Инженер-проектировщик: считай стаж отдельно, только в проектировании (не в СМР).
+-  Инженер-сметчик: минимум 2 года в сметном деле, ИЛИ если у человека уже есть аттестат — этого достаточно, дополнительно стаж можно не проверять строго.
+-  Если стаж на грани/непонятен по документам — предложи подготовить справку-расшифровку (как и для аттестации специалиста).
+-- КРИТИЧНО ПРО СТАЖ — ПРИОРИТЕТ ИСТОЧНИКОВ:
+-  1) Если в заполненной Форме №2 уже стоят итоговые значения стажа, это окончательные официальные данные. Сохрани stage_years и stage_years_here ДОСЛОВНО, поставь stage_source="document" и stage_is_final=true. НЕ пересчитывай их, НЕ требуй точных дат и НЕ объясняй пользователю устройство employment_periods.
+-  2) Только если итогового стажа в Форме №2 нет, но в трудовой видны точные даты приёма/увольнения, перепиши их в employment_periods[] — бэкенд рассчитает стаж.
+-  3) Если виден только год, НЕ придумывай 01.01 и не создавай ложную точность. Сохрани год как текст/примечание и попроси более читаемый скан только тогда, когда отсутствует готовый итоговый стаж и без точных дат действительно нельзя заполнить форму.
+-- ЗАПРЕЩЕНО для company_att: если stage_years/stage_years_here или stage_form2_text уже заполнены, не пиши «стаж кажется неполным», «нужны точные даты», «пришлите фото трудовой» и не предлагай пересчитывать его заново.
++- РАСЧЁТ СТАЖА ПО ТРУДОВОЙ — МОДЕЛЬ НИКОГДА НЕ СЧИТАЕТ АРИФМЕТИКУ САМА. Твоя задача — дословно извлечь КАЖДУЮ запись трудовой книжки и каждого вкладыша в employment_periods[], а бэкенд объединит пересечения и рассчитает годы/месяцы/дни:
++  • start/end — только полные реально видимые даты ДД.ММ.ГГГГ; для «по настоящее время» end=null.
++  • Если виден только год или часть даты, НЕ ставь 01.01. Оставь start/end пустыми, запиши исходное чтение в start_text/end_text и добавь поле в uncertain_fields.
++  • position — точная должность из записи; employer — точное название работодателя; employer_activity — строительство/проектирование/сметное дело только если это подтверждается документами или названием.
++  • Рабочие профессии не включаются в стаж ИТР. Прораб, мастер, начальник участка, главный инженер, заместитель директора по строительству и заместитель директора-главный инженер включаются в строительный руководящий стаж.
++  • Обычная запись «Директор» НЕ заменяет стаж главного инженера/прораба. Она включается в такое направление только если в трудовой есть отдельная запись о переводе/совмещении на строительную должность; сохрани её в secondary_position.
++  • Проектировщику учитывай только проектирование; сметчику — только сметное дело.
++  • is_current_employer=true только для текущей компании; employer_unp заполняй, если виден.
++  • relevant=false ставь лишь при явном несоответствии. При сомнении оставь relevant=null и заполни uncertain_fields/confidence — тогда бэкенд покажет результат жёлтым.
++- Значения стажа из готовой Формы №2 НЕ являются расчётом. Перенеси их только в stage_reference_total/stage_reference_here для сверки. Бэкенд НИКОГДА не подставляет их в stage_years/stage_years_here: если точных записей трудовой недостаточно, в документе появится «ТРЕБУЕТ УТОЧНЕНИЯ» с жёлтым выделением.
++- КРИТИЧНО: не отвечай пользователю техническим объяснением про employment_periods и не проси вручную посчитать итоговый стаж. Извлеки максимум доступных записей трудовой; пакет разрешено формировать даже при неполных/неразборчивых периодах — рассчитанный подтверждённый минимум либо «ТРЕБУЕТ УТОЧНЕНИЯ» будет выделен жёлтым.
++- ЖЁЛТОЕ ВЫДЕЛЕНИЕ В ГОТОВОМ ПАКЕТЕ: любое отсутствующее поле, неразборчивое значение, конфликт источников, частичная дата, предположительное чтение или расчёт на неполной хронологии должно сохранять uncertain_fields/needs_review/confidence<0.85. Генератор выделит такое значение жёлтым. Не скрывай сомнение и не заменяй его прочерком без пометки.
+ - КРИТИЧНО ПРО НЕУВЕРЕННОСТЬ VISION: если в тексте, который тебе прислала система после распознавания фото, встречается конструкция вида "[38 или 36]" или "неразборчиво" — это значит модель зрения САМА не уверена в этой цифре/слове. НЕ выбирай один вариант молча и не убирай эту пометку при переносе в JSON — сохрани её как есть в соответствующем поле (например diploma_number: "А № [124952 или 129952]") и обязательно упомяни в тексте ответа клиенту какие именно поля нужно сверить с оригиналом глазами. Если распознавание вернуло пометку "ДВЕ ПОПЫТКИ ЧТЕНИЯ РАЗОШЛИСЬ" — то же самое: не выбирай сама, покажи оба варианта и попроси клиента сверить или прислать фото чётче.
+ - "Заявление на отмену" — нужно в 3 случаях: (1) переоформление при расширении видов работ на единый новый аттестат, (2) исключение части видов работ (например ушёл прораб по направлению) вместо полного аннулирования, (3) полное прекращение по инициативе владельца. Спроси причину если неясно, номер старого аттестата (с суффиксом СТ/ГС) обязателен. Также напомни: если у компании уже был аттестат — сначала стоит проверить реестр (https://att.bsc.by/reestr) по УНП, нужно ли заявление на отмену перед новой подачей.
+ - "Оказание инженерных услуг" (пункт 4 — функции заказчика/технадзор) — отдельный, тоже актуальный запрос, но пока НЕ реализован технически как company_att (нет готового генератора под него) — если просят именно это, скажи что пока не умеешь, не подменяй пунктом 6/7.
+@@ -346,9 +345,10 @@
+             "education_full_text":"готовый многострочный текст образования из заполненной Формы №2",
+             "diploma_number":"","diploma_date":"","diploma_institution":"","diploma_speciality":"","diploma_qualification":"",
+             "diplomas":[{"number":"","date":"","institution":"","speciality":"","qualification":"","education_level":""}],
+-            "stage_source":"document|calculated|manual", "stage_is_final":false,
+-            "employment_periods":[{"start":"ДД.ММ.ГГГГ (только если дата реально видна)","end":"ДД.ММ.ГГГГ или null если по настоящее время","position":"точная должность","employer":"организация","employer_unp":"","employer_activity":"строительство/проектирование/сметное дело","is_current_employer":false,"relevant":true}],
+-            "stage_years":"дословное значение из Формы №2, если оно уже указано","stage_years_here":"дословное значение из Формы №2, если оно уже указано",
++            "stage_source":"calculated|document_reference|manual", "stage_is_final":false,
++            "employment_periods":[{"start":"ДД.ММ.ГГГГ или пусто","start_text":"исходное неполное/неуверенное чтение","end":"ДД.ММ.ГГГГ|null|пусто","end_text":"исходное чтение","position":"точная должность","secondary_position":"явное совмещение/перевод, если есть","employer":"организация","employer_unp":"","employer_activity":"строительство|проектирование|сметное дело|неизвестно","is_construction_employer":true,"is_current_employer":false,"relevant":null,"confidence":0.0,"uncertain_fields":["start"]}],
++            "stage_reference_total":"дословное значение из Формы №2 только для сверки","stage_reference_here":"дословное значение из Формы №2 только для сверки","stage_years":"заполняет только бэкенд","stage_years_here":"заполняет только бэкенд",
++            "uncertain_fields":[],"field_confidence":{},
+             "trudovaya_number":"","trudovye_numbers":["ПК № ...","Вкладыш ..."],"trudovaya_form2_text":["Трудовая книжка ПК № ...","Приказ № ... от ..."],"order_number":"","hire_date":"",
+             "attestat_number":"","attestat_date_from":"","attestat_date_to":"","attestat_specialization":"","attestat_form2_text":["номер и дата выдачи","специализация"],"attestat_form5_text":["номер и полный срок действия","специализация"]
+         }]
+@@ -558,7 +558,33 @@
+             f"Попытка 1: {first}\n\nПопытка 2: {second}"), False
+ 
+ 
+-def _pdf_pages_to_images(file_bytes, max_pages=3, max_dim=1900, quality=82):
++def _is_labour_book_filename(filename: str) -> bool:
++    """Return True for labour-book scans and inserts.
++
++    Long labour books are the main source for experience calculation, so they must
++    not be silently truncated to the first few pages.
++    """
++    name = str(filename or '').lower().replace('ё', 'е')
++    return any(marker in name for marker in (
++        'трудов', 'вкладыш', 'trudov', 'vkladysh', 'labour', 'labor', 'workbook',
++    ))
++
++
++def _pdf_page_limit(filename: str) -> int:
++    """Use a larger safe page limit for labour books than for ordinary PDFs."""
++    return 24 if _is_labour_book_filename(filename) else 6
++
++
++def _pdf_total_pages(file_bytes) -> int:
++    import pypdfium2 as pdfium
++    doc = pdfium.PdfDocument(file_bytes)
++    try:
++        return len(doc)
++    finally:
++        doc.close()
++
++
++def _pdf_pages_to_images(file_bytes, max_pages=6, max_dim=1900, quality=82):
+     """
+     Конвертирует страницы PDF в настоящие JPEG-картинки перед отправкой в vision.
+     КРИТИЧНО: раньше PDF отправлялся в vision как есть (media_type=application/pdf
+@@ -573,8 +599,9 @@
+     колесо без единой системной зависимости — проверено вживую перед отправкой этого
+     кода: реальный PDF отрендерен и превращён в JPEG успешно.
+ 
+-    Берём только первые max_pages страниц — этого достаточно для типичных сканов
+-    документов (диплом/паспорт/страница трудовой — обычно 1 разворот на файл).
++    Для обычных документов используется небольшой лимит, а для трудовых книжек
++    вызывающая сторона передаёт увеличенный лимит. Если страниц больше лимита,
++    результат обязательно помечается как неполный, чтобы поля попали в жёлтую проверку.
+     """
+     import pypdfium2 as pdfium
+     from PIL import Image
+@@ -657,15 +684,22 @@
+         import io as _io5
+         ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+         if ext == 'pdf':
+-            pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=3)
++            max_pages = _pdf_page_limit(filename)
++            total_pages = _pdf_total_pages(file_bytes)
++            pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
+             texts = []
+-            for b64 in pages_b64:
++            for page_index, b64 in enumerate(pages_b64, start=1):
+                 img = Image.open(_io5.BytesIO(base64.b64decode(b64)))
+                 t = _tesseract_ocr_image(img)
+                 if t:
+-                    texts.append(t)
++                    texts.append(f'--- СТРАНИЦА {page_index} ---\n{t}')
+             if not texts:
+                 return None
++            if total_pages > len(pages_b64):
++                texts.append(
++                    f'[⚠️ PDF ОБРАБОТАН НЕ ПОЛНОСТЬЮ: распознаны первые {len(pages_b64)} '
++                    f'из {total_pages} страниц. Стаж и связанные поля требуют проверки.]'
++                )
+             return '\n\n'.join(texts)
+         else:
+             small_bytes, _ = _downscale_image(file_bytes, max_dim=2400, quality=90)  # для OCR чуть покрупнее чем для vision
+@@ -694,46 +728,99 @@
+             return tesseract_text
+ 
+     if ext == 'pdf':
+-        # PDF конвертируется в настоящие картинки — см. _pdf_pages_to_images().
++        # Labour books may contain many pages. Render a filename-sensitive number of
++        # pages and send them to vision in small batches so one large request does not
++        # overflow Render memory or the model context.
++        max_pages = _pdf_page_limit(filename)
+         try:
+-            pages_b64 = _pdf_pages_to_images(file_bytes)
++            total_pages = _pdf_total_pages(file_bytes)
++            pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
+         except Exception as e:
+             print(f"  ❌ vision_extract({filename}): не удалось конвертировать PDF в изображения — {type(e).__name__}: {e}")
+             return f'[PDF: не удалось подготовить для распознавания — {e}]'
+         if not pages_b64:
+             return '[PDF: страницы не найдены]'
+-        content_blocks = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+-                           for b64 in pages_b64]
+-        content_blocks.append({"type": "text", "text": active_prompt +
+-                                (f"\n\n(Документ из {len(pages_b64)} страниц — учти все страницы вместе.)"
+-                                 if len(pages_b64) > 1 else '')})
+-        payload_mb = sum(len(b) for b in pages_b64) / 1024 / 1024
+-        vibe_payload = {"model": VIBE_MODEL_VISION, "max_tokens": 8000,
+-                         "messages": [{"role": "user", "content": content_blocks}]}
+-        print(f"  🔎 vision_extract({filename}): PDF -> {len(pages_b64)} стр., отправляю {payload_mb:.2f} МБ, жду семафор...")
+-        VISION_SEMAPHORE.acquire()
+-        t0 = _time.time()
+-        try:
+-            resp = req_lib.post(VIBE_URL, headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+-                                 json=vibe_payload, timeout=90)
+-            elapsed = _time.time() - t0
+-            resp.raise_for_status()
+-            data = resp.json()
+-            text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
+-            print(f"  ✅ vision_extract({filename}): успех за {elapsed:.1f} сек, {len(text)} символов ответа")
+-            if not text:
+-                print(f"  ⚠️ vision_extract({filename}): ПУСТОЙ content — сырой ответ API (первые 500 симв): {json.dumps(data)[:500]}")
+-            return text or '[vision: пустой ответ]'
+-        except req_lib.exceptions.Timeout:
+-            elapsed = _time.time() - t0
+-            print(f"  ⏱️ vision_extract({filename}): ТАЙМАУТ через {elapsed:.1f} сек")
+-            return f'[vision: таймаут при распознавании {filename}]'
+-        except Exception as e:
+-            elapsed = _time.time() - t0
+-            print(f"  ❌ vision_extract({filename}): ОШИБКА через {elapsed:.1f} сек — {type(e).__name__}: {e}")
+-            return f'[vision ошибка: {e}]'
+-        finally:
+-            VISION_SEMAPHORE.release()
++
++        batch_size = 4
++        outputs = []
++        for batch_start in range(0, len(pages_b64), batch_size):
++            batch = pages_b64[batch_start:batch_start + batch_size]
++            first_page = batch_start + 1
++            last_page = batch_start + len(batch)
++            content_blocks = [
++                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
++                for b64 in batch
++            ]
++            content_blocks.append({
++                "type": "text",
++                "text": active_prompt +
++                    f"\n\nЭто страницы {first_page}–{last_page} из PDF «{filename}». "
++                    "Сохраняй каждую запись трудовой книжки отдельно с точными датами; "
++                    "не придумывай день или месяц."
++            })
++            payload_mb = sum(len(b) for b in batch) / 1024 / 1024
++            vibe_payload = {
++                "model": VIBE_MODEL_VISION,
++                "max_tokens": 8000,
++                "messages": [{"role": "user", "content": content_blocks}],
++            }
++            print(
++                f"  🔎 vision_extract({filename}): PDF стр. {first_page}-{last_page}/{total_pages}, "
++                f"отправляю {payload_mb:.2f} МБ, жду семафор..."
++            )
++            VISION_SEMAPHORE.acquire()
++            t0 = _time.time()
++            try:
++                resp = req_lib.post(
++                    VIBE_URL,
++                    headers={"Content-Type": "application/json", "X-Api-Key": api_key},
++                    json=vibe_payload,
++                    timeout=120,
++                )
++                elapsed = _time.time() - t0
++                resp.raise_for_status()
++                data = resp.json()
++                text = "".join(
++                    (choice.get("message", {}).get("content") or "")
++                    for choice in data.get("choices", [])
++                )
++                print(
++                    f"  ✅ vision_extract({filename}): стр. {first_page}-{last_page} "
++                    f"за {elapsed:.1f} сек, {len(text)} символов"
++                )
++                outputs.append(
++                    f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" +
++                    (text or '[vision: пустой ответ]')
++                )
++            except req_lib.exceptions.Timeout:
++                elapsed = _time.time() - t0
++                print(
++                    f"  ⏱️ vision_extract({filename}): таймаут стр. "
++                    f"{first_page}-{last_page} через {elapsed:.1f} сек"
++                )
++                outputs.append(
++                    f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
++                    f"[vision: таймаут; данные этих страниц требуют ручной проверки]"
++                )
++            except Exception as e:
++                elapsed = _time.time() - t0
++                print(
++                    f"  ❌ vision_extract({filename}): ошибка стр. {first_page}-{last_page} "
++                    f"через {elapsed:.1f} сек — {type(e).__name__}: {e}"
++                )
++                outputs.append(
++                    f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
++                    f"[vision ошибка: {e}; данные этих страниц требуют ручной проверки]"
++                )
++            finally:
++                VISION_SEMAPHORE.release()
++
++        if total_pages > len(pages_b64):
++            outputs.append(
++                f"[⚠️ PDF ОБРАБОТАН НЕ ПОЛНОСТЬЮ: распознаны первые {len(pages_b64)} "
++                f"из {total_pages} страниц. Стаж и связанные поля требуют проверки.]"
++            )
++        return '\n\n'.join(outputs)
+ 
+     if ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'):
+         small_bytes, mt = _downscale_image(file_bytes)
+@@ -967,49 +1054,48 @@
+ 
+ 
+ def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
+-    """Один ИИ-вызов на человека: сводит все его документы в компактную карточку,
+-    сгруппированную ПО ТИПУ ДОКУМЕНТА (Паспорт/Диплом/Аттестат), а не по плоским
+-    полям. При расхождении между документами — берёт наиболее вероятный (первый
+-    по порядку следования в исходных документах) вариант, а не показывает оба —
+-    но коротко помечает что расхождение было, чтобы не терять информацию совсем."""
++    """Reconcile one person's documents without losing labour-book chronology.
++
++    The old compact summary reduced an entire labour book to phrases such as
++    "engineer since 2007". That destroyed the exact dates required for an
++    independent backend calculation. The new format preserves every entry.
++    """
+     combined = '\n\n'.join(raw_blocks)
+-    if len(combined) > 60000:
+-        combined = combined[:60000] + '\n[...обрезано для сверки...]'
++    if len(combined) > 80000:
++        combined = combined[:80000] + '\n[...обрезано для сверки...]'
+     prompt = (
+-        f"Ниже — результаты распознавания НЕСКОЛЬКИХ документов ОДНОГО И ТОГО ЖЕ человека "
+-        f"(«{person_name}»): паспорт, диплом(ы), трудовая книжка, аттестат и т.п.\n\n"
+-        f"{combined}\n\n"
+-        f"Собери итоговую карточку СТРОГО в этом формате (это ПРИМЕР на другого человека, "
+-        f"не копируй данные, только структуру):\n\n"
+-        f"{person_num}) Иванов Иван Иванович\n"
+-        f"Паспорт: серия КН №1234567, выдан 01.02.2010, кем выдан ...\n"
+-        f"Диплом: №А1234567, специальность «Строительство», квалификация инженер, "
+-        f"дата выдачи 20.06.2007, БНТУ\n"
+-        f"Трудовая: №ПК1234567, стаж: инженер с 2007, мастер с 2015\n"
+-        f"Аттестат: №СТ123456, специализация «прораб», действителен до 2028\n\n"
+-        f"Теперь заполни РЕАЛЬНЫЕ данные по «{person_name}» (номер по счёту: {person_num}) "
+-        f"в этой же структуре. Используй ТОЛЬКО эти 4 строки-подзаголовка (Паспорт/Диплом/"
+-        f"Трудовая/Аттестат) — если у человека несколько дипломов или аттестатов, перечисли "
+-        f"их через ';' в той же строке. Если что-то не найдено ни в одном документе — "
+-        f"напиши 'не найдено'.\n\n"
+-        f"ВАЖНО ПРО ФИО: документы лежат в папке с названием «{person_name}» — так её назвал "
+-        f"человек, который готовил документы, и это НАДЁЖНЫЙ ориентир для фамилии/имени. Если "
+-        f"распознавание одного из документов (особенно рукописного) даёт фамилию, ЯВНО не "
+-        f"похожую на «{person_name}» (например «Хром» вместо «Крот» — это похожие по написанию, "
+-        f"но разные фамилии, вероятная ошибка распознавания почерка) — используй в заголовке "
+-        f"карточки написание, СОГЛАСОВАННОЕ с названием папки, а не редкий отличающийся вариант.\n\n"
+-        f"ПРО ОСТАЛЬНЫЕ РАСХОЖДЕНИЯ МЕЖДУ ДОКУМЕНТАМИ (даты, номера и т.п.):\n"
+-        f"— Выбери вариант, который встречается чаще среди источников, или прочитан с печатного "
+-        f"текста (а не с рукописного) — печатный текст надёжнее.\n"
+-        f"— Выбери ОДИН вариант и впиши его в карточку без пометок и оговорок — это чистый "
+-        f"текст для копирования, никаких скобок вида '(по одному из документов иначе)' быть не должно.\n"
+-        f"— Отвечай ТОЛЬКО карточкой в указанном формате, без вступлений и заключений."
++        f"Ниже — результаты распознавания нескольких документов одного человека "
++        f"(папка «{person_name}»): паспорт, дипломы, ТРУДОВАЯ КНИЖКА И ВКЛАДЫШИ, "
++        f"аттестаты и приказы.\n\n{combined}\n\n"
++        f"Собери карточку №{person_num} по реальным данным. КРИТИЧНО: не своди трудовую "
++        f"к фразе «стаж с 2007 года». Перепиши КАЖДУЮ запись приёма, перевода и увольнения "
++        f"отдельной строкой и сохрани полные даты. Формат ответа:\n\n"
++        f"{person_num}) ФИО\n"
++        f"Паспорт: ...\n"
++        f"Дипломы: каждый диплом через ; со всеми номером, датой, учреждением, специальностью и квалификацией\n"
++        f"Трудовая книжка и вкладыши: все номера документов\n"
++        f"ПЕРИОДЫ РАБОТЫ:\n"
++        f"- ДД.ММ.ГГГГ — ДД.ММ.ГГГГ | точный работодатель | точная должность | основание/приказ, если видно\n"
++        f"- ДД.ММ.ГГГГ — по настоящее время | точный работодатель | точная должность | основание/приказ\n"
++        f"Аттестаты: каждый аттестат через ; с номером, сроком и специализацией\n"
++        f"НЕУВЕРЕННЫЕ ПОЛЯ: перечисли только реально неразборчивые значения и оба варианта чтения\n\n"
++        f"ПРАВИЛА:\n"
++        f"1. Если видна только часть даты или только год, не выдумывай 01.01. Напиши дословно "
++        f"«год 1986, день/месяц не видны» в строке НЕУВЕРЕННЫЕ ПОЛЯ.\n"
++        f"2. Не пропускай записи о переводе/совмещении: они определяют, можно ли засчитать "
++        f"директора как прораба/главного инженера.\n"
++        f"3. Название папки «{person_name}» — надёжный ориентир для ФИО, но все даты, номера "
++        f"и должности бери из документов.\n"
++        f"4. При расхождении не выбирай вариант молча: укажи оба варианта в НЕУВЕРЕННЫХ ПОЛЯХ.\n"
++        f"5. Отвечай только карточкой, без расчёта стажа и без вступления."
+     )
+-    result = _simple_ai_call(prompt, api_key, max_tokens=1200)
+-    line_count = len([l for l in result.split('\n') if l.strip()])
+-    if line_count < 3:
+-        print(f"  ⚠️ Сверка по «{person_name}»: ответ короче ожидаемого ({line_count} строк). "
+-              f"Полный сырой ответ модели: {result!r}")
++    result = _simple_ai_call(prompt, api_key, max_tokens=2600)
++    line_count = len([line for line in result.split('\n') if line.strip()])
++    if line_count < 6:
++        print(
++            f"  ⚠️ Сверка по «{person_name}»: ответ короче ожидаемого ({line_count} строк). "
++            f"Полный сырой ответ модели: {result!r}"
++        )
+     return result
+ 
+ 
+@@ -1203,11 +1289,10 @@
+                 fast_txt = extract_text_from_file(data, short)
+                 if fast_txt and len(fast_txt) > 10 and not fast_txt.startswith('['):
+                     return f"--- {folder + '/' if folder else ''}{short} ---\n" + fast_txt
+-                # PDF теперь конвертируется в изображения первых 3 страниц (см.
+-                # _pdf_pages_to_images) — стоимость рендера зависит от КОЛИЧЕСТВА
+-                # обрабатываемых страниц, а не от общего размера файла на диске
+-                # (даже 18-МБ скан с высоким разрешением рендерит только первые 3
+-                # страницы). Поэтому лимит можно держать намного щедрее, чем раньше.
++                # PDF конвертируется в изображения с динамическим лимитом:
++                # до 24 страниц для трудовых книжек и до 6 для прочих документов.
++                # Если документ длиннее, распознанный текст содержит явное предупреждение,
++                # которое затем переводит связанные поля в жёлтую ручную проверку.
+                 PDF_VISION_LIMIT = 40 * 1024 * 1024
+                 if len(data) > PDF_VISION_LIMIT:
+                     return (f"--- {folder + '/' if folder else ''}{short} ---\n"
+--- a/company_attestation_source_parser.py
++++ b/company_attestation_source_parser.py
+@@ -288,11 +288,13 @@
+                 "education_full_text": education,
+                 "diplomas": diplomas,
+                 "diploma_number": diplomas[0].get("number", "") if diplomas else _extract_number(" ".join(education), "diploma"),
+-                "stage_years": stage[0] if len(stage) > 0 else "",
+-                "stage_years_here": stage[1] if len(stage) > 1 else "",
++                # The completed Form 2 is only a reference. The live values are
++                # calculated independently from labour-book employment periods.
++                "stage_reference_total": stage[0] if len(stage) > 0 else "",
++                "stage_reference_here": stage[1] if len(stage) > 1 else "",
+                 "stage_form2_text": stage,
+-                "stage_source": "document" if stage else "",
+-                "stage_is_final": bool(stage),
++                "stage_source": "document_reference" if stage else "",
++                "stage_is_final": False,
+                 "trudovye_numbers": labour_docs,
+                 "trudovaya_number": labour_docs[0] if labour_docs else "",
+                 "trudovaya_form2_text": labour,
+@@ -416,7 +418,7 @@
+     list_fields = {
+         "education_full_text", "diplomas", "diploma_numbers", "trudovye_numbers",
+         "stage_form2_text", "trudovaya_form2_text", "attestat_form2_text", "attestat_form5_text",
+-        "employment_periods", "attestats",
++        "employment_periods", "attestats", "stage_review_reasons",
+     }
+     for key, value in (patch or {}).items():
+         if not _nonempty(value):
+--- a/generator_company_att.py
++++ b/generator_company_att.py
+@@ -521,32 +521,231 @@
+     return lines
+ 
+ 
++
++def _parse_exact_work_date(value):
++    """Parse only a complete date. Never invent day/month for a year-only OCR result."""
++    from datetime import datetime as _dt
++    if not value:
++        return None
++    text = str(value).strip()
++    for fmt in ('%d.%m.%Y', '%d.%m.%y', '%Y-%m-%d', '%d/%m/%Y'):
++        try:
++            return _dt.strptime(text, fmt)
++        except (ValueError, TypeError):
++            continue
++    return None
++
++
++def _confidence_is_low(record: dict, field: str = '') -> bool:
++    if not isinstance(record, dict):
++        return False
++    uncertain = record.get('uncertain_fields') or []
++    if isinstance(uncertain, str):
++        uncertain = [x.strip() for x in re.split(r'[,;\n]+', uncertain) if x.strip()]
++    uncertain_norm = {_norm_text(x) for x in uncertain}
++    if field and (_norm_text(field) in uncertain_norm or any(_norm_text(field).endswith(x) for x in uncertain_norm if x)):
++        return True
++    confidence = None
++    field_conf = record.get('field_confidence')
++    if isinstance(field_conf, dict) and field in field_conf:
++        confidence = field_conf.get(field)
++    if confidence is None and field:
++        confidence = record.get(f'{field}_confidence')
++    if confidence is None:
++        confidence = record.get('confidence')
++    if isinstance(confidence, (int, float)):
++        return float(confidence) < 0.85
++    if isinstance(confidence, str):
++        return _norm_text(confidence) in ('low', 'низкая', 'низкий', 'uncertain', 'не уверен', 'сомнительно')
++    return bool(record.get('needs_review')) and (not field or not uncertain_norm)
++
++
++def _looks_uncertain_text(value) -> bool:
++    text = _norm_text(value)
++    return bool(text) and any(marker in text for marker in (
++        'неразборчив', 'не уверен', 'требует уточнения', 'две попытки чтения разошлись',
++        'или', '[', ']', '?', 'предположительно',
++    ))
++
++
++_MANAGEMENT_POSITION_MARKERS = (
++    'производитель работ', 'прораб', 'мастер', 'начальник участка',
++    'главный инженер', 'заместитель директора-главный инженер',
++    'зам директора-главный инженер', 'заместитель директора по строитель',
++    'зам директора по строитель', 'руководитель в области строитель',
++)
++_DESIGN_POSITION_MARKERS = ('проектиров', 'архитектор', 'конструктор')
++_ESTIMATE_POSITION_MARKERS = ('смет',)
++_WORKER_POSITION_MARKERS = (
++    'каменщик', 'бетонщик', 'арматурщик', 'монтажник', 'электросварщик', 'сварщик',
++    'плотник', 'стропальщик', 'такелажник', 'маляр', 'штукатур', 'землекоп',
++    'подсобный рабочий', 'рабочий', 'слесарь', 'машинист', 'кровельщик',
++    'изолировщик', 'электромонтажник', 'дорожный рабочий', 'плиточник',
++)
++
++
++def _target_role_family(person: dict) -> str:
++    position = _norm_text(person.get('position'))
++    specialization = _norm_text(person.get('attestat_specialization') or person.get('requested_specialization'))
++    target = f'{position} {specialization}'.strip()
++    if any(x in target for x in _DESIGN_POSITION_MARKERS):
++        return 'design'
++    if any(x in target for x in _ESTIMATE_POSITION_MARKERS):
++        return 'estimate'
++    if any(x in target for x in _MANAGEMENT_POSITION_MARKERS) or 'общестроит' in target:
++        return 'management'
++    if 'директор' in position and 'замест' not in position:
++        # A director may have relevant experience as a director of a construction company,
++        # but a director entry must never substitute a chief-engineer/prorab entry.
++        return 'director'
++    return 'construction'
++
++
++def _position_match_status(person: dict, period: dict) -> tuple[bool, bool, str]:
++    """Return (eligible, uncertain, reason) for a labour-book position."""
++    position = _norm_text(period.get('position') or period.get('job_title'))
++    if not position:
++        return False, True, 'не распознана должность'
++    if any(x in position for x in _WORKER_POSITION_MARKERS) and not any(x in position for x in _MANAGEMENT_POSITION_MARKERS):
++        return False, False, 'рабочая профессия не включается в стаж ИТР'
++
++    family = _target_role_family(person)
++    if family == 'design':
++        return (any(x in position for x in _DESIGN_POSITION_MARKERS), False, 'должность не относится к проектированию')
++    if family == 'estimate':
++        return (any(x in position for x in _ESTIMATE_POSITION_MARKERS), False, 'должность не относится к сметному делу')
++    if family == 'management':
++        if any(x in position for x in _MANAGEMENT_POSITION_MARKERS):
++            return True, False, ''
++        # Binding rule from the user: a plain director entry does not count as
++        # chief engineer/prorab. It counts only when the labour book explicitly
++        # records the secondary/combined construction position.
++        if 'директор' in position:
++            explicit = _norm_text(period.get('secondary_position') or period.get('explicit_construction_role'))
++            if any(x in explicit for x in _MANAGEMENT_POSITION_MARKERS):
++                return True, _confidence_is_low(period, 'secondary_position'), ''
++            return False, False, 'запись директора без перевода/совмещения на строительную должность'
++        return False, False, 'должность не относится к руководящим строительным должностям'
++    if family == 'director':
++        if 'директор' in position or any(x in position for x in _MANAGEMENT_POSITION_MARKERS):
++            return True, False, ''
++        return False, False, 'должность не относится к руководству строительством'
++
++    # Unknown construction ITR: include clear engineering/management positions,
++    # but flag ambiguous generic roles for review.
++    if any(x in position for x in _MANAGEMENT_POSITION_MARKERS) or 'инженер' in position:
++        return True, _confidence_is_low(period, 'position'), ''
++    return False, True, 'не удалось уверенно отнести должность к заявляемой деятельности'
++
++
++def _employer_match_status(person: dict, period: dict) -> tuple[bool, bool, str]:
++    activity = _norm_text(period.get('employer_activity'))
++    explicit = period.get('is_construction_employer')
++    family = _target_role_family(person)
++    if explicit is False:
++        return False, False, 'работодатель не относится к нужной деятельности'
++    if explicit is True:
++        return True, _confidence_is_low(period, 'employer_activity'), ''
++
++    if family == 'design':
++        markers = ('проектир', 'архитектур', 'строител')
++    elif family == 'estimate':
++        markers = ('смет', 'строител', 'проектир')
++    else:
++        markers = ('строител', 'смр', 'монтаж', 'генподряд', 'подряд')
++    if activity and any(x in activity for x in markers):
++        return True, _confidence_is_low(period, 'employer_activity'), ''
++    if period.get('relevant') is True:
++        return True, True, 'строительная деятельность работодателя указана неявно'
++    return False, True, 'не подтверждена деятельность работодателя'
++
++
++def assess_relevant_periods(person: dict, periods: list) -> dict:
++    """Classify every labour-book period without doing arithmetic in the model.
++
++    Only complete dates enter the confirmed calculation. Potentially relevant rows
++    with unreadable/partial dates are retained as review reasons, so the resulting
++    minimum confirmed experience is highlighted yellow instead of silently guessed.
++    """
++    confirmed, uncertain, excluded = [], [], []
++    for index, raw in enumerate(periods or []):
++        if not isinstance(raw, dict):
++            continue
++        period = dict(raw)
++        period['_index'] = index
++        if period.get('relevant') is False:
++            excluded.append({'period': period, 'reason': 'явно исключён из стажа'})
++            continue
++        role_ok, role_uncertain, role_reason = _position_match_status(person, period)
++        employer_ok, employer_uncertain, employer_reason = _employer_match_status(person, period)
++        start = _parse_exact_work_date(period.get('start'))
++        end_value = period.get('end')
++        end = _parse_exact_work_date(end_value) if end_value else None
++        date_uncertain = (
++            not start
++            or (bool(end_value) and not end)
++            or _confidence_is_low(period, 'start')
++            or _confidence_is_low(period, 'end')
++            or _looks_uncertain_text(period.get('start_text'))
++            or _looks_uncertain_text(period.get('end_text'))
++        )
++        reasons = [x for x in (role_reason if not role_ok else '', employer_reason if not employer_ok else '') if x]
++        if not role_ok or not employer_ok:
++            item = {'period': period, 'reason': '; '.join(reasons) or 'период не соответствует правилам'}
++            # An unknown employer/role may still be relevant; show it as uncertain rather
++            # than silently discarding it when there is not an explicit negative answer.
++            if role_uncertain or employer_uncertain:
++                uncertain.append(item)
++            else:
++                excluded.append(item)
++            continue
++        if date_uncertain:
++            uncertain.append({'period': period, 'reason': 'нет полной подтверждённой даты начала/окончания'})
++            continue
++        if end is not None and end < start:
++            uncertain.append({'period': period, 'reason': 'дата окончания раньше даты начала'})
++            continue
++        period['start'] = start.strftime('%d.%m.%Y')
++        period['end'] = end.strftime('%d.%m.%Y') if end else None
++        period['_period_uncertain'] = bool(role_uncertain or employer_uncertain or _confidence_is_low(period))
++        confirmed.append(period)
++        if period['_period_uncertain']:
++            uncertain.append({'period': period, 'reason': 'период включён, но часть реквизитов требует проверки'})
++    return {'confirmed': confirmed, 'uncertain': uncertain, 'excluded': excluded}
++
++
++def _ru_count(value: int, one: str, few: str, many: str) -> str:
++    n = abs(int(value))
++    if 11 <= n % 100 <= 14:
++        word = many
++    elif n % 10 == 1:
++        word = one
++    elif n % 10 in (2, 3, 4):
++        word = few
++    else:
++        word = many
++    return f'{value} {word}'
++
++
+ def calculate_stazh(periods: list, as_of_date: str = None) -> dict:
+-    """Календарный расчёт стажа: 30 дней = месяц, 12 месяцев = год.
+-
+-    Учитываются только периоды, которые не помечены relevant=false. Пересекающиеся
+-    периоды объединяются, чтобы один и тот же день не засчитывался дважды.
++    """Deterministic inclusive calculation from exact labour-book dates.
++
++    Overlapping intervals are merged so the same calendar day is never counted twice.
++    The final normalization follows the common HR calculator convention used for work
++    records: 30 days = 1 month, 12 months = 1 year.
+     """
+     from datetime import datetime as _dt, timedelta as _td
+ 
+-    def _parse(d):
+-        if not d:
+-            return None
+-        for fmt in ('%d.%m.%Y', '%d.%m.%y', '%Y-%m-%d'):
+-            try:
+-                return _dt.strptime(str(d).strip(), fmt)
+-            except (ValueError, TypeError, AttributeError):
+-                continue
+-        return None
+-
+-    today = _parse(as_of_date) or _dt.now()
++    today = _parse_exact_work_date(as_of_date) or _dt.now()
+     intervals = []
++    invalid = []
+     for period in (periods or []):
+         if not isinstance(period, dict) or period.get('relevant') is False:
+             continue
+-        start = _parse(period.get('start'))
+-        end = _parse(period.get('end')) or today
+-        if not start or end < start:
++        start = _parse_exact_work_date(period.get('start'))
++        end = _parse_exact_work_date(period.get('end')) if period.get('end') else today
++        if not start or not end or end < start:
++            invalid.append(period)
+             continue
+         intervals.append((start, end))
+ 
+@@ -561,83 +760,231 @@
+     total_days = sum((end - start).days + 1 for start, end in merged)
+     months, days = divmod(total_days, 30)
+     years, months = divmod(months, 12)
+-    display = f"{years} лет {months} мес. {days} дн." if years or months else f"{days} дн."
++    if total_days <= 0:
++        display = ''
++    else:
++        parts = []
++        if years:
++            parts.append(_ru_count(years, 'год', 'года', 'лет'))
++        if months:
++            parts.append(_ru_count(months, 'месяц', 'месяца', 'месяцев'))
++        if days or not parts:
++            parts.append(_ru_count(days, 'день', 'дня', 'дней'))
++        display = ' '.join(parts)
+     return {
+         'years': years, 'months': months, 'days': days,
+-        'total_years_rounded': round(total_days / 365, 1),
++        'total_days': total_days,
++        'total_years_rounded': round(total_days / 365.2425, 1) if total_days else 0,
+         'display': display,
++        'intervals': [
++            {'start': start.strftime('%d.%m.%Y'), 'end': end.strftime('%d.%m.%Y')}
++            for start, end in merged
++        ],
++        'invalid_periods': invalid,
+     }
+ 
+ 
+ def select_relevant_periods(person: dict, periods: list) -> list:
+-    """Отбирает периоды именно по заявляемому направлению/роли.
+-
+-    Явные флаги relevant=true/false имеют приоритет. Если флагов нет, для
+-    общестроительных руководящих ролей учитываются прораб/производитель работ,
+-    мастер, начальник участка, главный инженер и строительные заместители
+-    директора. Для проектировщика и сметчика применяются отдельные группы.
+-    Заполненный готовый стаж из Формы №2 всё равно имеет больший приоритет и сюда
+-    не попадает — эта функция нужна только когда стаж требуется рассчитать.
+-    """
+-    target = _norm_text(' '.join([
+-        str(person.get('position') or ''),
+-        str(person.get('attestat_specialization') or ''),
+-        str(person.get('requested_specialization') or ''),
+-    ]))
+-    management_markers = (
+-        'прораб', 'производитель работ', 'мастер', 'начальник участка',
+-        'главный инженер', 'заместитель директора-главный инженер',
+-        'зам директора-главный инженер', 'заместитель директора по строитель',
+-        'зам директора по строитель', 'руководитель в области строитель',
+-    )
+-    design_markers = ('проектиров', 'проектирован')
+-    estimate_markers = ('смет',)
+-
+-    if any(m in target for m in design_markers):
+-        wanted = design_markers
+-    elif any(m in target for m in estimate_markers):
+-        wanted = estimate_markers
+-    elif any(m in target for m in management_markers) or 'общестроит' in target:
+-        wanted = management_markers
+-    else:
+-        wanted = ()
+-
+-    selected = []
+-    for period in periods or []:
+-        if not isinstance(period, dict) or period.get('relevant') is False:
+-            continue
+-        if period.get('relevant') is True:
+-            selected.append(period)
+-            continue
+-        if not wanted:
+-            selected.append(period)
+-            continue
+-        position = _norm_text(period.get('position') or period.get('job_title'))
+-        if any(marker in position for marker in wanted):
+-            selected.append(period)
+-            continue
+-        # Период директора в строительной организации учитывается только при
+-        # явной отметке строительной деятельности работодателя.
+-        if 'директор' in position and any(x in _norm_text(period.get('employer_activity')) for x in ('строител', 'смр')):
+-            selected.append(period)
+-    return selected
+-
+-
+-def calculate_current_company_stazh(periods: list, company: dict, as_of_date: str = None) -> dict:
+-    """Стаж у текущего юрлица — только периоды с is_current_employer=true либо
+-    с employer, совпадающим с названием/УНП компании. Не берём просто последний период."""
++    """Compatibility wrapper: only confirmed, exact, role-matching periods."""
++    return assess_relevant_periods(person, periods).get('confirmed', [])
++
++
++def _period_is_current_company(period: dict, company: dict) -> tuple[bool, bool]:
+     company_name = _norm_text(company.get('name'))
+     company_unp = re.sub(r'\D', '', str(company.get('unp') or ''))
++    employer = _norm_text(period.get('employer'))
++    employer_unp = re.sub(r'\D', '', str(period.get('employer_unp') or ''))
++    if period.get('is_current_employer') is True:
++        return True, _confidence_is_low(period, 'is_current_employer')
++    if company_unp and employer_unp:
++        return company_unp == employer_unp, False
++    if company_name and employer:
++        # Strip legal form and quotes before fuzzy containment.
++        compact_company = re.sub(r'\b(ооо|одо|оао|зао|чуп|чтуп|ип)\b', '', company_name).strip()
++        compact_employer = re.sub(r'\b(ооо|одо|оао|зао|чуп|чтуп|ип)\b', '', employer).strip()
++        if compact_company and (compact_company in compact_employer or compact_employer in compact_company):
++            return True, _confidence_is_low(period, 'employer')
++    return False, False
++
++
++def calculate_current_company_stazh(periods: list, company: dict, as_of_date: str = None) -> dict:
+     selected = []
++    uncertain_match = False
+     for period in periods or []:
+         if not isinstance(period, dict):
+             continue
+-        employer = _norm_text(period.get('employer'))
+-        employer_unp = re.sub(r'\D', '', str(period.get('employer_unp') or ''))
+-        if period.get('is_current_employer') is True or (company_name and company_name in employer) or (company_unp and company_unp == employer_unp):
++        matches, uncertain = _period_is_current_company(period, company)
++        if matches:
+             selected.append(period)
+-    return calculate_stazh(selected, as_of_date=as_of_date)
+-
++            uncertain_match = uncertain_match or uncertain
++    result = calculate_stazh(selected, as_of_date=as_of_date)
++    result['employer_match_uncertain'] = uncertain_match
++    return result
++
++
++def _stage_reference_lines(person: dict) -> tuple[str, str]:
++    """Read completed Form №2 values only as an independent control reference."""
++    first = str(person.get('stage_reference_total') or '').strip()
++    second = str(person.get('stage_reference_here') or '').strip()
++    raw = person.get('stage_form2_text') or []
++    values = raw if isinstance(raw, (list, tuple)) else [raw]
++    lines = []
++    for value in values:
++        for part in re.split(r'[\r\n]+', str(value or '')):
++            text = re.sub(r'\s+', ' ', part).strip()
++            if text and text not in ('—', '-', '–'):
++                lines.append(text)
++    return first or (lines[0] if lines else ''), second or (lines[1] if len(lines) > 1 else '')
++
++
++def _reference_stage_range_days(value: str):
++    """Return an approximate acceptable range for a rounded Form №2 reference.
++
++    Completed forms often contain only ``49 лет`` or ``менее года``. Such a value is
++    not an exact calculation and therefore must not make a precise labour-book result
++    yellow merely because it also contains months and days. The range is used only for
++    a sanity check; it never supplies the live stage value.
++    """
++    text = _norm_text(value)
++    if not text:
++        return None
++    if 'менее года' in text or 'меньше года' in text:
++        return (0, 365)
++    years_m = re.search(r'(\d+)\s*(?:год|года|лет)', text)
++    months_m = re.search(r'(\d+)\s*месяц', text)
++    days_m = re.search(r'(\d+)\s*(?:день|дня|дней)', text)
++    if not any((years_m, months_m, days_m)):
++        return None
++    years = int(years_m.group(1)) if years_m else 0
++    months = int(months_m.group(1)) if months_m else 0
++    days = int(days_m.group(1)) if days_m else 0
++    base = years * 365 + months * 30 + days
++    # If only full years/months are written, the document is normally rounded down.
++    if years_m and not months_m and not days_m:
++        return (base, base + 365)
++    if months_m and not days_m:
++        return (base, base + 31)
++    return (max(0, base - 2), base + 3)
++
++
++def _reference_conflicts(value: str, calculation: dict) -> bool:
++    bounds = _reference_stage_range_days(value)
++    total_days = int((calculation or {}).get('total_days') or 0)
++    if not bounds or total_days <= 0:
++        return False
++    return not (bounds[0] <= total_days < bounds[1])
++
++
++def _labour_hire_date(person: dict):
++    """Use a standalone hire date only when its source is explicitly the labour book."""
++    source = _norm_text(person.get('hire_date_source'))
++    if source not in ('трудовая книжка', 'labor book', 'labour book', 'employment periods', 'employment_periods'):
++        return None
++    return _parse_exact_work_date(person.get('hire_date'))
++
++
++def calculate_person_experience(person: dict, company: dict, as_of_date: str = None) -> dict:
++    """Calculate both Form №2 stage values only from labour-book chronology.
++
++    The model extracts exact employment intervals; this backend performs all date
++    arithmetic, filters irrelevant roles/employers, merges overlapping intervals and
++    separately calculates the period at the current employer. Completed Form №2 values
++    are comparison-only and can never be copied into the generated result.
++    """
++    as_of_date = as_of_date or __import__('datetime').datetime.now().strftime('%d.%m.%Y')
++    periods = person.get('employment_periods') or []
++    assessment = assess_relevant_periods(person, periods)
++    confirmed = assessment['confirmed']
++    total = calculate_stazh(confirmed, as_of_date=as_of_date)
++    current = calculate_current_company_stazh(confirmed, company, as_of_date=as_of_date)
++    reference_total, reference_here = _stage_reference_lines(person)
++
++    reasons = []
++    if assessment['uncertain']:
++        reasons.extend(item.get('reason', 'период требует проверки') for item in assessment['uncertain'])
++    if not periods:
++        reasons.append('в трудовой книжке не распознаны периоды работы')
++
++    # Live values are NEVER taken from completed Form №2.
++    person['stage_years'] = total.get('display', '')
++    person['stage_total_source'] = 'labour_book_calculation' if total.get('display') else 'missing'
++
++    if current.get('display'):
++        person['stage_years_here'] = current['display']
++        person['stage_here_source'] = 'labour_book_calculation'
++    else:
++        # Compatibility for an exact date that was independently extracted from the
++        # labour book but not yet converted into an employment_periods row.
++        hire_date = _labour_hire_date(person)
++        if hire_date:
++            role_ok, role_uncertain, role_reason = _position_match_status(
++                person, {'position': person.get('position')}
++            )
++            if role_ok:
++                fallback = calculate_stazh(
++                    [{'start': hire_date.strftime('%d.%m.%Y'), 'end': None}],
++                    as_of_date,
++                )
++                person['stage_years_here'] = fallback.get('display', '')
++                person['stage_here_source'] = 'labour_book_hire_date'
++                current = fallback
++                if role_uncertain:
++                    reasons.append('должность по записи текущего нанимателя требует проверки')
++            else:
++                person['stage_years_here'] = ''
++                person['stage_here_source'] = 'missing'
++                reasons.append(role_reason or 'текущая должность не соответствует заявляемой деятельности')
++        else:
++            person['stage_years_here'] = ''
++            person['stage_here_source'] = 'missing'
++
++    if not person.get('stage_years'):
++        reasons.append('не удалось рассчитать общий стаж по точным записям трудовой книжки')
++    if not person.get('stage_years_here'):
++        reasons.append('не удалось рассчитать стаж у текущего нанимателя по трудовой книжке')
++
++    # A completed Form №2 is only a control. Rounded values are compared as ranges so
++    # ``49 лет`` does not conflict with ``49 лет 4 месяца 10 дней``.
++    person['stage_reference_mismatch'] = False
++    if reference_total and _reference_conflicts(reference_total, total):
++        person['stage_reference_mismatch'] = True
++        reasons.append(
++            f'расчёт общего стажа по трудовой ({total.get("display") or "нет значения"}) '
++            f'существенно отличается от справочного значения Формы №2 ({reference_total})'
++        )
++    if reference_here and _reference_conflicts(reference_here, current):
++        person['stage_reference_mismatch'] = True
++        reasons.append(
++            f'расчёт стажа у нанимателя по трудовой ({current.get("display") or "нет значения"}) '
++            f'существенно отличается от справочного значения Формы №2 ({reference_here})'
++        )
++
++    if current.get('employer_match_uncertain'):
++        reasons.append('совпадение текущего работодателя требует проверки')
++    if any(p.get('_period_uncertain') for p in confirmed):
++        reasons.append('один из включённых периодов распознан неуверенно')
++
++    person['stage_source'] = 'calculated' if person.get('stage_years') else 'missing'
++    person['stage_is_final'] = bool(
++        person.get('stage_years')
++        and person.get('stage_years_here')
++        and not reasons
++    )
++    person['stage_needs_review'] = bool(reasons)
++    person['stage_review_reasons'] = list(dict.fromkeys(reasons))
++    person['stage_calculation'] = {
++        'as_of_date': as_of_date,
++        'role_family': _target_role_family(person),
++        'confirmed_periods': confirmed,
++        'uncertain_periods': assessment['uncertain'],
++        'excluded_periods': assessment['excluded'],
++        'total': total,
++        'current_company': current,
++        'reference_total': reference_total,
++        'reference_here': reference_here,
++        'reference_used_as_value': False,
++    }
++    return person
+ 
+ def check_category_requirements(category, staff_total: int, has_smetchik: bool,
+                                  experience_objects: list, prior_category_years: int = 0) -> list:
+@@ -1099,43 +1446,10 @@
+     experience_objects = attestation_data.get('experience_objects', [])
+     prior_years = attestation_data.get('prior_category_years', 0)
+ 
++    as_of_date = attestation_data.get('as_of_date') or __import__('datetime').datetime.now().strftime('%d.%m.%Y')
++    attestation_data['as_of_date'] = as_of_date
+     for person in itr_list:
+-        # Восстанавливаем готовые две строки стажа из Формы №2 даже для старых карточек,
+-        # где stage_form2_text был сохранён одной строкой с переносами.
+-        raw_stage = person.get('stage_form2_text') or []
+-        raw_stage = raw_stage if isinstance(raw_stage, (list, tuple)) else [raw_stage]
+-        stage_lines = []
+-        for item in raw_stage:
+-            for part in re.split(r'[\r\n]+', str(item or '')):
+-                text = re.sub(r'\s+', ' ', part).strip()
+-                if text and text not in ('—', '-', '–'):
+-                    stage_lines.append(text)
+-        combined = [x for x in re.split(r'[\r\n]+', str(person.get('stage_years') or '')) if x.strip()]
+-        if len(combined) > 1 and not person.get('stage_years_here'):
+-            person['stage_years'] = combined[0].strip()
+-            person['stage_years_here'] = combined[1].strip()
+-        if not person.get('stage_years') and stage_lines:
+-            person['stage_years'] = stage_lines[0]
+-        if not person.get('stage_years_here') and len(stage_lines) > 1:
+-            person['stage_years_here'] = stage_lines[1]
+-        if stage_lines or str(person.get('stage_source') or '').lower() == 'document':
+-            person['stage_source'] = 'document'
+-            person['stage_is_final'] = bool(person.get('stage_years') and person.get('stage_years_here'))
+-
+-        periods = person.get('employment_periods')
+-        has_final_stage = bool(person.get('stage_is_final'))
+-        relevant_periods = select_relevant_periods(person, periods or [])
+-        if not has_final_stage and relevant_periods and not person.get('stage_years'):
+-            calc = calculate_stazh(relevant_periods, as_of_date=attestation_data.get('as_of_date'))
+-            person['stage_years'] = calc['display']
+-            person['stage_source'] = 'calculated'
+-        if not has_final_stage and relevant_periods and not person.get('stage_years_here'):
+-            calc_here = calculate_current_company_stazh(
+-                relevant_periods, company, as_of_date=attestation_data.get('as_of_date')
+-            )
+-            if calc_here['years'] or calc_here['months'] or calc_here['days']:
+-                person['stage_years_here'] = calc_here['display']
+-                person['stage_source'] = 'calculated'
++        calculate_person_experience(person, company, as_of_date=as_of_date)
+ 
+     warnings = []
+     if category:
+--- a/generator_company_att_templates.py
++++ b/generator_company_att_templates.py
+@@ -57,24 +57,155 @@
+     return (str(s) if s not in (None, '') else '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+ 
+ 
++_REVIEW_FILL = 'FFF2CC'
++_REVIEW_DASHES = {'', '—', '-', '–'}
++
++
++def _review_value(value, yellow: bool = False):
++    """Value wrapper understood by paragraph/cell renderers."""
++    return {'__review_text__': value, '__review_yellow__': bool(yellow)}
++
++
++def _unwrap_review(value):
++    if isinstance(value, dict) and '__review_text__' in value:
++        return value.get('__review_text__'), bool(value.get('__review_yellow__'))
++    return value, False
++
++
++def _meaningful(value) -> bool:
++    if isinstance(value, (list, tuple)):
++        return any(_meaningful(x) for x in value)
++    text = str(value or '').strip()
++    return bool(text) and text not in _REVIEW_DASHES and 'не найдено' not in text.lower()
++
++
++def _uncertain_text(value) -> bool:
++    if isinstance(value, (list, tuple, set)):
++        return any(_uncertain_text(item) for item in value)
++    if isinstance(value, dict):
++        return any(_uncertain_text(item) for item in value.values())
++    text = str(value or '').lower().replace('ё', 'е')
++    return bool(text) and any(x in text for x in (
++        'неразборчив', 'не уверен', 'требует уточнения', 'две попытки чтения разошлись',
++        'предположительно', '[', ']', '?',
++    ))
++
++
++def _field_needs_review(record: dict, field: str, value=None) -> bool:
++    if not _meaningful(value):
++        return True
++    if _uncertain_text(value):
++        return True
++    if not isinstance(record, dict):
++        return False
++    uncertain = record.get('uncertain_fields') or []
++    if isinstance(uncertain, str):
++        uncertain = [x.strip() for x in re.split(r'[,;\n]+', uncertain) if x.strip()]
++    normalized = {str(x).strip().lower().replace('ё', 'е') for x in uncertain}
++    field_norm = str(field or '').strip().lower().replace('ё', 'е')
++    if field_norm in normalized:
++        return True
++    confidence = None
++    field_conf = record.get('field_confidence')
++    if isinstance(field_conf, dict):
++        confidence = field_conf.get(field)
++    if confidence is None:
++        confidence = record.get(f'{field}_confidence')
++    if isinstance(confidence, (int, float)) and float(confidence) < 0.85:
++        return True
++    if isinstance(confidence, str) and confidence.lower() in ('low', 'uncertain', 'низкая', 'низкий', 'сомнительно'):
++        return True
++    return bool(record.get('needs_review')) and not normalized
++
++
++def _mark_field(record: dict, field: str, value, force: bool = False):
++    return _review_value(value, force or _field_needs_review(record, field, value))
++
++
++def _add_run_highlight(run_prefix: str) -> str:
++    tag = '<w:highlight w:val="yellow"/>'
++    if tag in run_prefix:
++        return run_prefix
++    if '</w:rPr>' in run_prefix:
++        return run_prefix.replace('</w:rPr>', tag + '</w:rPr>', 1)
++    m = re.match(r'(<w:r\b[^>]*>)', run_prefix)
++    if m:
++        return run_prefix[:m.end()] + '<w:rPr>' + tag + '</w:rPr>' + run_prefix[m.end():]
++    return run_prefix
++
++
++def _shade_tc_pr(tc_pr: str) -> str:
++    shd = f'<w:shd w:val="clear" w:color="auto" w:fill="{_REVIEW_FILL}"/>'
++    if re.search(r'<w:shd\b', tc_pr):
++        return re.sub(r'<w:shd\b[^>]*/>', shd, tc_pr, count=1)
++    if '</w:tcPr>' in tc_pr:
++        return tc_pr.replace('</w:tcPr>', shd + '</w:tcPr>', 1)
++    return tc_pr
++
++
++_REVIEW_TOKEN_RE = re.compile(
++    r'(?:ТРЕБУЕТ\s+УТОЧНЕНИЯ|НЕРАЗБОРЧИВ|НЕ\s+УВЕРЕН|ДВЕ\s+ПОПЫТКИ\s+ЧТЕНИЯ|'
++    r'_{3,}|нет\s+аттестата\s*/\s*в\s+процессе)',
++    re.IGNORECASE,
++)
++
++
++def highlight_review_tokens(docx_bytes: bytes) -> bytes:
++    """Final safety layer: highlight every explicit missing/uncertain placeholder.
++
++    Template-specific renderers already shade known fields. This pass also covers
++    auxiliary documents produced by the legacy generator (for example Form №6 or a
++    cancellation statement), so a placeholder can never remain visually invisible.
++    """
++    try:
++        with zipfile.ZipFile(BytesIO(docx_bytes), 'r') as source:
++            parts = {name: source.read(name) for name in source.namelist()}
++    except Exception:
++        return docx_bytes
++    for name in list(parts):
++        if not (name.startswith('word/') and name.endswith('.xml')):
++            continue
++        xml = parts[name].decode('utf-8', errors='ignore')
++
++        def mark_run(match):
++            run = match.group(0)
++            visible = ' '.join(re.findall(r'<w:t[^>]*>(.*?)</w:t>', run, re.DOTALL))
++            visible = re.sub(r'<[^>]+>', '', visible)
++            if not _REVIEW_TOKEN_RE.search(visible):
++                return run
++            if '<w:highlight w:val="yellow"/>' in run:
++                return run
++            if '<w:rPr>' in run:
++                return run.replace('</w:rPr>', '<w:highlight w:val="yellow"/></w:rPr>', 1)
++            opening = re.match(r'(<w:r\b[^>]*>)', run)
++            if opening:
++                return run[:opening.end()] + '<w:rPr><w:highlight w:val="yellow"/></w:rPr>' + run[opening.end():]
++            return run
++
++        xml = re.sub(r'<w:r\b.*?</w:r>', mark_run, xml, flags=re.DOTALL)
++        parts[name] = xml.encode('utf-8')
++    return _rebuild(parts)
++
++
+ def _replace_para_text(para_xml: str, new_text: str) -> str:
+-    """Заменяет ВЕСЬ видимый текст абзаца на новый, сохраняя форматирование ПЕРВОГО
+-    текстового run (шрифт/размер/жирность) — берём его rPr как эталон стиля.
+-    Если внутри было несколько run'ов (Word раздробил текст) — схлопываем в один,
+-    что визуально неотличимо, но надёжнее для замены данных."""
++    """Replace visible paragraph text while preserving the first run style.
++
++    A value wrapped with _review_value(..., yellow=True) receives a real Word
++    text highlight. This is used for every missing or uncertain field.
++    """
++    new_text, yellow = _unwrap_review(new_text)
+     m = re.search(r'(<w:r\b[^P].*?)<w:t[^>]*>.*?</w:t>(.*?</w:r>)', para_xml, re.DOTALL)
+     if not m:
+-        # абзац без текста (пустая строка) — просто вернуть как есть
+         return para_xml
+-    run_prefix = m.group(1)  # <w:r ...><w:rPr>...</w:rPr>
+-    run_suffix = m.group(2)  # </w:r> (обычно пусто перед этим)
++    run_prefix = m.group(1)
++    if yellow:
++        run_prefix = _add_run_highlight(run_prefix)
++    run_suffix = m.group(2)
+     new_run = f'{run_prefix}<w:t xml:space="preserve">{_esc(new_text)}</w:t>{run_suffix}'
+-    # Абзац = всё до начала САМОГО ПЕРВОГО run'а (не rPr внутри pPr!) + новый run + </w:p>
+-    # </w:pPr> — надёжная граница конца свойств абзаца, если pPr вообще есть.
+     if '</w:pPr>' in para_xml:
+         p_open_end = para_xml.find('</w:pPr>') + len('</w:pPr>')
+     else:
+-        p_open_end = para_xml.find('>') + 1  # сразу после <w:p ...>
++        p_open_end = para_xml.find('>') + 1
+     return para_xml[:p_open_end] + new_run + '</w:p>'
+ 
+ 
+@@ -90,6 +221,19 @@
+         if predicate(_para_text(p)):
+             return i
+     return -1
++
++
++
++def _set_page_break_before(para_xml: str) -> str:
++    tag = '<w:pageBreakBefore/>'
++    if tag in para_xml:
++        return para_xml
++    if '<w:pPr>' in para_xml:
++        return para_xml.replace('</w:pPr>', tag + '</w:pPr>', 1)
++    opening = re.match(r'(<w:p\b[^>]*>)', para_xml)
++    if opening:
++        return para_xml[:opening.end()] + '<w:pPr>' + tag + '</w:pPr>' + para_xml[opening.end():]
++    return para_xml
+ 
+ 
+ # ═══════════════════ Общие данные и форматирование ═══════════════════
+@@ -179,6 +323,23 @@
+     return str(value).strip()
+ 
+ 
++_RU_MONTHS = {
++    1: 'января', 2: 'февраля', 3: 'марта', 4: 'апреля', 5: 'мая', 6: 'июня',
++    7: 'июля', 8: 'августа', 9: 'сентября', 10: 'октября', 11: 'ноября', 12: 'декабря',
++}
++
++
++def _signature_date_text(value: str = None) -> str:
++    if value:
++        for fmt in ('%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y'):
++            try:
++                d = datetime.strptime(str(value).strip(), fmt)
++                return f'«{d.day:02d}» {_RU_MONTHS[d.month]} {d.year} г.'
++            except ValueError:
++                pass
++    return f'«___» __________ {_year_from_date(value)} г.'
++
++
+ def _split_lines(value) -> list:
+     if value is None:
+         return []
+@@ -233,22 +394,27 @@
+ 
+ def _replace_signature_and_date(xml: str, company: dict, as_of_date: str = None) -> str:
+     dir_pos = str(company.get('director_position') or 'Директор').strip()
+-    signature = f'{_company_short(company)}   _____________       {_dir_initials(company.get("director_fio", ""))}'
++    director_fio = company.get('director_fio', '')
++    signature = f'{_company_short(company)}   _____________       {_dir_initials(director_fio)}'
++    signature_review = (
++        _field_needs_review(company, 'name', company.get('name'))
++        or _field_needs_review(company, 'director_fio', director_fio)
++    )
+     xml = _replace_matching_paragraphs(
+         xml,
+         lambda t: '_____________' in t and re.search(r'\b(ООО|ОДО|ЧУП|ЧТУП|ЗАО|ОАО|ИП)\b', t),
+-        signature,
++        _review_value(signature, signature_review),
+     )
+     xml = _replace_matching_paragraphs(
+         xml,
+         lambda t: t.strip() in ('Директор', ' Директор') or (t.strip().endswith('Директор') and '_____________' not in t),
+-        dir_pos,
++        _mark_field(company, 'director_position', dir_pos),
+     )
+-    year = _year_from_date(as_of_date)
++    signature_date = company.get('signature_date') or company.get('document_date')
+     xml = _replace_matching_paragraphs(
+         xml,
+         lambda t: t.startswith('«___»') or t.startswith('"___"'),
+-        f'«___»                     {year} г.',
++        _review_value(_signature_date_text(signature_date), not bool(signature_date)),
+     )
+     return xml
+ 
+@@ -382,25 +548,25 @@
+     return re.findall(r'<w:tc\b.*?</w:tc>', row_xml, re.DOTALL)
+ 
+ 
+-def _replace_cell_content(cell_xml: str, lines: list) -> str:
++def _replace_cell_content(cell_xml: str, lines: list, yellow: bool = False) -> str:
+     paras_in_cell = re.findall(r'<w:p\b.*?</w:p>', cell_xml, re.DOTALL)
+     if not paras_in_cell:
+         return cell_xml
+     style_para = paras_in_cell[0]
+     tc_pr_match = re.match(r'(<w:tc\b.*?</w:tcPr>)', cell_xml, re.DOTALL)
+     tc_pr = tc_pr_match.group(1) if tc_pr_match else cell_xml[:cell_xml.find('<w:p')]
+-    # Пустая ячейка должна оставаться пустой. Раньше здесь автоматически появлялось
+-    # «—», из-за чего тире попадали во все незадействованные разряды рабочих.
++    if yellow:
++        tc_pr = _shade_tc_pr(tc_pr)
+     raw_lines = list(lines or [''])
+     cleaned = [str(x) for x in raw_lines if str(x).strip()]
+     if not cleaned:
+         cleaned = ['']
+     def set_para_text(para_xml: str, line: str) -> str:
++        wrapped = _review_value(line, yellow)
+         if re.search(r'<w:t\b', para_xml):
+-            return _replace_para_text(para_xml, line)
+-        # В шаблоне пустые ячейки разрядов часто содержат абзац без <w:t>.
+-        # Добавляем текстовый run, иначе значение разряда визуально не появляется.
+-        run = f'<w:r><w:t xml:space="preserve">{_esc(line)}</w:t></w:r>'
++            return _replace_para_text(para_xml, wrapped)
++        run_pr = '<w:rPr><w:highlight w:val="yellow"/></w:rPr>' if yellow else ''
++        run = f'<w:r>{run_pr}<w:t xml:space="preserve">{_esc(line)}</w:t></w:r>'
+         if '</w:p>' in para_xml:
+             return para_xml.replace('</w:p>', run + '</w:p>', 1)
+         return f'<w:p>{run}</w:p>'
+@@ -413,8 +579,9 @@
+     new_cells = []
+     for i, cell in enumerate(cells):
+         val = cell_values[i] if i < len(cell_values) else ''
++        val, yellow = _unwrap_review(val)
+         lines = val if isinstance(val, list) else [val]
+-        new_cells.append(_replace_cell_content(cell, lines))
++        new_cells.append(_replace_cell_content(cell, lines, yellow=yellow))
+     tr_open_end = template_row_xml.find('>', template_row_xml.find('<w:tr')) + 1
+     tr_pr_match = re.search(r'<w:tr\b[^>]*>(<w:trPr>.*?</w:trPr>)?', template_row_xml, re.DOTALL)
+     tr_open = template_row_xml[:tr_open_end] + (tr_pr_match.group(1) or '' if tr_pr_match else '')
+@@ -433,7 +600,8 @@
+ 
+ 
+ # ═══════════════════ Документ 1: Заявление ═══════════════════
+-def render_zayavlenie(company: dict, work_item_lines: list, category=None, as_of_date: str = None) -> bytes:
++def render_zayavlenie(company: dict, work_item_lines: list, category=None,
++                       as_of_date: str = None, review: dict = None) -> bytes:
+     parts = _load_parts('1__Заявление.docx')
+     xml = parts['word/document.xml'].decode('utf-8')
+     paras = _paragraphs(xml)
+@@ -442,24 +610,51 @@
+     full_gen = _company_case(company, 'gen')
+     full_dat = _company_case(company, 'dat')
+     year = _year_from_date(as_of_date)
++    review = review or {}
++
++    company_name_bad = _field_needs_review(company, 'name', company.get('name'))
++    address_bad = _field_needs_review(company, 'address', company.get('address'))
++    account_bad = _field_needs_review(company, 'bank_account', account)
++    bank_bad = _field_needs_review(company, 'bank_name', bank_name) or _field_needs_review(company, 'bik', bik)
++    unp_bad = _field_needs_review(company, 'unp', company.get('unp'))
++    phone_bad = _field_needs_review(company, 'phone', company.get('phone'))
++    email_bad = _field_needs_review(company, 'email', company.get('email'))
++    director_bad = _field_needs_review(company, 'director_fio', company.get('director_fio'))
++    outgoing_number = str(review.get('outgoing_number') or company.get('outgoing_number') or '').strip()
++    outgoing_date = str(review.get('outgoing_date') or company.get('outgoing_date') or '').strip()
++    outgoing_date_text = _date_display(outgoing_date) if outgoing_date else '___.___.____'
+ 
+     replacements = {
+-        0: full_nom,
+-        1: company.get('address', ''),
+-        2: f'р/с: {account}',
+-        3: f'в {bank_name}, БИК {bik}' if bank_name or bik else 'в __________________, БИК __________',
+-        4: f'УНП {company.get("unp", "")}',
+-        5: f'Тел.: {company.get("phone", "")}',
+-        10: f'От___.____.{year} г.',
+-        15: full_nom,
+-        16: company.get('address', ''),
+-        17: f'УНП {company.get("unp", "")}',
+-        18: f'Тел.: {company.get("phone", "")}\ne-mail: {company.get("email", "")}',
+-        24: f'Прошу провести аттестацию {full_gen} на право осуществления:',
+-        54: (f'В соответствии с частью второй пункта 1 статьи 35 Кодекса Республики Беларусь '
+-             f'об архитектурной, градостроительной и строительной деятельности прошу оформить '
+-             f'{full_dat} аттестат соответствия на бумажном носителе.'),
+-        84: f'{_company_short(company)}   _____________       {_dir_initials(company.get("director_fio", ""))}',
++        0: _review_value(full_nom, company_name_bad),
++        1: _review_value(company.get('address', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ: юридический адрес', address_bad),
++        2: _review_value(f'р/с: {account or "ТРЕБУЕТ УТОЧНЕНИЯ"}', account_bad),
++        3: _review_value(
++            f'в {bank_name or "ТРЕБУЕТ УТОЧНЕНИЯ"}, БИК {bik or "ТРЕБУЕТ УТОЧНЕНИЯ"}',
++            bank_bad,
++        ),
++        4: _review_value(f'УНП {company.get("unp", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}', unp_bad),
++        5: _review_value(f'Тел.: {company.get("phone", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}', phone_bad),
++        9: _review_value(f'Исх. № {outgoing_number or "ТРЕБУЕТ УТОЧНЕНИЯ"}', not bool(outgoing_number)),
++        10: _review_value(f'От {outgoing_date_text} г.', not bool(outgoing_date)),
++        15: _review_value(full_nom, company_name_bad),
++        16: _review_value(company.get('address', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ: юридический адрес', address_bad),
++        17: _review_value(f'УНП {company.get("unp", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}', unp_bad),
++        18: _review_value(
++            f'Тел.: {company.get("phone", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}\n'
++            f'e-mail: {company.get("email", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}',
++            phone_bad or email_bad,
++        ),
++        24: _review_value(f'Прошу провести аттестацию {full_gen} на право осуществления:', company_name_bad),
++        54: _review_value(
++            f'В соответствии с частью второй пункта 1 статьи 35 Кодекса Республики Беларусь '
++            f'об архитектурной, градостроительной и строительной деятельности прошу оформить '
++            f'{full_dat} аттестат соответствия на бумажном носителе.',
++            company_name_bad,
++        ),
++        84: _review_value(
++            f'{_company_short(company)}   _____________       {_dir_initials(company.get("director_fio", ""))}',
++            company_name_bad or director_bad,
++        ),
+     }
+ 
+     idx_head = _find_para_index(paras, lambda t: t.startswith('7. Выполнение'))
+@@ -468,15 +663,20 @@
+         raise RuntimeError('Не удалось найти блок видов работ в шаблоне заявления.')
+     style_template = paras[idx_head + 2] if idx_head + 2 < idx_end else paras[idx_head]
+     work_paras = []
++    category_review = bool(review.get('category_needs_review')) or _field_needs_review(review, 'category', category) if category else False
+     if category:
+         work_paras.append(_clone_para_style(
+             style_template,
+-            f'6. Выполнение функций генерального подрядчика, категория {category}.',
++            _review_value(f'6. Выполнение функций генерального подрядчика, категория {category}.', category_review),
+         ))
+     work_paras.append(_replace_para_text(paras[idx_head], '7. Выполнение строительно-монтажных работ:'))
+-    for line in work_item_lines:
+-        if not line.startswith('7. Выполнение'):
+-            work_paras.append(_clone_para_style(style_template, line))
++    work_review = bool(review.get('work_items_needs_review')) or _field_needs_review(review, 'work_items', work_item_lines)
++    visible_lines = [line for line in (work_item_lines or []) if not str(line).startswith('7. Выполнение')]
++    if not visible_lines:
++        visible_lines = ['ТРЕБУЕТ УТОЧНЕНИЯ: виды строительно-монтажных работ']
++        work_review = True
++    for line in visible_lines:
++        work_paras.append(_clone_para_style(style_template, _review_value(line, work_review or _uncertain_text(line))))
+     old_block = ''.join(paras[idx_head:idx_end])
+     xml = xml.replace(old_block, ''.join(work_paras), 1)
+ 
+@@ -484,17 +684,59 @@
+         xml = _replace_para_at(xml, paras, idx, text)
+ 
+     email_idx = _find_para_index(paras, lambda t: 'mailto:' in t or t.lower().startswith('e-mail:'))
+-    if email_idx >= 0 and company.get('email'):
++    if email_idx >= 0:
+         old = paras[email_idx]
++        email_value = company.get('email') or 'ТРЕБУЕТ УТОЧНЕНИЯ'
+         if old in xml:
+-            if 'mailto:' in old:
+-                xml = xml.replace(old, _replace_email_para(old, company['email']), 1)
++            if 'mailto:' in old and company.get('email'):
++                replaced = _replace_email_para(old, company['email'])
++                if email_bad:
++                    replaced = _replace_para_text(replaced, _review_value(f'e-mail: {company["email"]}', True))
++                xml = xml.replace(old, replaced, 1)
+             else:
+-                xml = xml.replace(old, _replace_para_text(old, f'e-mail: {company["email"]}'), 1)
++                xml = xml.replace(old, _replace_para_text(old, _review_value(f'e-mail: {email_value}', email_bad)), 1)
++
++    # Page counts depend on the final signed/copied package and cannot be guessed.
++    # If the caller did not provide them, make the omission explicit in yellow.
++    page_counts = review.get('attachment_page_counts') or {}
++    if isinstance(page_counts, (list, tuple)):
++        page_counts = {str(i + 2): value for i, value in enumerate(page_counts)}
++    rows_now = _rows(xml)
++    form_keys = {3: ('2', 'form2'), 4: ('3', 'form3'), 5: ('4', 'form4'), 6: ('5', 'form5')}
++    numeric_values = []
++    for row_index, keys in form_keys.items():
++        if row_index >= len(rows_now):
++            continue
++        value = ''
++        for key in keys:
++            if isinstance(page_counts, dict) and page_counts.get(key) not in (None, ''):
++                value = str(page_counts.get(key)).strip()
++                break
++        cells = _cells(rows_now[row_index])
++        if len(cells) >= 3:
++            display = value or '?'
++            new_cell = _replace_cell_content(cells[-1], [display], yellow=not bool(value))
++            new_row = rows_now[row_index].replace(cells[-1], new_cell, 1)
++            xml = xml.replace(rows_now[row_index], new_row, 1)
++        if value.isdigit():
++            numeric_values.append(int(value))
++    rows_now = _rows(xml)
++    if len(rows_now) > 7:
++        total_value = ''
++        supplied_total = page_counts.get('total') if isinstance(page_counts, dict) else None
++        if supplied_total not in (None, ''):
++            total_value = str(supplied_total).strip()
++        elif len(numeric_values) == len(form_keys):
++            total_value = str(sum(numeric_values))
++        cells = _cells(rows_now[7])
++        if cells:
++            display = total_value or '?'
++            new_cell = _replace_cell_content(cells[-1], [display], yellow=not bool(total_value))
++            new_row = rows_now[7].replace(cells[-1], new_cell, 1)
++            xml = xml.replace(rows_now[7], new_row, 1)
+ 
+     parts['word/document.xml'] = xml.encode('utf-8')
+     return _rebuild(parts)
+-
+ 
+ def _replace_email_para(para_xml: str, new_email: str) -> str:
+     para_xml = re.sub(r'mailto:[^" ]+', f'mailto:{new_email}', para_xml)
+@@ -526,32 +768,67 @@
+     idx_staff = _find_para_index(paras, lambda t: t.startswith('Общая численность'))
+     idx_itr_count = _find_para_index(paras, lambda t: t.startswith('численность инженерно'))
+     if idx_staff >= 0:
++        staff_review = total <= 0 or date_text.startswith('___')
+         xml = _replace_para_at(
+             xml, paras, idx_staff,
+-            f'Общая численность работающих {total} чел., в том числе по заявляемому виду '
+-            f'деятельности {total} чел. по состоянию на {date_text};',
++            _review_value(
++                f'Общая численность работающих {total or "ТРЕБУЕТ УТОЧНЕНИЯ"} чел., '
++                f'в том числе по заявляемому виду деятельности {total or "ТРЕБУЕТ УТОЧНЕНИЯ"} чел. '
++                f'по состоянию на {date_text};',
++                staff_review,
++            ),
+         )
+     if idx_itr_count >= 0:
+         xml = _replace_para_at(
+             xml, paras, idx_itr_count,
+-            f'численность инженерно-технических работников по заявляемому виду деятельности {n_itr} чел.',
++            _review_value(
++                f'численность инженерно-технических работников по заявляемому виду деятельности '
++                f'{n_itr or "ТРЕБУЕТ УТОЧНЕНИЯ"} чел.',
++                n_itr <= 0,
++            ),
+         )
+ 
+     rows = _rows(xml)
+     itr_template_row = rows[2]
+     itr_rows_new = []
+     for i, person in enumerate(itr_list, 1):
+-        stage_lines = [str(person.get('stage_years') or '—'), str(person.get('stage_years_here') or '—')]
++        stage_total = str(person.get('stage_years') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
++        stage_here = str(person.get('stage_years_here') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
++        stage_review = bool(person.get('stage_needs_review')) or not person.get('stage_is_final')
++        education = _education_lines(person)
++        labour = _trudovaya_cell_lines(person)
++        attest = _attestation_lines(person, 'form2')
+         itr_rows_new.append(_build_row(itr_template_row, [
+             str(i),
+-            person.get('position', ''),
+-            person.get('fio', ''),
+-            _education_lines(person),
+-            stage_lines,
+-            _trudovaya_cell_lines(person),
+-            _attestation_lines(person, 'form2'),
++            _mark_field(person, 'position', person.get('position', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
++            _mark_field(person, 'fio', person.get('fio', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
++            _review_value(education if education != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
++                          _field_needs_review(person, 'education', education)),
++            _review_value([stage_total, stage_here], stage_review),
++            _review_value(labour if labour and labour != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
++                          _field_needs_review(person, 'trudovaya_number', labour)),
++            _review_value(attest if attest and attest != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
++                          _field_needs_review(person, 'attestat_number', attest)),
+         ]))
++    if not itr_rows_new:
++        itr_rows_new = [_build_row(itr_template_row, [
++            '1',
++            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
++            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
++            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
++            _review_value(['ТРЕБУЕТ УТОЧНЕНИЯ', 'ТРЕБУЕТ УТОЧНЕНИЯ'], True),
++            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
++            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
++        ])]
+     xml = _splice_rows(xml, rows[2:5], itr_rows_new)
++
++    # Keep the workers table together on a fresh page. Without this, LibreOffice can
++    # split the two-row header at the page bottom and visually stretch column borders
++    # through the signature block when there are only one or two ITR rows.
++    for para in _paragraphs(xml):
++        if _para_text(para).strip().lower().startswith('рабочих строительных профессий'):
++            xml = xml.replace(para, _set_page_break_before(para), 1)
++            break
+ 
+     rows2 = _rows(xml)
+     w_header_idx = next((i for i, row in enumerate(rows2) if 'Наименование профессий рабочих' in row), None)
+@@ -565,15 +842,22 @@
+             new_worker_rows = []
+             grouped_workers = group_workers_for_form(workers)
+             for i, worker in enumerate(grouped_workers, 1):
+-                cells = [str(i), worker.get('profession', '')]
++                profession_review = _field_needs_review(worker, 'profession', worker.get('profession'))
++                counts_review = bool(worker.get('needs_review')) or _field_needs_review(worker, 'razryad', worker.get('counts') or {})
++                cells = [str(i), _review_value(worker.get('profession', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ', profession_review)]
+                 counts = worker.get('counts') or {}
+                 for r in RAZRYAD_COLUMNS:
+                     count = max(0, int(counts.get(r) or 0))
+-                    cells.append(str(count) if count else '')
++                    cells.append(_review_value(str(count) if count else '', counts_review and bool(count)))
+                     totals[r] += count
+-                cells.append(str(worker.get('total') or '') if worker.get('total') else '')
++                total_value = str(worker.get('total') or '') if worker.get('total') else ''
++                cells.append(_review_value(total_value or 'ТРЕБУЕТ УТОЧНЕНИЯ', counts_review or not total_value))
+                 new_worker_rows.append(_build_row(worker_template_row, cells))
+-            total_cells = ['', 'Итого по разрядам:'] + [str(totals[r]) if totals[r] else '' for r in RAZRYAD_COLUMNS] + [str(sum(totals.values()))]
++            if not new_worker_rows:
++                new_worker_rows.append(_build_row(worker_template_row, [
++                    '1', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ: рабочие', True), '', '', '', '', '', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True)
++                ]))
++            total_cells = ['', 'Итого по разрядам:'] + [str(totals[r]) if totals[r] else '' for r in RAZRYAD_COLUMNS] + [str(sum(totals.values())) if totals else '']
+             new_worker_rows.append(_build_row(rows2[old_total_idx], total_cells))
+             xml = _splice_rows(xml, old_worker_rows, new_worker_rows)
+ 
+@@ -590,9 +874,19 @@
+     template_row = rows[2]
+     new_rows = []
+     for i, person in enumerate(itr_list, 1):
++        labour = _trudovaya_number_lines(person)
+         new_rows.append(_build_row(template_row, [
+-            str(i), person.get('fio', ''), person.get('position', ''), _trudovaya_number_lines(person)
++            str(i),
++            _mark_field(person, 'fio', person.get('fio', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
++            _mark_field(person, 'position', person.get('position', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
++            _review_value(labour if labour != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
++                          _field_needs_review(person, 'trudovaya_number', labour)),
+         ]))
++    if not new_rows:
++        new_rows = [_build_row(template_row, [
++            '1', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
++            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True), _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True)
++        ])]
+     xml = _splice_rows(xml, rows[2:], new_rows)
+     parts['word/document.xml'] = xml.encode('utf-8')
+     return _rebuild(parts)
+@@ -608,7 +902,17 @@
+     people = [p for p in itr_list if _diploma_number_lines(p) != ['—']] or itr_list
+     new_rows = []
+     for i, person in enumerate(people, 1):
+-        new_rows.append(_build_row(template_row, [str(i), person.get('fio', ''), _diploma_number_lines(person)]))
++        diplomas = _diploma_number_lines(person)
++        new_rows.append(_build_row(template_row, [
++            str(i),
++            _mark_field(person, 'fio', person.get('fio', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
++            _review_value(diplomas if diplomas != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
++                          _field_needs_review(person, 'diploma_number', diplomas)),
++        ]))
++    if not new_rows:
++        new_rows = [_build_row(template_row, [
++            '1', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True), _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True)
++        ])]
+     xml = _splice_rows(xml, rows[2:], new_rows)
+     parts['word/document.xml'] = xml.encode('utf-8')
+     return _rebuild(parts)
+@@ -621,15 +925,24 @@
+     xml = _replace_signature_and_date(xml, company, as_of_date)
+     rows = _rows(xml)
+     template_row = rows[2]
+-    people = [p for p in itr_list if (p.get('attestat_number') or p.get('attestat_full_text')
+-                                           or p.get('attestat_form2_text') or p.get('attestat_form5_text'))]
++    # Keep all ITR visible. If an attestation is missing, the yellow cell makes the
++    # omission explicit instead of silently dropping the person from Form 5.
++    people = itr_list
+     new_rows = []
+     for i, person in enumerate(people, 1):
++        attest = _attestation_lines(person, 'form5')
+         new_rows.append(_build_row(template_row, [
+-            str(i), person.get('fio', ''), person.get('position', ''), _attestation_lines(person, 'form5')
++            str(i),
++            _mark_field(person, 'fio', person.get('fio', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
++            _mark_field(person, 'position', person.get('position', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
++            _review_value(attest if attest != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
++                          _field_needs_review(person, 'attestat_number', attest)),
+         ]))
+     if not new_rows:
+-        new_rows = [_build_row(template_row, ['1', '—', '—', 'нет аттестатов среди ИТР'])]
++        new_rows = [_build_row(template_row, [
++            '1', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
++            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True), _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True)
++        ])]
+     xml = _splice_rows(xml, rows[2:], new_rows)
+     parts['word/document.xml'] = xml.encode('utf-8')
+     return _rebuild(parts)
+@@ -658,45 +971,37 @@
+     return lines
+ 
+ 
+-def _restore_final_stage(person: dict) -> None:
+-    """Восстанавливает итоговый стаж из заполненной Формы №2 и фиксирует приоритет."""
+-    # Поддержка старых/альтернативных имён полей от модели.
+-    if not person.get('stage_years'):
+-        for key in ('stage_total', 'total_stage', 'experience_total', 'stazh_total'):
+-            if person.get(key):
+-                person['stage_years'] = person[key]
+-                break
+-    if not person.get('stage_years_here'):
+-        for key in ('stage_company', 'company_stage', 'experience_here', 'stazh_here'):
+-            if person.get(key):
+-                person['stage_years_here'] = person[key]
+-                break
+-
++def _preserve_stage_reference(person: dict) -> None:
++    """Keep completed Form 2 values only as a comparison/reference.
++
++    They are never treated as the calculated experience. The backend calculates
++    from employment_periods extracted from the labour book.
++    """
+     lines = _stage_text_lines(person.get('stage_form2_text'))
+-    # Иногда обе строки попадали в stage_years одной строкой.
+     combined = _stage_text_lines(person.get('stage_years'))
+-    if len(combined) > 1 and not person.get('stage_years_here'):
+-        person['stage_years'] = combined[0]
+-        person['stage_years_here'] = combined[1]
+-    elif len(combined) == 1 and person.get('stage_years'):
+-        person['stage_years'] = combined[0]
+-
+-    if not person.get('stage_years') and lines:
+-        person['stage_years'] = lines[0]
+-    if not person.get('stage_years_here') and len(lines) > 1:
+-        person['stage_years_here'] = lines[1]
+-
+-    if lines or str(person.get('stage_source') or '').lower() == 'document':
+-        person['stage_source'] = 'document'
+-        person['stage_is_final'] = bool(person.get('stage_years') and person.get('stage_years_here'))
++    if not lines and combined:
++        lines = combined
++    if not person.get('stage_reference_total') and lines:
++        person['stage_reference_total'] = lines[0]
++    if not person.get('stage_reference_here') and len(lines) > 1:
++        person['stage_reference_here'] = lines[1]
++    if str(person.get('stage_source') or '').lower() in ('document', 'document_reference'):
++        # Old cards stored Form 2 text in the live result fields. Move it away so
++        # calculate_person_experience() cannot mistake it for a fresh calculation.
++        if not person.get('stage_reference_total') and person.get('stage_years'):
++            person['stage_reference_total'] = person.get('stage_years')
++        if not person.get('stage_reference_here') and person.get('stage_years_here'):
++            person['stage_reference_here'] = person.get('stage_years_here')
++        person['stage_years'] = ''
++        person['stage_years_here'] = ''
++        person['stage_is_final'] = False
+ 
+ 
+ # ═══════════════════ Адаптер для реального пайплайна ═══════════════════
+ def generate_company_attestation_package_v2(company: dict, attestation_data: dict,
+                                              api_key=None, vibe_call_fn=None, progress_cb=None) -> dict:
+     from generator_company_att import (
+-        resolve_work_items, render_work_items_lines, calculate_stazh,
+-        calculate_current_company_stazh, select_relevant_periods, resolve_workers,
++        resolve_work_items, render_work_items_lines, calculate_person_experience, resolve_workers,
+         check_category_requirements, _flat_work_items, RAZRYAD_COLUMNS,
+         gen_zayavlenie_otmena, gen_form6_opyt,
+     )
+@@ -722,35 +1027,12 @@
+         itr_list = [dict(p) for p in (attestation_data.get('itr') or [])]
+     work_items = resolve_work_items(attestation_data)
+     workers = resolve_workers(attestation_data, work_items)
+-    as_of_date = attestation_data.get('as_of_date')
++    as_of_date = attestation_data.get('as_of_date') or datetime.now().strftime('%d.%m.%Y')
++    attestation_data['as_of_date'] = as_of_date
+ 
+     for person in itr_list:
+-        _restore_final_stage(person)
+-
+-        # Итоговый стаж из заполненной Формы №2 не зависит от employment_periods и
+-        # никогда не пересчитывается. Периоды нужны только при отсутствии готовых итогов.
+-        has_final_stage = bool(person.get('stage_is_final')) or (
+-            str(person.get('stage_source') or '').lower() == 'document'
+-            and bool(person.get('stage_years'))
+-            and bool(person.get('stage_years_here'))
+-        )
+-        periods = person.get('employment_periods') or []
+-        relevant_periods = select_relevant_periods(person, periods)
+-        if not has_final_stage and relevant_periods and not person.get('stage_years'):
+-            person['stage_years'] = calculate_stazh(relevant_periods, as_of_date=as_of_date)['display']
+-            person['stage_source'] = 'calculated'
+-        if not has_final_stage and relevant_periods and not person.get('stage_years_here'):
+-            current = calculate_current_company_stazh(relevant_periods, company, as_of_date=as_of_date)
+-            if current['years'] or current['months'] or current['days']:
+-                person['stage_years_here'] = current['display']
+-                person['stage_source'] = 'calculated'
+-        # Если периоды трудовой не распознаны, но дата приёма в текущую компанию
+-        # есть в Форме №2, рассчитываем хотя бы вторую строку стажа детерминированно.
+-        if not has_final_stage and not person.get('stage_years_here') and person.get('hire_date'):
+-            current = calculate_stazh([{'start': person.get('hire_date'), 'end': None}], as_of_date=as_of_date)
+-            if current['years'] or current['months'] or current['days']:
+-                person['stage_years_here'] = current['display']
+-                person['stage_source'] = person.get('stage_source') or 'calculated'
++        _preserve_stage_reference(person)
++        calculate_person_experience(person, company, as_of_date=as_of_date)
+ 
+     calculated_total = len(itr_list) + sum(max(0, int(w.get('count') or 0)) for w in workers)
+     try:
+@@ -779,7 +1061,11 @@
+     missing_stage = [p.get('fio', '?') for p in itr_list
+                      if not _valid_stage(p.get('stage_years')) or not _valid_stage(p.get('stage_years_here'))]
+     if missing_stage:
+-        warnings.append('Не полностью заполнен стаж: ' + ', '.join(missing_stage))
++        warnings.append('Не удалось полностью рассчитать стаж по трудовой: ' + ', '.join(missing_stage) + '. Жёлтые поля требуют проверки.')
++    for person in itr_list:
++        if person.get('stage_needs_review'):
++            reasons = '; '.join(person.get('stage_review_reasons') or [])
++            warnings.append(f"Стаж {person.get('fio', '?')} требует проверки: {reasons or 'есть неуверенные периоды'}. Поле выделено жёлтым.")
+     for worker in workers:
+         if str(worker.get('razryad') or '').upper().strip() not in RAZRYAD_COLUMNS:
+             warnings.append(f"Неверный разряд у рабочего {worker.get('profession', '?')}: {worker.get('razryad', '')}")
+@@ -794,6 +1080,8 @@
+                 attestation_data.get('cancellation_reason', 'по заявлению обладателя'),
+             ),
+         })
++        for doc in docs:
++            doc['bytes'] = highlight_review_tokens(doc['bytes'])
+         return {'docs': docs, 'warnings': warnings}
+ 
+     work_lines = render_work_items_lines(work_items)
+@@ -803,7 +1091,7 @@
+     progress('1. Заявление')
+     docs.append({
+         'name': f'{org} - 1. Заявление.docx',
+-        'bytes': render_zayavlenie(company, work_lines, category=category, as_of_date=as_of_date),
++        'bytes': render_zayavlenie(company, work_lines, category=category, as_of_date=as_of_date, review=attestation_data),
+     })
+     progress('2. Форма №2 (ИТР и рабочие)')
+     docs.append({
+@@ -819,9 +1107,15 @@
+ 
+     if category:
+         progress('6. Форма №6 (Опыт генподрядчика)')
++        objects = attestation_data.get('experience_objects') or [{
++            'name': 'ТРЕБУЕТ УТОЧНЕНИЯ: объект',
++            'complexity_class': 'ТРЕБУЕТ УТОЧНЕНИЯ: класс сложности',
++        }]
+         docs.append({
+             'name': f'{org} - 6. Форма №6 Опыт.docx',
+-            'bytes': gen_form6_opyt(company, attestation_data.get('experience_objects') or []),
++            'bytes': gen_form6_opyt(company, objects),
+         })
+ 
++    for doc in docs:
++        doc['bytes'] = highlight_review_tokens(doc['bytes'])
+     return {'docs': docs, 'warnings': list(dict.fromkeys(warnings))}

@@ -57,24 +57,155 @@ def _esc(s) -> str:
     return (str(s) if s not in (None, '') else '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
+_REVIEW_FILL = 'FFF2CC'
+_REVIEW_DASHES = {'', '—', '-', '–'}
+
+
+def _review_value(value, yellow: bool = False):
+    """Value wrapper understood by paragraph/cell renderers."""
+    return {'__review_text__': value, '__review_yellow__': bool(yellow)}
+
+
+def _unwrap_review(value):
+    if isinstance(value, dict) and '__review_text__' in value:
+        return value.get('__review_text__'), bool(value.get('__review_yellow__'))
+    return value, False
+
+
+def _meaningful(value) -> bool:
+    if isinstance(value, (list, tuple)):
+        return any(_meaningful(x) for x in value)
+    text = str(value or '').strip()
+    return bool(text) and text not in _REVIEW_DASHES and 'не найдено' not in text.lower()
+
+
+def _uncertain_text(value) -> bool:
+    if isinstance(value, (list, tuple, set)):
+        return any(_uncertain_text(item) for item in value)
+    if isinstance(value, dict):
+        return any(_uncertain_text(item) for item in value.values())
+    text = str(value or '').lower().replace('ё', 'е')
+    return bool(text) and any(x in text for x in (
+        'неразборчив', 'не уверен', 'требует уточнения', 'две попытки чтения разошлись',
+        'предположительно', '[', ']', '?',
+    ))
+
+
+def _field_needs_review(record: dict, field: str, value=None) -> bool:
+    if not _meaningful(value):
+        return True
+    if _uncertain_text(value):
+        return True
+    if not isinstance(record, dict):
+        return False
+    uncertain = record.get('uncertain_fields') or []
+    if isinstance(uncertain, str):
+        uncertain = [x.strip() for x in re.split(r'[,;\n]+', uncertain) if x.strip()]
+    normalized = {str(x).strip().lower().replace('ё', 'е') for x in uncertain}
+    field_norm = str(field or '').strip().lower().replace('ё', 'е')
+    if field_norm in normalized:
+        return True
+    confidence = None
+    field_conf = record.get('field_confidence')
+    if isinstance(field_conf, dict):
+        confidence = field_conf.get(field)
+    if confidence is None:
+        confidence = record.get(f'{field}_confidence')
+    if isinstance(confidence, (int, float)) and float(confidence) < 0.85:
+        return True
+    if isinstance(confidence, str) and confidence.lower() in ('low', 'uncertain', 'низкая', 'низкий', 'сомнительно'):
+        return True
+    return bool(record.get('needs_review')) and not normalized
+
+
+def _mark_field(record: dict, field: str, value, force: bool = False):
+    return _review_value(value, force or _field_needs_review(record, field, value))
+
+
+def _add_run_highlight(run_prefix: str) -> str:
+    tag = '<w:highlight w:val="yellow"/>'
+    if tag in run_prefix:
+        return run_prefix
+    if '</w:rPr>' in run_prefix:
+        return run_prefix.replace('</w:rPr>', tag + '</w:rPr>', 1)
+    m = re.match(r'(<w:r\b[^>]*>)', run_prefix)
+    if m:
+        return run_prefix[:m.end()] + '<w:rPr>' + tag + '</w:rPr>' + run_prefix[m.end():]
+    return run_prefix
+
+
+def _shade_tc_pr(tc_pr: str) -> str:
+    shd = f'<w:shd w:val="clear" w:color="auto" w:fill="{_REVIEW_FILL}"/>'
+    if re.search(r'<w:shd\b', tc_pr):
+        return re.sub(r'<w:shd\b[^>]*/>', shd, tc_pr, count=1)
+    if '</w:tcPr>' in tc_pr:
+        return tc_pr.replace('</w:tcPr>', shd + '</w:tcPr>', 1)
+    return tc_pr
+
+
+_REVIEW_TOKEN_RE = re.compile(
+    r'(?:ТРЕБУЕТ\s+УТОЧНЕНИЯ|НЕРАЗБОРЧИВ|НЕ\s+УВЕРЕН|ДВЕ\s+ПОПЫТКИ\s+ЧТЕНИЯ|'
+    r'_{3,}|нет\s+аттестата\s*/\s*в\s+процессе)',
+    re.IGNORECASE,
+)
+
+
+def highlight_review_tokens(docx_bytes: bytes) -> bytes:
+    """Final safety layer: highlight every explicit missing/uncertain placeholder.
+
+    Template-specific renderers already shade known fields. This pass also covers
+    auxiliary documents produced by the legacy generator (for example Form №6 or a
+    cancellation statement), so a placeholder can never remain visually invisible.
+    """
+    try:
+        with zipfile.ZipFile(BytesIO(docx_bytes), 'r') as source:
+            parts = {name: source.read(name) for name in source.namelist()}
+    except Exception:
+        return docx_bytes
+    for name in list(parts):
+        if not (name.startswith('word/') and name.endswith('.xml')):
+            continue
+        xml = parts[name].decode('utf-8', errors='ignore')
+
+        def mark_run(match):
+            run = match.group(0)
+            visible = ' '.join(re.findall(r'<w:t[^>]*>(.*?)</w:t>', run, re.DOTALL))
+            visible = re.sub(r'<[^>]+>', '', visible)
+            if not _REVIEW_TOKEN_RE.search(visible):
+                return run
+            if '<w:highlight w:val="yellow"/>' in run:
+                return run
+            if '<w:rPr>' in run:
+                return run.replace('</w:rPr>', '<w:highlight w:val="yellow"/></w:rPr>', 1)
+            opening = re.match(r'(<w:r\b[^>]*>)', run)
+            if opening:
+                return run[:opening.end()] + '<w:rPr><w:highlight w:val="yellow"/></w:rPr>' + run[opening.end():]
+            return run
+
+        xml = re.sub(r'<w:r\b.*?</w:r>', mark_run, xml, flags=re.DOTALL)
+        parts[name] = xml.encode('utf-8')
+    return _rebuild(parts)
+
+
 def _replace_para_text(para_xml: str, new_text: str) -> str:
-    """Заменяет ВЕСЬ видимый текст абзаца на новый, сохраняя форматирование ПЕРВОГО
-    текстового run (шрифт/размер/жирность) — берём его rPr как эталон стиля.
-    Если внутри было несколько run'ов (Word раздробил текст) — схлопываем в один,
-    что визуально неотличимо, но надёжнее для замены данных."""
+    """Replace visible paragraph text while preserving the first run style.
+
+    A value wrapped with _review_value(..., yellow=True) receives a real Word
+    text highlight. This is used for every missing or uncertain field.
+    """
+    new_text, yellow = _unwrap_review(new_text)
     m = re.search(r'(<w:r\b[^P].*?)<w:t[^>]*>.*?</w:t>(.*?</w:r>)', para_xml, re.DOTALL)
     if not m:
-        # абзац без текста (пустая строка) — просто вернуть как есть
         return para_xml
-    run_prefix = m.group(1)  # <w:r ...><w:rPr>...</w:rPr>
-    run_suffix = m.group(2)  # </w:r> (обычно пусто перед этим)
+    run_prefix = m.group(1)
+    if yellow:
+        run_prefix = _add_run_highlight(run_prefix)
+    run_suffix = m.group(2)
     new_run = f'{run_prefix}<w:t xml:space="preserve">{_esc(new_text)}</w:t>{run_suffix}'
-    # Абзац = всё до начала САМОГО ПЕРВОГО run'а (не rPr внутри pPr!) + новый run + </w:p>
-    # </w:pPr> — надёжная граница конца свойств абзаца, если pPr вообще есть.
     if '</w:pPr>' in para_xml:
         p_open_end = para_xml.find('</w:pPr>') + len('</w:pPr>')
     else:
-        p_open_end = para_xml.find('>') + 1  # сразу после <w:p ...>
+        p_open_end = para_xml.find('>') + 1
     return para_xml[:p_open_end] + new_run + '</w:p>'
 
 
@@ -90,6 +221,19 @@ def _find_para_index(paras: list, predicate) -> int:
         if predicate(_para_text(p)):
             return i
     return -1
+
+
+
+def _set_page_break_before(para_xml: str) -> str:
+    tag = '<w:pageBreakBefore/>'
+    if tag in para_xml:
+        return para_xml
+    if '<w:pPr>' in para_xml:
+        return para_xml.replace('</w:pPr>', tag + '</w:pPr>', 1)
+    opening = re.match(r'(<w:p\b[^>]*>)', para_xml)
+    if opening:
+        return para_xml[:opening.end()] + '<w:pPr>' + tag + '</w:pPr>' + para_xml[opening.end():]
+    return para_xml
 
 
 # ═══════════════════ Общие данные и форматирование ═══════════════════
@@ -179,6 +323,23 @@ def _date_display(value: str = None) -> str:
     return str(value).strip()
 
 
+_RU_MONTHS = {
+    1: 'января', 2: 'февраля', 3: 'марта', 4: 'апреля', 5: 'мая', 6: 'июня',
+    7: 'июля', 8: 'августа', 9: 'сентября', 10: 'октября', 11: 'ноября', 12: 'декабря',
+}
+
+
+def _signature_date_text(value: str = None) -> str:
+    if value:
+        for fmt in ('%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y'):
+            try:
+                d = datetime.strptime(str(value).strip(), fmt)
+                return f'«{d.day:02d}» {_RU_MONTHS[d.month]} {d.year} г.'
+            except ValueError:
+                pass
+    return f'«___» __________ {_year_from_date(value)} г.'
+
+
 def _split_lines(value) -> list:
     if value is None:
         return []
@@ -233,22 +394,27 @@ def _replace_matching_paragraphs(xml: str, predicate, new_text) -> str:
 
 def _replace_signature_and_date(xml: str, company: dict, as_of_date: str = None) -> str:
     dir_pos = str(company.get('director_position') or 'Директор').strip()
-    signature = f'{_company_short(company)}   _____________       {_dir_initials(company.get("director_fio", ""))}'
+    director_fio = company.get('director_fio', '')
+    signature = f'{_company_short(company)}   _____________       {_dir_initials(director_fio)}'
+    signature_review = (
+        _field_needs_review(company, 'name', company.get('name'))
+        or _field_needs_review(company, 'director_fio', director_fio)
+    )
     xml = _replace_matching_paragraphs(
         xml,
         lambda t: '_____________' in t and re.search(r'\b(ООО|ОДО|ЧУП|ЧТУП|ЗАО|ОАО|ИП)\b', t),
-        signature,
+        _review_value(signature, signature_review),
     )
     xml = _replace_matching_paragraphs(
         xml,
         lambda t: t.strip() in ('Директор', ' Директор') or (t.strip().endswith('Директор') and '_____________' not in t),
-        dir_pos,
+        _mark_field(company, 'director_position', dir_pos),
     )
-    year = _year_from_date(as_of_date)
+    signature_date = company.get('signature_date') or company.get('document_date')
     xml = _replace_matching_paragraphs(
         xml,
         lambda t: t.startswith('«___»') or t.startswith('"___"'),
-        f'«___»                     {year} г.',
+        _review_value(_signature_date_text(signature_date), not bool(signature_date)),
     )
     return xml
 
@@ -382,25 +548,25 @@ def _cells(row_xml: str) -> list:
     return re.findall(r'<w:tc\b.*?</w:tc>', row_xml, re.DOTALL)
 
 
-def _replace_cell_content(cell_xml: str, lines: list) -> str:
+def _replace_cell_content(cell_xml: str, lines: list, yellow: bool = False) -> str:
     paras_in_cell = re.findall(r'<w:p\b.*?</w:p>', cell_xml, re.DOTALL)
     if not paras_in_cell:
         return cell_xml
     style_para = paras_in_cell[0]
     tc_pr_match = re.match(r'(<w:tc\b.*?</w:tcPr>)', cell_xml, re.DOTALL)
     tc_pr = tc_pr_match.group(1) if tc_pr_match else cell_xml[:cell_xml.find('<w:p')]
-    # Пустая ячейка должна оставаться пустой. Раньше здесь автоматически появлялось
-    # «—», из-за чего тире попадали во все незадействованные разряды рабочих.
+    if yellow:
+        tc_pr = _shade_tc_pr(tc_pr)
     raw_lines = list(lines or [''])
     cleaned = [str(x) for x in raw_lines if str(x).strip()]
     if not cleaned:
         cleaned = ['']
     def set_para_text(para_xml: str, line: str) -> str:
+        wrapped = _review_value(line, yellow)
         if re.search(r'<w:t\b', para_xml):
-            return _replace_para_text(para_xml, line)
-        # В шаблоне пустые ячейки разрядов часто содержат абзац без <w:t>.
-        # Добавляем текстовый run, иначе значение разряда визуально не появляется.
-        run = f'<w:r><w:t xml:space="preserve">{_esc(line)}</w:t></w:r>'
+            return _replace_para_text(para_xml, wrapped)
+        run_pr = '<w:rPr><w:highlight w:val="yellow"/></w:rPr>' if yellow else ''
+        run = f'<w:r>{run_pr}<w:t xml:space="preserve">{_esc(line)}</w:t></w:r>'
         if '</w:p>' in para_xml:
             return para_xml.replace('</w:p>', run + '</w:p>', 1)
         return f'<w:p>{run}</w:p>'
@@ -413,8 +579,9 @@ def _build_row(template_row_xml: str, cell_values: list) -> str:
     new_cells = []
     for i, cell in enumerate(cells):
         val = cell_values[i] if i < len(cell_values) else ''
+        val, yellow = _unwrap_review(val)
         lines = val if isinstance(val, list) else [val]
-        new_cells.append(_replace_cell_content(cell, lines))
+        new_cells.append(_replace_cell_content(cell, lines, yellow=yellow))
     tr_open_end = template_row_xml.find('>', template_row_xml.find('<w:tr')) + 1
     tr_pr_match = re.search(r'<w:tr\b[^>]*>(<w:trPr>.*?</w:trPr>)?', template_row_xml, re.DOTALL)
     tr_open = template_row_xml[:tr_open_end] + (tr_pr_match.group(1) or '' if tr_pr_match else '')
@@ -433,7 +600,8 @@ def _splice_rows(xml: str, old_rows_slice: list, new_rows: list) -> str:
 
 
 # ═══════════════════ Документ 1: Заявление ═══════════════════
-def render_zayavlenie(company: dict, work_item_lines: list, category=None, as_of_date: str = None) -> bytes:
+def render_zayavlenie(company: dict, work_item_lines: list, category=None,
+                       as_of_date: str = None, review: dict = None) -> bytes:
     parts = _load_parts('1__Заявление.docx')
     xml = parts['word/document.xml'].decode('utf-8')
     paras = _paragraphs(xml)
@@ -442,24 +610,51 @@ def render_zayavlenie(company: dict, work_item_lines: list, category=None, as_of
     full_gen = _company_case(company, 'gen')
     full_dat = _company_case(company, 'dat')
     year = _year_from_date(as_of_date)
+    review = review or {}
+
+    company_name_bad = _field_needs_review(company, 'name', company.get('name'))
+    address_bad = _field_needs_review(company, 'address', company.get('address'))
+    account_bad = _field_needs_review(company, 'bank_account', account)
+    bank_bad = _field_needs_review(company, 'bank_name', bank_name) or _field_needs_review(company, 'bik', bik)
+    unp_bad = _field_needs_review(company, 'unp', company.get('unp'))
+    phone_bad = _field_needs_review(company, 'phone', company.get('phone'))
+    email_bad = _field_needs_review(company, 'email', company.get('email'))
+    director_bad = _field_needs_review(company, 'director_fio', company.get('director_fio'))
+    outgoing_number = str(review.get('outgoing_number') or company.get('outgoing_number') or '').strip()
+    outgoing_date = str(review.get('outgoing_date') or company.get('outgoing_date') or '').strip()
+    outgoing_date_text = _date_display(outgoing_date) if outgoing_date else '___.___.____'
 
     replacements = {
-        0: full_nom,
-        1: company.get('address', ''),
-        2: f'р/с: {account}',
-        3: f'в {bank_name}, БИК {bik}' if bank_name or bik else 'в __________________, БИК __________',
-        4: f'УНП {company.get("unp", "")}',
-        5: f'Тел.: {company.get("phone", "")}',
-        10: f'От___.____.{year} г.',
-        15: full_nom,
-        16: company.get('address', ''),
-        17: f'УНП {company.get("unp", "")}',
-        18: f'Тел.: {company.get("phone", "")}\ne-mail: {company.get("email", "")}',
-        24: f'Прошу провести аттестацию {full_gen} на право осуществления:',
-        54: (f'В соответствии с частью второй пункта 1 статьи 35 Кодекса Республики Беларусь '
-             f'об архитектурной, градостроительной и строительной деятельности прошу оформить '
-             f'{full_dat} аттестат соответствия на бумажном носителе.'),
-        84: f'{_company_short(company)}   _____________       {_dir_initials(company.get("director_fio", ""))}',
+        0: _review_value(full_nom, company_name_bad),
+        1: _review_value(company.get('address', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ: юридический адрес', address_bad),
+        2: _review_value(f'р/с: {account or "ТРЕБУЕТ УТОЧНЕНИЯ"}', account_bad),
+        3: _review_value(
+            f'в {bank_name or "ТРЕБУЕТ УТОЧНЕНИЯ"}, БИК {bik or "ТРЕБУЕТ УТОЧНЕНИЯ"}',
+            bank_bad,
+        ),
+        4: _review_value(f'УНП {company.get("unp", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}', unp_bad),
+        5: _review_value(f'Тел.: {company.get("phone", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}', phone_bad),
+        9: _review_value(f'Исх. № {outgoing_number or "ТРЕБУЕТ УТОЧНЕНИЯ"}', not bool(outgoing_number)),
+        10: _review_value(f'От {outgoing_date_text} г.', not bool(outgoing_date)),
+        15: _review_value(full_nom, company_name_bad),
+        16: _review_value(company.get('address', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ: юридический адрес', address_bad),
+        17: _review_value(f'УНП {company.get("unp", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}', unp_bad),
+        18: _review_value(
+            f'Тел.: {company.get("phone", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}\n'
+            f'e-mail: {company.get("email", "") or "ТРЕБУЕТ УТОЧНЕНИЯ"}',
+            phone_bad or email_bad,
+        ),
+        24: _review_value(f'Прошу провести аттестацию {full_gen} на право осуществления:', company_name_bad),
+        54: _review_value(
+            f'В соответствии с частью второй пункта 1 статьи 35 Кодекса Республики Беларусь '
+            f'об архитектурной, градостроительной и строительной деятельности прошу оформить '
+            f'{full_dat} аттестат соответствия на бумажном носителе.',
+            company_name_bad,
+        ),
+        84: _review_value(
+            f'{_company_short(company)}   _____________       {_dir_initials(company.get("director_fio", ""))}',
+            company_name_bad or director_bad,
+        ),
     }
 
     idx_head = _find_para_index(paras, lambda t: t.startswith('7. Выполнение'))
@@ -468,15 +663,20 @@ def render_zayavlenie(company: dict, work_item_lines: list, category=None, as_of
         raise RuntimeError('Не удалось найти блок видов работ в шаблоне заявления.')
     style_template = paras[idx_head + 2] if idx_head + 2 < idx_end else paras[idx_head]
     work_paras = []
+    category_review = bool(review.get('category_needs_review')) or _field_needs_review(review, 'category', category) if category else False
     if category:
         work_paras.append(_clone_para_style(
             style_template,
-            f'6. Выполнение функций генерального подрядчика, категория {category}.',
+            _review_value(f'6. Выполнение функций генерального подрядчика, категория {category}.', category_review),
         ))
     work_paras.append(_replace_para_text(paras[idx_head], '7. Выполнение строительно-монтажных работ:'))
-    for line in work_item_lines:
-        if not line.startswith('7. Выполнение'):
-            work_paras.append(_clone_para_style(style_template, line))
+    work_review = bool(review.get('work_items_needs_review')) or _field_needs_review(review, 'work_items', work_item_lines)
+    visible_lines = [line for line in (work_item_lines or []) if not str(line).startswith('7. Выполнение')]
+    if not visible_lines:
+        visible_lines = ['ТРЕБУЕТ УТОЧНЕНИЯ: виды строительно-монтажных работ']
+        work_review = True
+    for line in visible_lines:
+        work_paras.append(_clone_para_style(style_template, _review_value(line, work_review or _uncertain_text(line))))
     old_block = ''.join(paras[idx_head:idx_end])
     xml = xml.replace(old_block, ''.join(work_paras), 1)
 
@@ -484,17 +684,59 @@ def render_zayavlenie(company: dict, work_item_lines: list, category=None, as_of
         xml = _replace_para_at(xml, paras, idx, text)
 
     email_idx = _find_para_index(paras, lambda t: 'mailto:' in t or t.lower().startswith('e-mail:'))
-    if email_idx >= 0 and company.get('email'):
+    if email_idx >= 0:
         old = paras[email_idx]
+        email_value = company.get('email') or 'ТРЕБУЕТ УТОЧНЕНИЯ'
         if old in xml:
-            if 'mailto:' in old:
-                xml = xml.replace(old, _replace_email_para(old, company['email']), 1)
+            if 'mailto:' in old and company.get('email'):
+                replaced = _replace_email_para(old, company['email'])
+                if email_bad:
+                    replaced = _replace_para_text(replaced, _review_value(f'e-mail: {company["email"]}', True))
+                xml = xml.replace(old, replaced, 1)
             else:
-                xml = xml.replace(old, _replace_para_text(old, f'e-mail: {company["email"]}'), 1)
+                xml = xml.replace(old, _replace_para_text(old, _review_value(f'e-mail: {email_value}', email_bad)), 1)
+
+    # Page counts depend on the final signed/copied package and cannot be guessed.
+    # If the caller did not provide them, make the omission explicit in yellow.
+    page_counts = review.get('attachment_page_counts') or {}
+    if isinstance(page_counts, (list, tuple)):
+        page_counts = {str(i + 2): value for i, value in enumerate(page_counts)}
+    rows_now = _rows(xml)
+    form_keys = {3: ('2', 'form2'), 4: ('3', 'form3'), 5: ('4', 'form4'), 6: ('5', 'form5')}
+    numeric_values = []
+    for row_index, keys in form_keys.items():
+        if row_index >= len(rows_now):
+            continue
+        value = ''
+        for key in keys:
+            if isinstance(page_counts, dict) and page_counts.get(key) not in (None, ''):
+                value = str(page_counts.get(key)).strip()
+                break
+        cells = _cells(rows_now[row_index])
+        if len(cells) >= 3:
+            display = value or '?'
+            new_cell = _replace_cell_content(cells[-1], [display], yellow=not bool(value))
+            new_row = rows_now[row_index].replace(cells[-1], new_cell, 1)
+            xml = xml.replace(rows_now[row_index], new_row, 1)
+        if value.isdigit():
+            numeric_values.append(int(value))
+    rows_now = _rows(xml)
+    if len(rows_now) > 7:
+        total_value = ''
+        supplied_total = page_counts.get('total') if isinstance(page_counts, dict) else None
+        if supplied_total not in (None, ''):
+            total_value = str(supplied_total).strip()
+        elif len(numeric_values) == len(form_keys):
+            total_value = str(sum(numeric_values))
+        cells = _cells(rows_now[7])
+        if cells:
+            display = total_value or '?'
+            new_cell = _replace_cell_content(cells[-1], [display], yellow=not bool(total_value))
+            new_row = rows_now[7].replace(cells[-1], new_cell, 1)
+            xml = xml.replace(rows_now[7], new_row, 1)
 
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
-
 
 def _replace_email_para(para_xml: str, new_email: str) -> str:
     para_xml = re.sub(r'mailto:[^" ]+', f'mailto:{new_email}', para_xml)
@@ -526,32 +768,67 @@ def render_forma2(company: dict, itr_list: list, workers: list, work_scope_text:
     idx_staff = _find_para_index(paras, lambda t: t.startswith('Общая численность'))
     idx_itr_count = _find_para_index(paras, lambda t: t.startswith('численность инженерно'))
     if idx_staff >= 0:
+        staff_review = total <= 0 or date_text.startswith('___')
         xml = _replace_para_at(
             xml, paras, idx_staff,
-            f'Общая численность работающих {total} чел., в том числе по заявляемому виду '
-            f'деятельности {total} чел. по состоянию на {date_text};',
+            _review_value(
+                f'Общая численность работающих {total or "ТРЕБУЕТ УТОЧНЕНИЯ"} чел., '
+                f'в том числе по заявляемому виду деятельности {total or "ТРЕБУЕТ УТОЧНЕНИЯ"} чел. '
+                f'по состоянию на {date_text};',
+                staff_review,
+            ),
         )
     if idx_itr_count >= 0:
         xml = _replace_para_at(
             xml, paras, idx_itr_count,
-            f'численность инженерно-технических работников по заявляемому виду деятельности {n_itr} чел.',
+            _review_value(
+                f'численность инженерно-технических работников по заявляемому виду деятельности '
+                f'{n_itr or "ТРЕБУЕТ УТОЧНЕНИЯ"} чел.',
+                n_itr <= 0,
+            ),
         )
 
     rows = _rows(xml)
     itr_template_row = rows[2]
     itr_rows_new = []
     for i, person in enumerate(itr_list, 1):
-        stage_lines = [str(person.get('stage_years') or '—'), str(person.get('stage_years_here') or '—')]
+        stage_total = str(person.get('stage_years') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
+        stage_here = str(person.get('stage_years_here') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
+        stage_review = bool(person.get('stage_needs_review')) or not person.get('stage_is_final')
+        education = _education_lines(person)
+        labour = _trudovaya_cell_lines(person)
+        attest = _attestation_lines(person, 'form2')
         itr_rows_new.append(_build_row(itr_template_row, [
             str(i),
-            person.get('position', ''),
-            person.get('fio', ''),
-            _education_lines(person),
-            stage_lines,
-            _trudovaya_cell_lines(person),
-            _attestation_lines(person, 'form2'),
+            _mark_field(person, 'position', person.get('position', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+            _mark_field(person, 'fio', person.get('fio', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+            _review_value(education if education != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
+                          _field_needs_review(person, 'education', education)),
+            _review_value([stage_total, stage_here], stage_review),
+            _review_value(labour if labour and labour != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
+                          _field_needs_review(person, 'trudovaya_number', labour)),
+            _review_value(attest if attest and attest != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
+                          _field_needs_review(person, 'attestat_number', attest)),
         ]))
+    if not itr_rows_new:
+        itr_rows_new = [_build_row(itr_template_row, [
+            '1',
+            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
+            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
+            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
+            _review_value(['ТРЕБУЕТ УТОЧНЕНИЯ', 'ТРЕБУЕТ УТОЧНЕНИЯ'], True),
+            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
+            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
+        ])]
     xml = _splice_rows(xml, rows[2:5], itr_rows_new)
+
+    # Keep the workers table together on a fresh page. Without this, LibreOffice can
+    # split the two-row header at the page bottom and visually stretch column borders
+    # through the signature block when there are only one or two ITR rows.
+    for para in _paragraphs(xml):
+        if _para_text(para).strip().lower().startswith('рабочих строительных профессий'):
+            xml = xml.replace(para, _set_page_break_before(para), 1)
+            break
 
     rows2 = _rows(xml)
     w_header_idx = next((i for i, row in enumerate(rows2) if 'Наименование профессий рабочих' in row), None)
@@ -565,15 +842,22 @@ def render_forma2(company: dict, itr_list: list, workers: list, work_scope_text:
             new_worker_rows = []
             grouped_workers = group_workers_for_form(workers)
             for i, worker in enumerate(grouped_workers, 1):
-                cells = [str(i), worker.get('profession', '')]
+                profession_review = _field_needs_review(worker, 'profession', worker.get('profession'))
+                counts_review = bool(worker.get('needs_review')) or _field_needs_review(worker, 'razryad', worker.get('counts') or {})
+                cells = [str(i), _review_value(worker.get('profession', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ', profession_review)]
                 counts = worker.get('counts') or {}
                 for r in RAZRYAD_COLUMNS:
                     count = max(0, int(counts.get(r) or 0))
-                    cells.append(str(count) if count else '')
+                    cells.append(_review_value(str(count) if count else '', counts_review and bool(count)))
                     totals[r] += count
-                cells.append(str(worker.get('total') or '') if worker.get('total') else '')
+                total_value = str(worker.get('total') or '') if worker.get('total') else ''
+                cells.append(_review_value(total_value or 'ТРЕБУЕТ УТОЧНЕНИЯ', counts_review or not total_value))
                 new_worker_rows.append(_build_row(worker_template_row, cells))
-            total_cells = ['', 'Итого по разрядам:'] + [str(totals[r]) if totals[r] else '' for r in RAZRYAD_COLUMNS] + [str(sum(totals.values()))]
+            if not new_worker_rows:
+                new_worker_rows.append(_build_row(worker_template_row, [
+                    '1', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ: рабочие', True), '', '', '', '', '', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True)
+                ]))
+            total_cells = ['', 'Итого по разрядам:'] + [str(totals[r]) if totals[r] else '' for r in RAZRYAD_COLUMNS] + [str(sum(totals.values())) if totals else '']
             new_worker_rows.append(_build_row(rows2[old_total_idx], total_cells))
             xml = _splice_rows(xml, old_worker_rows, new_worker_rows)
 
@@ -590,9 +874,19 @@ def render_forma3(company: dict, itr_list: list, as_of_date: str = None) -> byte
     template_row = rows[2]
     new_rows = []
     for i, person in enumerate(itr_list, 1):
+        labour = _trudovaya_number_lines(person)
         new_rows.append(_build_row(template_row, [
-            str(i), person.get('fio', ''), person.get('position', ''), _trudovaya_number_lines(person)
+            str(i),
+            _mark_field(person, 'fio', person.get('fio', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+            _mark_field(person, 'position', person.get('position', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+            _review_value(labour if labour != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
+                          _field_needs_review(person, 'trudovaya_number', labour)),
         ]))
+    if not new_rows:
+        new_rows = [_build_row(template_row, [
+            '1', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
+            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True), _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True)
+        ])]
     xml = _splice_rows(xml, rows[2:], new_rows)
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
@@ -608,7 +902,17 @@ def render_forma4(company: dict, itr_list: list, as_of_date: str = None) -> byte
     people = [p for p in itr_list if _diploma_number_lines(p) != ['—']] or itr_list
     new_rows = []
     for i, person in enumerate(people, 1):
-        new_rows.append(_build_row(template_row, [str(i), person.get('fio', ''), _diploma_number_lines(person)]))
+        diplomas = _diploma_number_lines(person)
+        new_rows.append(_build_row(template_row, [
+            str(i),
+            _mark_field(person, 'fio', person.get('fio', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+            _review_value(diplomas if diplomas != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
+                          _field_needs_review(person, 'diploma_number', diplomas)),
+        ]))
+    if not new_rows:
+        new_rows = [_build_row(template_row, [
+            '1', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True), _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True)
+        ])]
     xml = _splice_rows(xml, rows[2:], new_rows)
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
@@ -621,26 +925,83 @@ def render_forma5(company: dict, itr_list: list, as_of_date: str = None) -> byte
     xml = _replace_signature_and_date(xml, company, as_of_date)
     rows = _rows(xml)
     template_row = rows[2]
-    people = [p for p in itr_list if (p.get('attestat_number') or p.get('attestat_full_text')
-                                           or p.get('attestat_form2_text') or p.get('attestat_form5_text'))]
+    # Keep all ITR visible. If an attestation is missing, the yellow cell makes the
+    # omission explicit instead of silently dropping the person from Form 5.
+    people = itr_list
     new_rows = []
     for i, person in enumerate(people, 1):
+        attest = _attestation_lines(person, 'form5')
         new_rows.append(_build_row(template_row, [
-            str(i), person.get('fio', ''), person.get('position', ''), _attestation_lines(person, 'form5')
+            str(i),
+            _mark_field(person, 'fio', person.get('fio', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+            _mark_field(person, 'position', person.get('position', '') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+            _review_value(attest if attest != ['—'] else ['ТРЕБУЕТ УТОЧНЕНИЯ'],
+                          _field_needs_review(person, 'attestat_number', attest)),
         ]))
     if not new_rows:
-        new_rows = [_build_row(template_row, ['1', '—', '—', 'нет аттестатов среди ИТР'])]
+        new_rows = [_build_row(template_row, [
+            '1', _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True),
+            _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True), _review_value('ТРЕБУЕТ УТОЧНЕНИЯ', True)
+        ])]
     xml = _splice_rows(xml, rows[2:], new_rows)
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
+
+
+# ═══════════════════ Нормализация стажа ═══════════════════
+_STAGE_DASHES = {'', '—', '-', '–'}
+
+
+def _stage_text_lines(value) -> list[str]:
+    """Нормализует стаж из Form 2 независимо от того, пришёл он списком или строкой.
+
+    Старые карточки иногда сохраняли stage_form2_text как одну строку с переносами,
+    а прежний код проходил по ней посимвольно. Из-за этого готовые «49 лет / Менее
+    года» терялись и появлялось ложное предупреждение о неполном стаже.
+    """
+    values = value if isinstance(value, (list, tuple)) else [value]
+    lines = []
+    for item in values:
+        if item is None:
+            continue
+        for part in re.split(r'[\r\n]+', str(item)):
+            text = re.sub(r'\s+', ' ', part).strip()
+            if text not in _STAGE_DASHES:
+                lines.append(text)
+    return lines
+
+
+def _preserve_stage_reference(person: dict) -> None:
+    """Keep completed Form 2 values only as a comparison/reference.
+
+    They are never treated as the calculated experience. The backend calculates
+    from employment_periods extracted from the labour book.
+    """
+    lines = _stage_text_lines(person.get('stage_form2_text'))
+    combined = _stage_text_lines(person.get('stage_years'))
+    if not lines and combined:
+        lines = combined
+    if not person.get('stage_reference_total') and lines:
+        person['stage_reference_total'] = lines[0]
+    if not person.get('stage_reference_here') and len(lines) > 1:
+        person['stage_reference_here'] = lines[1]
+    if str(person.get('stage_source') or '').lower() in ('document', 'document_reference'):
+        # Old cards stored Form 2 text in the live result fields. Move it away so
+        # calculate_person_experience() cannot mistake it for a fresh calculation.
+        if not person.get('stage_reference_total') and person.get('stage_years'):
+            person['stage_reference_total'] = person.get('stage_years')
+        if not person.get('stage_reference_here') and person.get('stage_years_here'):
+            person['stage_reference_here'] = person.get('stage_years_here')
+        person['stage_years'] = ''
+        person['stage_years_here'] = ''
+        person['stage_is_final'] = False
 
 
 # ═══════════════════ Адаптер для реального пайплайна ═══════════════════
 def generate_company_attestation_package_v2(company: dict, attestation_data: dict,
                                              api_key=None, vibe_call_fn=None, progress_cb=None) -> dict:
     from generator_company_att import (
-        resolve_work_items, render_work_items_lines, calculate_stazh,
-        calculate_current_company_stazh, select_relevant_periods, resolve_workers,
+        resolve_work_items, render_work_items_lines, calculate_person_experience, resolve_workers,
         check_category_requirements, _flat_work_items, RAZRYAD_COLUMNS,
         gen_zayavlenie_otmena, gen_form6_opyt,
     )
@@ -666,18 +1027,12 @@ def generate_company_attestation_package_v2(company: dict, attestation_data: dic
         itr_list = [dict(p) for p in (attestation_data.get('itr') or [])]
     work_items = resolve_work_items(attestation_data)
     workers = resolve_workers(attestation_data, work_items)
-    as_of_date = attestation_data.get('as_of_date')
+    as_of_date = attestation_data.get('as_of_date') or datetime.now().strftime('%d.%m.%Y')
+    attestation_data['as_of_date'] = as_of_date
 
     for person in itr_list:
-        periods = person.get('employment_periods') or []
-        relevant_periods = select_relevant_periods(person, periods)
-        # Дословные значения из заполненной Формы №2 имеют приоритет.
-        if relevant_periods and not person.get('stage_years'):
-            person['stage_years'] = calculate_stazh(relevant_periods, as_of_date=as_of_date)['display']
-        if relevant_periods and not person.get('stage_years_here'):
-            current = calculate_current_company_stazh(relevant_periods, company, as_of_date=as_of_date)
-            if current['years'] or current['months'] or current['days']:
-                person['stage_years_here'] = current['display']
+        _preserve_stage_reference(person)
+        calculate_person_experience(person, company, as_of_date=as_of_date)
 
     calculated_total = len(itr_list) + sum(max(0, int(w.get('count') or 0)) for w in workers)
     try:
@@ -699,9 +1054,18 @@ def generate_company_attestation_package_v2(company: dict, attestation_data: dic
         warnings.append('Не заполнены ИТР для Форм №2–5.')
     if not workers:
         warnings.append('Не заполнены рабочие для Формы №2.')
-    missing_stage = [p.get('fio', '?') for p in itr_list if not p.get('stage_years') or not p.get('stage_years_here')]
+    def _valid_stage(value):
+        text = str(value or '').strip()
+        return bool(text) and text not in ('—', '-', '–')
+
+    missing_stage = [p.get('fio', '?') for p in itr_list
+                     if not _valid_stage(p.get('stage_years')) or not _valid_stage(p.get('stage_years_here'))]
     if missing_stage:
-        warnings.append('Не полностью заполнен стаж: ' + ', '.join(missing_stage))
+        warnings.append('Не удалось полностью рассчитать стаж по трудовой: ' + ', '.join(missing_stage) + '. Жёлтые поля требуют проверки.')
+    for person in itr_list:
+        if person.get('stage_needs_review'):
+            reasons = '; '.join(person.get('stage_review_reasons') or [])
+            warnings.append(f"Стаж {person.get('fio', '?')} требует проверки: {reasons or 'есть неуверенные периоды'}. Поле выделено жёлтым.")
     for worker in workers:
         if str(worker.get('razryad') or '').upper().strip() not in RAZRYAD_COLUMNS:
             warnings.append(f"Неверный разряд у рабочего {worker.get('profession', '?')}: {worker.get('razryad', '')}")
@@ -716,6 +1080,8 @@ def generate_company_attestation_package_v2(company: dict, attestation_data: dic
                 attestation_data.get('cancellation_reason', 'по заявлению обладателя'),
             ),
         })
+        for doc in docs:
+            doc['bytes'] = highlight_review_tokens(doc['bytes'])
         return {'docs': docs, 'warnings': warnings}
 
     work_lines = render_work_items_lines(work_items)
@@ -725,7 +1091,7 @@ def generate_company_attestation_package_v2(company: dict, attestation_data: dic
     progress('1. Заявление')
     docs.append({
         'name': f'{org} - 1. Заявление.docx',
-        'bytes': render_zayavlenie(company, work_lines, category=category, as_of_date=as_of_date),
+        'bytes': render_zayavlenie(company, work_lines, category=category, as_of_date=as_of_date, review=attestation_data),
     })
     progress('2. Форма №2 (ИТР и рабочие)')
     docs.append({
@@ -741,9 +1107,15 @@ def generate_company_attestation_package_v2(company: dict, attestation_data: dic
 
     if category:
         progress('6. Форма №6 (Опыт генподрядчика)')
+        objects = attestation_data.get('experience_objects') or [{
+            'name': 'ТРЕБУЕТ УТОЧНЕНИЯ: объект',
+            'complexity_class': 'ТРЕБУЕТ УТОЧНЕНИЯ: класс сложности',
+        }]
         docs.append({
             'name': f'{org} - 6. Форма №6 Опыт.docx',
-            'bytes': gen_form6_opyt(company, attestation_data.get('experience_objects') or []),
+            'bytes': gen_form6_opyt(company, objects),
         })
 
+    for doc in docs:
+        doc['bytes'] = highlight_review_tokens(doc['bytes'])
     return {'docs': docs, 'warnings': list(dict.fromkeys(warnings))}

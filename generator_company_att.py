@@ -521,32 +521,231 @@ def render_work_items_lines(work_items: list) -> list:
     return lines
 
 
-def calculate_stazh(periods: list, as_of_date: str = None) -> dict:
-    """Календарный расчёт стажа: 30 дней = месяц, 12 месяцев = год.
 
-    Учитываются только периоды, которые не помечены relevant=false. Пересекающиеся
-    периоды объединяются, чтобы один и тот же день не засчитывался дважды.
+def _parse_exact_work_date(value):
+    """Parse only a complete date. Never invent day/month for a year-only OCR result."""
+    from datetime import datetime as _dt
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ('%d.%m.%Y', '%d.%m.%y', '%Y-%m-%d', '%d/%m/%Y'):
+        try:
+            return _dt.strptime(text, fmt)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _confidence_is_low(record: dict, field: str = '') -> bool:
+    if not isinstance(record, dict):
+        return False
+    uncertain = record.get('uncertain_fields') or []
+    if isinstance(uncertain, str):
+        uncertain = [x.strip() for x in re.split(r'[,;\n]+', uncertain) if x.strip()]
+    uncertain_norm = {_norm_text(x) for x in uncertain}
+    if field and (_norm_text(field) in uncertain_norm or any(_norm_text(field).endswith(x) for x in uncertain_norm if x)):
+        return True
+    confidence = None
+    field_conf = record.get('field_confidence')
+    if isinstance(field_conf, dict) and field in field_conf:
+        confidence = field_conf.get(field)
+    if confidence is None and field:
+        confidence = record.get(f'{field}_confidence')
+    if confidence is None:
+        confidence = record.get('confidence')
+    if isinstance(confidence, (int, float)):
+        return float(confidence) < 0.85
+    if isinstance(confidence, str):
+        return _norm_text(confidence) in ('low', 'низкая', 'низкий', 'uncertain', 'не уверен', 'сомнительно')
+    return bool(record.get('needs_review')) and (not field or not uncertain_norm)
+
+
+def _looks_uncertain_text(value) -> bool:
+    text = _norm_text(value)
+    return bool(text) and any(marker in text for marker in (
+        'неразборчив', 'не уверен', 'требует уточнения', 'две попытки чтения разошлись',
+        'или', '[', ']', '?', 'предположительно',
+    ))
+
+
+_MANAGEMENT_POSITION_MARKERS = (
+    'производитель работ', 'прораб', 'мастер', 'начальник участка',
+    'главный инженер', 'заместитель директора-главный инженер',
+    'зам директора-главный инженер', 'заместитель директора по строитель',
+    'зам директора по строитель', 'руководитель в области строитель',
+)
+_DESIGN_POSITION_MARKERS = ('проектиров', 'архитектор', 'конструктор')
+_ESTIMATE_POSITION_MARKERS = ('смет',)
+_WORKER_POSITION_MARKERS = (
+    'каменщик', 'бетонщик', 'арматурщик', 'монтажник', 'электросварщик', 'сварщик',
+    'плотник', 'стропальщик', 'такелажник', 'маляр', 'штукатур', 'землекоп',
+    'подсобный рабочий', 'рабочий', 'слесарь', 'машинист', 'кровельщик',
+    'изолировщик', 'электромонтажник', 'дорожный рабочий', 'плиточник',
+)
+
+
+def _target_role_family(person: dict) -> str:
+    position = _norm_text(person.get('position'))
+    specialization = _norm_text(person.get('attestat_specialization') or person.get('requested_specialization'))
+    target = f'{position} {specialization}'.strip()
+    if any(x in target for x in _DESIGN_POSITION_MARKERS):
+        return 'design'
+    if any(x in target for x in _ESTIMATE_POSITION_MARKERS):
+        return 'estimate'
+    if any(x in target for x in _MANAGEMENT_POSITION_MARKERS) or 'общестроит' in target:
+        return 'management'
+    if 'директор' in position and 'замест' not in position:
+        # A director may have relevant experience as a director of a construction company,
+        # but a director entry must never substitute a chief-engineer/prorab entry.
+        return 'director'
+    return 'construction'
+
+
+def _position_match_status(person: dict, period: dict) -> tuple[bool, bool, str]:
+    """Return (eligible, uncertain, reason) for a labour-book position."""
+    position = _norm_text(period.get('position') or period.get('job_title'))
+    if not position:
+        return False, True, 'не распознана должность'
+    if any(x in position for x in _WORKER_POSITION_MARKERS) and not any(x in position for x in _MANAGEMENT_POSITION_MARKERS):
+        return False, False, 'рабочая профессия не включается в стаж ИТР'
+
+    family = _target_role_family(person)
+    if family == 'design':
+        return (any(x in position for x in _DESIGN_POSITION_MARKERS), False, 'должность не относится к проектированию')
+    if family == 'estimate':
+        return (any(x in position for x in _ESTIMATE_POSITION_MARKERS), False, 'должность не относится к сметному делу')
+    if family == 'management':
+        if any(x in position for x in _MANAGEMENT_POSITION_MARKERS):
+            return True, False, ''
+        # Binding rule from the user: a plain director entry does not count as
+        # chief engineer/prorab. It counts only when the labour book explicitly
+        # records the secondary/combined construction position.
+        if 'директор' in position:
+            explicit = _norm_text(period.get('secondary_position') or period.get('explicit_construction_role'))
+            if any(x in explicit for x in _MANAGEMENT_POSITION_MARKERS):
+                return True, _confidence_is_low(period, 'secondary_position'), ''
+            return False, False, 'запись директора без перевода/совмещения на строительную должность'
+        return False, False, 'должность не относится к руководящим строительным должностям'
+    if family == 'director':
+        if 'директор' in position or any(x in position for x in _MANAGEMENT_POSITION_MARKERS):
+            return True, False, ''
+        return False, False, 'должность не относится к руководству строительством'
+
+    # Unknown construction ITR: include clear engineering/management positions,
+    # but flag ambiguous generic roles for review.
+    if any(x in position for x in _MANAGEMENT_POSITION_MARKERS) or 'инженер' in position:
+        return True, _confidence_is_low(period, 'position'), ''
+    return False, True, 'не удалось уверенно отнести должность к заявляемой деятельности'
+
+
+def _employer_match_status(person: dict, period: dict) -> tuple[bool, bool, str]:
+    activity = _norm_text(period.get('employer_activity'))
+    explicit = period.get('is_construction_employer')
+    family = _target_role_family(person)
+    if explicit is False:
+        return False, False, 'работодатель не относится к нужной деятельности'
+    if explicit is True:
+        return True, _confidence_is_low(period, 'employer_activity'), ''
+
+    if family == 'design':
+        markers = ('проектир', 'архитектур', 'строител')
+    elif family == 'estimate':
+        markers = ('смет', 'строител', 'проектир')
+    else:
+        markers = ('строител', 'смр', 'монтаж', 'генподряд', 'подряд')
+    if activity and any(x in activity for x in markers):
+        return True, _confidence_is_low(period, 'employer_activity'), ''
+    if period.get('relevant') is True:
+        return True, True, 'строительная деятельность работодателя указана неявно'
+    return False, True, 'не подтверждена деятельность работодателя'
+
+
+def assess_relevant_periods(person: dict, periods: list) -> dict:
+    """Classify every labour-book period without doing arithmetic in the model.
+
+    Only complete dates enter the confirmed calculation. Potentially relevant rows
+    with unreadable/partial dates are retained as review reasons, so the resulting
+    minimum confirmed experience is highlighted yellow instead of silently guessed.
+    """
+    confirmed, uncertain, excluded = [], [], []
+    for index, raw in enumerate(periods or []):
+        if not isinstance(raw, dict):
+            continue
+        period = dict(raw)
+        period['_index'] = index
+        if period.get('relevant') is False:
+            excluded.append({'period': period, 'reason': 'явно исключён из стажа'})
+            continue
+        role_ok, role_uncertain, role_reason = _position_match_status(person, period)
+        employer_ok, employer_uncertain, employer_reason = _employer_match_status(person, period)
+        start = _parse_exact_work_date(period.get('start'))
+        end_value = period.get('end')
+        end = _parse_exact_work_date(end_value) if end_value else None
+        date_uncertain = (
+            not start
+            or (bool(end_value) and not end)
+            or _confidence_is_low(period, 'start')
+            or _confidence_is_low(period, 'end')
+            or _looks_uncertain_text(period.get('start_text'))
+            or _looks_uncertain_text(period.get('end_text'))
+        )
+        reasons = [x for x in (role_reason if not role_ok else '', employer_reason if not employer_ok else '') if x]
+        if not role_ok or not employer_ok:
+            item = {'period': period, 'reason': '; '.join(reasons) or 'период не соответствует правилам'}
+            # An unknown employer/role may still be relevant; show it as uncertain rather
+            # than silently discarding it when there is not an explicit negative answer.
+            if role_uncertain or employer_uncertain:
+                uncertain.append(item)
+            else:
+                excluded.append(item)
+            continue
+        if date_uncertain:
+            uncertain.append({'period': period, 'reason': 'нет полной подтверждённой даты начала/окончания'})
+            continue
+        if end is not None and end < start:
+            uncertain.append({'period': period, 'reason': 'дата окончания раньше даты начала'})
+            continue
+        period['start'] = start.strftime('%d.%m.%Y')
+        period['end'] = end.strftime('%d.%m.%Y') if end else None
+        period['_period_uncertain'] = bool(role_uncertain or employer_uncertain or _confidence_is_low(period))
+        confirmed.append(period)
+        if period['_period_uncertain']:
+            uncertain.append({'period': period, 'reason': 'период включён, но часть реквизитов требует проверки'})
+    return {'confirmed': confirmed, 'uncertain': uncertain, 'excluded': excluded}
+
+
+def _ru_count(value: int, one: str, few: str, many: str) -> str:
+    n = abs(int(value))
+    if 11 <= n % 100 <= 14:
+        word = many
+    elif n % 10 == 1:
+        word = one
+    elif n % 10 in (2, 3, 4):
+        word = few
+    else:
+        word = many
+    return f'{value} {word}'
+
+
+def calculate_stazh(periods: list, as_of_date: str = None) -> dict:
+    """Deterministic inclusive calculation from exact labour-book dates.
+
+    Overlapping intervals are merged so the same calendar day is never counted twice.
+    The final normalization follows the common HR calculator convention used for work
+    records: 30 days = 1 month, 12 months = 1 year.
     """
     from datetime import datetime as _dt, timedelta as _td
 
-    def _parse(d):
-        if not d:
-            return None
-        for fmt in ('%d.%m.%Y', '%d.%m.%y', '%Y-%m-%d'):
-            try:
-                return _dt.strptime(str(d).strip(), fmt)
-            except (ValueError, TypeError, AttributeError):
-                continue
-        return None
-
-    today = _parse(as_of_date) or _dt.now()
+    today = _parse_exact_work_date(as_of_date) or _dt.now()
     intervals = []
+    invalid = []
     for period in (periods or []):
         if not isinstance(period, dict) or period.get('relevant') is False:
             continue
-        start = _parse(period.get('start'))
-        end = _parse(period.get('end')) or today
-        if not start or end < start:
+        start = _parse_exact_work_date(period.get('start'))
+        end = _parse_exact_work_date(period.get('end')) if period.get('end') else today
+        if not start or not end or end < start:
+            invalid.append(period)
             continue
         intervals.append((start, end))
 
@@ -561,83 +760,231 @@ def calculate_stazh(periods: list, as_of_date: str = None) -> dict:
     total_days = sum((end - start).days + 1 for start, end in merged)
     months, days = divmod(total_days, 30)
     years, months = divmod(months, 12)
-    display = f"{years} лет {months} мес. {days} дн." if years or months else f"{days} дн."
+    if total_days <= 0:
+        display = ''
+    else:
+        parts = []
+        if years:
+            parts.append(_ru_count(years, 'год', 'года', 'лет'))
+        if months:
+            parts.append(_ru_count(months, 'месяц', 'месяца', 'месяцев'))
+        if days or not parts:
+            parts.append(_ru_count(days, 'день', 'дня', 'дней'))
+        display = ' '.join(parts)
     return {
         'years': years, 'months': months, 'days': days,
-        'total_years_rounded': round(total_days / 365, 1),
+        'total_days': total_days,
+        'total_years_rounded': round(total_days / 365.2425, 1) if total_days else 0,
         'display': display,
+        'intervals': [
+            {'start': start.strftime('%d.%m.%Y'), 'end': end.strftime('%d.%m.%Y')}
+            for start, end in merged
+        ],
+        'invalid_periods': invalid,
     }
 
 
 def select_relevant_periods(person: dict, periods: list) -> list:
-    """Отбирает периоды именно по заявляемому направлению/роли.
+    """Compatibility wrapper: only confirmed, exact, role-matching periods."""
+    return assess_relevant_periods(person, periods).get('confirmed', [])
 
-    Явные флаги relevant=true/false имеют приоритет. Если флагов нет, для
-    общестроительных руководящих ролей учитываются прораб/производитель работ,
-    мастер, начальник участка, главный инженер и строительные заместители
-    директора. Для проектировщика и сметчика применяются отдельные группы.
-    Заполненный готовый стаж из Формы №2 всё равно имеет больший приоритет и сюда
-    не попадает — эта функция нужна только когда стаж требуется рассчитать.
-    """
-    target = _norm_text(' '.join([
-        str(person.get('position') or ''),
-        str(person.get('attestat_specialization') or ''),
-        str(person.get('requested_specialization') or ''),
-    ]))
-    management_markers = (
-        'прораб', 'производитель работ', 'мастер', 'начальник участка',
-        'главный инженер', 'заместитель директора-главный инженер',
-        'зам директора-главный инженер', 'заместитель директора по строитель',
-        'зам директора по строитель', 'руководитель в области строитель',
-    )
-    design_markers = ('проектиров', 'проектирован')
-    estimate_markers = ('смет',)
 
-    if any(m in target for m in design_markers):
-        wanted = design_markers
-    elif any(m in target for m in estimate_markers):
-        wanted = estimate_markers
-    elif any(m in target for m in management_markers) or 'общестроит' in target:
-        wanted = management_markers
-    else:
-        wanted = ()
-
-    selected = []
-    for period in periods or []:
-        if not isinstance(period, dict) or period.get('relevant') is False:
-            continue
-        if period.get('relevant') is True:
-            selected.append(period)
-            continue
-        if not wanted:
-            selected.append(period)
-            continue
-        position = _norm_text(period.get('position') or period.get('job_title'))
-        if any(marker in position for marker in wanted):
-            selected.append(period)
-            continue
-        # Период директора в строительной организации учитывается только при
-        # явной отметке строительной деятельности работодателя.
-        if 'директор' in position and any(x in _norm_text(period.get('employer_activity')) for x in ('строител', 'смр')):
-            selected.append(period)
-    return selected
+def _period_is_current_company(period: dict, company: dict) -> tuple[bool, bool]:
+    company_name = _norm_text(company.get('name'))
+    company_unp = re.sub(r'\D', '', str(company.get('unp') or ''))
+    employer = _norm_text(period.get('employer'))
+    employer_unp = re.sub(r'\D', '', str(period.get('employer_unp') or ''))
+    if period.get('is_current_employer') is True:
+        return True, _confidence_is_low(period, 'is_current_employer')
+    if company_unp and employer_unp:
+        return company_unp == employer_unp, False
+    if company_name and employer:
+        # Strip legal form and quotes before fuzzy containment.
+        compact_company = re.sub(r'\b(ооо|одо|оао|зао|чуп|чтуп|ип)\b', '', company_name).strip()
+        compact_employer = re.sub(r'\b(ооо|одо|оао|зао|чуп|чтуп|ип)\b', '', employer).strip()
+        if compact_company and (compact_company in compact_employer or compact_employer in compact_company):
+            return True, _confidence_is_low(period, 'employer')
+    return False, False
 
 
 def calculate_current_company_stazh(periods: list, company: dict, as_of_date: str = None) -> dict:
-    """Стаж у текущего юрлица — только периоды с is_current_employer=true либо
-    с employer, совпадающим с названием/УНП компании. Не берём просто последний период."""
-    company_name = _norm_text(company.get('name'))
-    company_unp = re.sub(r'\D', '', str(company.get('unp') or ''))
     selected = []
+    uncertain_match = False
     for period in periods or []:
         if not isinstance(period, dict):
             continue
-        employer = _norm_text(period.get('employer'))
-        employer_unp = re.sub(r'\D', '', str(period.get('employer_unp') or ''))
-        if period.get('is_current_employer') is True or (company_name and company_name in employer) or (company_unp and company_unp == employer_unp):
+        matches, uncertain = _period_is_current_company(period, company)
+        if matches:
             selected.append(period)
-    return calculate_stazh(selected, as_of_date=as_of_date)
+            uncertain_match = uncertain_match or uncertain
+    result = calculate_stazh(selected, as_of_date=as_of_date)
+    result['employer_match_uncertain'] = uncertain_match
+    return result
 
+
+def _stage_reference_lines(person: dict) -> tuple[str, str]:
+    """Read completed Form №2 values only as an independent control reference."""
+    first = str(person.get('stage_reference_total') or '').strip()
+    second = str(person.get('stage_reference_here') or '').strip()
+    raw = person.get('stage_form2_text') or []
+    values = raw if isinstance(raw, (list, tuple)) else [raw]
+    lines = []
+    for value in values:
+        for part in re.split(r'[\r\n]+', str(value or '')):
+            text = re.sub(r'\s+', ' ', part).strip()
+            if text and text not in ('—', '-', '–'):
+                lines.append(text)
+    return first or (lines[0] if lines else ''), second or (lines[1] if len(lines) > 1 else '')
+
+
+def _reference_stage_range_days(value: str):
+    """Return an approximate acceptable range for a rounded Form №2 reference.
+
+    Completed forms often contain only ``49 лет`` or ``менее года``. Such a value is
+    not an exact calculation and therefore must not make a precise labour-book result
+    yellow merely because it also contains months and days. The range is used only for
+    a sanity check; it never supplies the live stage value.
+    """
+    text = _norm_text(value)
+    if not text:
+        return None
+    if 'менее года' in text or 'меньше года' in text:
+        return (0, 365)
+    years_m = re.search(r'(\d+)\s*(?:год|года|лет)', text)
+    months_m = re.search(r'(\d+)\s*месяц', text)
+    days_m = re.search(r'(\d+)\s*(?:день|дня|дней)', text)
+    if not any((years_m, months_m, days_m)):
+        return None
+    years = int(years_m.group(1)) if years_m else 0
+    months = int(months_m.group(1)) if months_m else 0
+    days = int(days_m.group(1)) if days_m else 0
+    base = years * 365 + months * 30 + days
+    # If only full years/months are written, the document is normally rounded down.
+    if years_m and not months_m and not days_m:
+        return (base, base + 365)
+    if months_m and not days_m:
+        return (base, base + 31)
+    return (max(0, base - 2), base + 3)
+
+
+def _reference_conflicts(value: str, calculation: dict) -> bool:
+    bounds = _reference_stage_range_days(value)
+    total_days = int((calculation or {}).get('total_days') or 0)
+    if not bounds or total_days <= 0:
+        return False
+    return not (bounds[0] <= total_days < bounds[1])
+
+
+def _labour_hire_date(person: dict):
+    """Use a standalone hire date only when its source is explicitly the labour book."""
+    source = _norm_text(person.get('hire_date_source'))
+    if source not in ('трудовая книжка', 'labor book', 'labour book', 'employment periods', 'employment_periods'):
+        return None
+    return _parse_exact_work_date(person.get('hire_date'))
+
+
+def calculate_person_experience(person: dict, company: dict, as_of_date: str = None) -> dict:
+    """Calculate both Form №2 stage values only from labour-book chronology.
+
+    The model extracts exact employment intervals; this backend performs all date
+    arithmetic, filters irrelevant roles/employers, merges overlapping intervals and
+    separately calculates the period at the current employer. Completed Form №2 values
+    are comparison-only and can never be copied into the generated result.
+    """
+    as_of_date = as_of_date or __import__('datetime').datetime.now().strftime('%d.%m.%Y')
+    periods = person.get('employment_periods') or []
+    assessment = assess_relevant_periods(person, periods)
+    confirmed = assessment['confirmed']
+    total = calculate_stazh(confirmed, as_of_date=as_of_date)
+    current = calculate_current_company_stazh(confirmed, company, as_of_date=as_of_date)
+    reference_total, reference_here = _stage_reference_lines(person)
+
+    reasons = []
+    if assessment['uncertain']:
+        reasons.extend(item.get('reason', 'период требует проверки') for item in assessment['uncertain'])
+    if not periods:
+        reasons.append('в трудовой книжке не распознаны периоды работы')
+
+    # Live values are NEVER taken from completed Form №2.
+    person['stage_years'] = total.get('display', '')
+    person['stage_total_source'] = 'labour_book_calculation' if total.get('display') else 'missing'
+
+    if current.get('display'):
+        person['stage_years_here'] = current['display']
+        person['stage_here_source'] = 'labour_book_calculation'
+    else:
+        # Compatibility for an exact date that was independently extracted from the
+        # labour book but not yet converted into an employment_periods row.
+        hire_date = _labour_hire_date(person)
+        if hire_date:
+            role_ok, role_uncertain, role_reason = _position_match_status(
+                person, {'position': person.get('position')}
+            )
+            if role_ok:
+                fallback = calculate_stazh(
+                    [{'start': hire_date.strftime('%d.%m.%Y'), 'end': None}],
+                    as_of_date,
+                )
+                person['stage_years_here'] = fallback.get('display', '')
+                person['stage_here_source'] = 'labour_book_hire_date'
+                current = fallback
+                if role_uncertain:
+                    reasons.append('должность по записи текущего нанимателя требует проверки')
+            else:
+                person['stage_years_here'] = ''
+                person['stage_here_source'] = 'missing'
+                reasons.append(role_reason or 'текущая должность не соответствует заявляемой деятельности')
+        else:
+            person['stage_years_here'] = ''
+            person['stage_here_source'] = 'missing'
+
+    if not person.get('stage_years'):
+        reasons.append('не удалось рассчитать общий стаж по точным записям трудовой книжки')
+    if not person.get('stage_years_here'):
+        reasons.append('не удалось рассчитать стаж у текущего нанимателя по трудовой книжке')
+
+    # A completed Form №2 is only a control. Rounded values are compared as ranges so
+    # ``49 лет`` does not conflict with ``49 лет 4 месяца 10 дней``.
+    person['stage_reference_mismatch'] = False
+    if reference_total and _reference_conflicts(reference_total, total):
+        person['stage_reference_mismatch'] = True
+        reasons.append(
+            f'расчёт общего стажа по трудовой ({total.get("display") or "нет значения"}) '
+            f'существенно отличается от справочного значения Формы №2 ({reference_total})'
+        )
+    if reference_here and _reference_conflicts(reference_here, current):
+        person['stage_reference_mismatch'] = True
+        reasons.append(
+            f'расчёт стажа у нанимателя по трудовой ({current.get("display") or "нет значения"}) '
+            f'существенно отличается от справочного значения Формы №2 ({reference_here})'
+        )
+
+    if current.get('employer_match_uncertain'):
+        reasons.append('совпадение текущего работодателя требует проверки')
+    if any(p.get('_period_uncertain') for p in confirmed):
+        reasons.append('один из включённых периодов распознан неуверенно')
+
+    person['stage_source'] = 'calculated' if person.get('stage_years') else 'missing'
+    person['stage_is_final'] = bool(
+        person.get('stage_years')
+        and person.get('stage_years_here')
+        and not reasons
+    )
+    person['stage_needs_review'] = bool(reasons)
+    person['stage_review_reasons'] = list(dict.fromkeys(reasons))
+    person['stage_calculation'] = {
+        'as_of_date': as_of_date,
+        'role_family': _target_role_family(person),
+        'confirmed_periods': confirmed,
+        'uncertain_periods': assessment['uncertain'],
+        'excluded_periods': assessment['excluded'],
+        'total': total,
+        'current_company': current,
+        'reference_total': reference_total,
+        'reference_here': reference_here,
+        'reference_used_as_value': False,
+    }
+    return person
 
 def check_category_requirements(category, staff_total: int, has_smetchik: bool,
                                  experience_objects: list, prior_category_years: int = 0) -> list:
@@ -1099,19 +1446,10 @@ def generate_company_attestation_package(company: dict, attestation_data: dict, 
     experience_objects = attestation_data.get('experience_objects', [])
     prior_years = attestation_data.get('prior_category_years', 0)
 
+    as_of_date = attestation_data.get('as_of_date') or __import__('datetime').datetime.now().strftime('%d.%m.%Y')
+    attestation_data['as_of_date'] = as_of_date
     for person in itr_list:
-        periods = person.get('employment_periods')
-        # Значения, дословно переписанные из уже заполненной Формы №2, не пересчитываем.
-        relevant_periods = select_relevant_periods(person, periods or [])
-        if relevant_periods and not person.get('stage_years'):
-            calc = calculate_stazh(relevant_periods, as_of_date=attestation_data.get('as_of_date'))
-            person['stage_years'] = calc['display']
-        if relevant_periods and not person.get('stage_years_here'):
-            calc_here = calculate_current_company_stazh(
-                relevant_periods, company, as_of_date=attestation_data.get('as_of_date')
-            )
-            if calc_here['years'] or calc_here['months'] or calc_here['days']:
-                person['stage_years_here'] = calc_here['display']
+        calculate_person_experience(person, company, as_of_date=as_of_date)
 
     warnings = []
     if category:
