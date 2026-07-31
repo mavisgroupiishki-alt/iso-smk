@@ -177,6 +177,23 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 Для ИСО: аудиторы = 3 чел. с удостоверением ОТ из ИТР.
 Для СУОТ: минимум 3 чел. с удостоверением ОТ.
 
+КРИТИЧНО ДЛЯ ЛЮБЫХ АРХИВОВ (ISO/СУОТ/СПК/АТТЕСТАЦИЯ):
+- Раздел «СОСТАВ АРХИВА» — это достоверный перечень физически найденных файлов. Нельзя писать
+  пользователю «в архиве этого нет», если имя файла уже перечислено там.
+- Раздел «ИСХОДНЫЕ ДОКУМЕНТЫ ИЗ АРХИВА» обязателен для выбранного продукта. Не своди весь архив
+  только к реквизитам компании и не игнорируй документы из тематических подпапок.
+- Если конкретный файл не прочитан, назови ТОЧНО его путь/имя и техническую ошибку; не подменяй
+  ошибку фразой «файла нет».
+- Для ISO/СУОТ обязательно извлекай поставщиков, объекты, сотрудников/рабочих, удостоверения ОТ,
+  инструкции, аудиторов, комиссии и обучение.
+- Для СПК обязательно извлекай виды работ, ИТР и рабочих, оборудование/машины/механизмы,
+  средства измерений, поверку/калибровку, лабораторию, договоры аренды, объекты, технологическую
+  документацию, аттестаты/удостоверения и иные подтверждающие документы.
+- Для аттестации обязательно извлекай Формы 1–5, трудовые книжки и вкладыши, дипломы, аттестаты,
+  приказы, ИТР, рабочих и виды работ.
+- Если документ найден, но данные из него не удалось уверенно разобрать, сохрани факт наличия
+  документа и запроси проверку конкретного поля, а не повторную загрузку всего архива.
+
 СПК (Свидетельство о технической компетентности):
 - Виды работ: берём из КП если прикреплено, иначе спрашиваем у клиента
 - Клиент называет своими словами ("штукатурка, плитка") — ты переводишь в официальные формулировки
@@ -944,43 +961,102 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
             return '[PDF_SCAN: файл является сканом]'
 
         elif ext in ('xlsx', 'xls'):
-            import io, re as _re2
-            # Сначала пробуем как XLSX (ZIP-формат)
+            import io
+
+            def _cell_to_text(value, datemode=None, is_date=False):
+                if value is None or value == '':
+                    return ''
+                if is_date and datemode is not None:
+                    try:
+                        import xlrd
+                        dt = xlrd.xldate_as_datetime(value, datemode)
+                        return dt.strftime('%d.%m.%Y')
+                    except Exception:
+                        pass
+                if hasattr(value, 'strftime'):
+                    try:
+                        return value.strftime('%d.%m.%Y')
+                    except Exception:
+                        pass
+                if isinstance(value, float) and value.is_integer():
+                    return str(int(value))
+                return str(value).strip()
+
+            # XLSX: openpyxl correctly reads shared strings, inline strings,
+            # numeric cells, dates, merged layouts and ALL sheets. The old XML
+            # regex read only sharedStrings + the first sheet, so real staff lists
+            # were often returned empty.
+            if ext == 'xlsx':
+                try:
+                    from openpyxl import load_workbook
+                    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+                    parts = []
+                    total_rows = 0
+                    for ws in wb.worksheets:
+                        sheet_rows = []
+                        for row in ws.iter_rows(values_only=True):
+                            values = [_cell_to_text(v) for v in row]
+                            while values and not values[-1]:
+                                values.pop()
+                            if not any(values):
+                                continue
+                            sheet_rows.append(' | '.join(values))
+                            total_rows += 1
+                            if total_rows >= 1500:
+                                break
+                        if sheet_rows:
+                            parts.append(f'[Лист: {ws.title}]\n' + '\n'.join(sheet_rows))
+                        if total_rows >= 1500:
+                            break
+                    result = '\n\n'.join(parts).strip()
+                    if result:
+                        return result[:100000]
+                    return '[XLSX: таблица открыта, но заполненные ячейки не найдены]'
+                except ImportError:
+                    return '[XLSX: на сервере отсутствует openpyxl — добавьте openpyxl в requirements.txt]'
+                except Exception as e:
+                    return f'[XLSX: не удалось прочитать таблицу: {type(e).__name__}: {e}]'
+
+            # XLS (старый бинарный Excel 97–2003): читать как текст нельзя —
+            # это OLE/BIFF-контейнер. Нужен xlrd. Прежняя эвристика UTF-16/cp1251
+            # извлекала обрывки или ничего, поэтому «Список сотрудников.xls»
+            # пропадал из ISO/СУОТ архива.
             try:
-                with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-                    shared = []
-                    if 'xl/sharedStrings.xml' in z.namelist():
-                        xml = z.read('xl/sharedStrings.xml').decode('utf-8', errors='replace')
-                        shared = re.findall(r'<t[^>]*>([^<]+)</t>', xml)
-                    sheets = [n for n in z.namelist() if n.startswith('xl/worksheets/sheet')]
-                    if sheets:
-                        xml = z.read(sheets[0]).decode('utf-8', errors='replace')
-                        refs = re.findall(r'<v>(\d+)</v>', xml)
-                        values = [shared[int(r)] for r in refs if int(r) < len(shared)]
-                        if values:
-                            return ' | '.join(values[:300])
-                return '[xlsx: данные не найдены]'
-            except zipfile.BadZipFile:
-                pass
-            except Exception:
-                pass
-            # Старый XLS формат — эвристика
-            try:
-                text_utf16 = file_bytes.decode('utf-16-le', errors='ignore')
-                chunks = _re2.findall(r'[\u0400-\u04ff\w][\u0400-\u04ff\w\s\.\,\-]{3,}', text_utf16)
-                if len(chunks) > 3:
-                    return ' | '.join(c.strip() for c in chunks if len(c.strip()) > 3)[:6000]
-            except Exception:
-                pass
-            try:
-                raw = file_bytes.decode('cp1251', errors='ignore')
-                lines = [l.strip() for l in raw.split('\n') if len(l.strip()) > 5]
-                readable = [l for l in lines if any('а' <= c <= 'я' or 'А' <= c <= 'Я' for c in l)]
-                if readable:
-                    return '\n'.join(readable[:200])
-            except Exception:
-                pass
-            return '[XLS: не удалось прочитать. Пересохраните файл как .xlsx]'
+                import xlrd
+                wb = xlrd.open_workbook(file_contents=file_bytes, on_demand=True)
+                parts = []
+                total_rows = 0
+                for sheet in wb.sheets():
+                    sheet_rows = []
+                    for r in range(sheet.nrows):
+                        values = []
+                        for c in range(sheet.ncols):
+                            cell = sheet.cell(r, c)
+                            is_date = cell.ctype == xlrd.XL_CELL_DATE
+                            values.append(_cell_to_text(cell.value, wb.datemode, is_date))
+                        while values and not values[-1]:
+                            values.pop()
+                        if not any(values):
+                            continue
+                        sheet_rows.append(' | '.join(values))
+                        total_rows += 1
+                        if total_rows >= 1500:
+                            break
+                    if sheet_rows:
+                        parts.append(f'[Лист: {sheet.name}]\n' + '\n'.join(sheet_rows))
+                    if total_rows >= 1500:
+                        break
+                wb.release_resources()
+                result = '\n\n'.join(parts).strip()
+                if result:
+                    return result[:100000]
+                return '[XLS: таблица открыта, но заполненные ячейки не найдены]'
+            except ImportError:
+                return ('[XLS: на сервере отсутствует библиотека xlrd. '
+                        'Добавьте xlrd==2.0.1 в requirements.txt — без неё старые .xls '
+                        'файлы со списком сотрудников не читаются]')
+            except Exception as e:
+                return f'[XLS: не удалось прочитать таблицу: {type(e).__name__}: {e}]'
 
         elif ext in ('zip',):
             return _extract_archive_zip(file_bytes, filename, _depth)
@@ -1124,6 +1200,94 @@ def _extract_company_details(general_blocks, api_key):
     return _simple_ai_call(prompt, api_key, max_tokens=800)
 
 
+def _archive_block_name(block):
+    """Returns archive path from a block like ``--- folder/file.ext ---``."""
+    match = re.match(r'^---\s*(.+?)\s*---', block or '')
+    return match.group(1).strip() if match else ''
+
+
+def _is_operational_source_block(block):
+    """Identify source documents useful for any supported product.
+
+    The extractor is shared by ISO, SUOT, SPK and attestation. Product-specific
+    filtering at this stage is unsafe: the same staff list, equipment register,
+    contract or certificate can be required by several products. The function is
+    therefore used only for ordering/labels; unknown blocks are preserved too.
+    """
+    haystack = (_archive_block_name(block) + '\n' + (block or '')).lower().replace('ё', 'е')
+    source_keywords = (
+        # People and qualifications
+        'сотрудник', 'штатн', 'штат ', 'персонал', 'работник', 'рабочие',
+        'список итр', 'паспорт', 'диплом', 'трудов', 'вкладыш', 'приказ',
+        'аттестат', 'удостоверен', 'квалификац', 'обучен', 'проверка знаний',
+        # ISO / SUOT
+        'поставщик', 'перечень объектов', 'список объектов', 'объект',
+        'охрана труда', 'суот', 'инструкц', 'аудитор', 'комисси', 'риск',
+        'политик', 'цели', 'программ', 'журнал',
+        # SPK / construction capability
+        'виды работ', 'вид работ', 'область работ', 'спк', 'стройкомплекс', 'бисп',
+        'оборудован', 'машин', 'механизм', 'техника', 'инструмент', 'оснастк',
+        'средств измер', 'си ', 'поверк', 'калибров', 'лаборатор', 'испытан',
+        'аренд', 'лизинг', 'технологическ', 'ппр', 'технологическая карта',
+        'сертификат', 'декларац', 'материал', 'субподряд',
+        # Generic lists/registers
+        'список', 'перечень', 'реестр', 'ведомость', 'график'
+    )
+    return any(keyword in haystack for keyword in source_keywords)
+
+
+def _looks_like_person_folder(folder_name, blocks):
+    """Conservatively decide whether a folder represents one person.
+
+    SPK and ISO archives frequently contain category folders such as
+    ``Оборудование``, ``Средства измерений`` or ``Виды работ``. The old code sent
+    every nested folder to a person-reconciliation prompt, which could destroy
+    its content. When uncertain we keep the folder as a raw source block.
+    """
+    if not folder_name:
+        return False
+    leaf = str(folder_name).replace('\\', '/').rstrip('/').split('/')[-1].strip()
+    normalized = re.sub(r'^\s*\d+[.)_-]*\s*', '', leaf.lower().replace('ё', 'е'))
+    category_keywords = (
+        'оборудован', 'техника', 'машин', 'механизм', 'инструмент', 'оснастк',
+        'средств измер', 'поверк', 'калибров', 'лаборатор', 'объект', 'поставщик',
+        'сотрудник', 'персонал', 'рабоч', 'штат', 'итр', 'виды работ', 'вид работ',
+        'документ', 'реквизит', 'договор', 'аренд', 'сертификат', 'аттестат',
+        'удостоверен', 'инструкц', 'охрана труда', 'суот', 'исо', 'спк', 'бисп',
+        'стройкомплекс', 'форма', 'заявлен', 'дипломы', 'трудовые', 'паспорта',
+        'прочее', 'разное', 'архив', 'сканы', 'фото', 'проект', 'ппр', 'журнал'
+    )
+    if any(keyword in normalized for keyword in category_keywords):
+        return False
+
+    # A person folder is normally 2–4 Cyrillic name tokens or initials.
+    tokens = [t for t in re.split(r'\s+', normalized) if t]
+    token_re = re.compile(r'^[а-я-]+$|^[а-я]\.?[а-я]\.?$', re.I)
+    name_like = 2 <= len(tokens) <= 4 and all(token_re.match(t) for t in tokens)
+    if not name_like:
+        return False
+
+    combined = ('\n'.join(blocks or [])).lower().replace('ё', 'е')
+    personal_markers = (
+        'паспорт', 'диплом', 'трудовая книж', 'вкладыш', 'приказ о приеме',
+        'приказ о приёме', 'квалификационный аттестат', 'дата рождения',
+        'фио', 'фамилия', 'собственное имя'
+    )
+    # Folder name itself is a strong signal; markers make the decision safer.
+    return any(marker in combined for marker in personal_markers) or len(tokens) >= 3
+
+
+def _is_company_requisites_block(block):
+    """Narrowly identify documents useful for the company requisites summary."""
+    haystack = (_archive_block_name(block) + '\n' + (block or '')).lower().replace('ё', 'е')
+    company_keywords = (
+        'счет-заказ', 'счет заказ', 'счёт-заказ', 'договор', 'реквизит',
+        'карточка предприятия', 'банковские реквизиты', 'расчетный счет',
+        'расчётный счёт', 'заказчик:', 'унп ', 'бик ', 'юридический адрес'
+    )
+    return any(keyword in haystack for keyword in company_keywords)
+
+
 def _reconcile_all_people(texts, api_key):
     """Группирует блоки по человеку; для людей с 2+ документами делает сверку
     (см. _reconcile_person_summary), убирая дубли и выбирая наиболее вероятный
@@ -1132,7 +1296,11 @@ def _reconcile_all_people(texts, api_key):
     реквизиты компании, потом люди по номерам."""
     from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
     groups, order = _group_blocks_by_person(texts)
-    people_order = [p for p in order if p is not None]
+    people_order = [
+        p for p in order
+        if p is not None and _looks_like_person_folder(p, groups.get(p) or [])
+    ]
+    category_order = [p for p in order if p is not None and p not in people_order]
 
     def reconcile_one(person, num):
         blocks = groups[person]
@@ -1146,14 +1314,33 @@ def _reconcile_all_people(texts, api_key):
             print(f"  ⚠️ Сверка по «{person}» не удалась: {type(e).__name__}: {e} — отдаю как есть, без свода")
             return person, f"{num}) {person}\n" + '\n\n'.join(blocks)
 
-    # Completed Forms 1–5 can lie in the archive root. Earlier they were sent to
-    # _extract_company_details(), whose prompt intentionally keeps only company
-    # requisites and therefore silently discarded experience, labour-book inserts
-    # and attestations. Preserve such forms verbatim and summarize only the other
-    # general documents.
+    # Preserve every non-person source document for every product. Company
+    # requisites are additionally summarized, never removed from the raw source.
+    # This is deliberately product-neutral: ISO/SUOT, SPK and attestation may use
+    # the same staff lists, contracts, equipment registers and certificates.
     root_blocks = list(groups.get(None) or [])
-    completed_form_blocks = [b for b in root_blocks if is_completed_attestation_form_text(b)]
-    company_general_blocks = [b for b in root_blocks if b not in completed_form_blocks]
+    category_blocks = []
+    for category in category_order:
+        for block in groups.get(category) or []:
+            category_blocks.append(
+                f"[Папка архива: {category}]\n{block}"
+            )
+
+    all_general_blocks = root_blocks + category_blocks
+    completed_form_blocks = [
+        b for b in all_general_blocks if is_completed_attestation_form_text(b)
+    ]
+    preserved_source_blocks = [
+        b for b in all_general_blocks if b not in completed_form_blocks
+    ]
+    company_general_blocks = [
+        b for b in preserved_source_blocks if _is_company_requisites_block(b)
+    ]
+
+    # Operational blocks first, while still retaining every unknown document.
+    preserved_source_blocks.sort(
+        key=lambda block: 0 if _is_operational_source_block(block) else 1
+    )
 
     results = {}
     with _TPE(max_workers=2) as ex:
@@ -1180,6 +1367,16 @@ def _reconcile_all_people(texts, api_key):
     if completed_form_blocks:
         final_parts.append("=== 📋 ЗАПОЛНЕННЫЕ ФОРМЫ 1–5 — ПЕРЕПИСАТЬ ДОСЛОВНО ===\n"
                            + "\n\n".join(completed_form_blocks))
+    if preserved_source_blocks:
+        final_parts.append(
+            "=== 📚 ИСХОДНЫЕ ДОКУМЕНТЫ ИЗ АРХИВА — ИСПОЛЬЗОВАТЬ ДЛЯ ВЫБРАННОГО ПРОДУКТА ===\n"
+            "Ниже сохранены все документы, которые не относятся к персональной папке одного "
+            "человека: виды работ, оборудование, средства измерений, договоры, объекты, "
+            "поставщики, сотрудники, рабочие, удостоверения, инструкции и прочие исходники. "
+            "Блоки из тематических подпапок также сохранены. Если блок содержит ⚠️ ОШИБКА, "
+            "файл физически существует, но не был прочитан — нельзя говорить, что файла нет.\n\n"
+            + "\n\n".join(preserved_source_blocks)
+        )
     for person in people_order:
         final_parts.append(results.get(person, f"{person}: [ошибка обработки]"))
     return final_parts
@@ -1195,7 +1392,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
     это и была причина, почему данные людей с одними фото (не PDF) не попадали в карточку.
     """
     import io
-    TEXT_EXTS = ('docx', 'doc', 'txt', 'csv', 'xlsx')  # без pdf — у него своя ветка ниже
+    TEXT_EXTS = ('docx', 'doc', 'txt', 'csv', 'xlsx', 'xls')  # без pdf — у него своя ветка ниже
     IMAGE_EXTS = ('jpg', 'jpeg', 'png', 'webp')
     TEXT_INNER_LIMIT = 4 * 1024 * 1024     # текстовые файлы — как раньше, 4 МБ
     IMAGE_INNER_LIMIT = 15 * 1024 * 1024   # фото крупнее (сами уменьшаются перед отправкой)
@@ -1226,6 +1423,11 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                     entries.append((name, fixed, info.file_size, 'image'))
                 elif ext == 'pdf' or ext in TEXT_EXTS or ext in IMAGE_EXTS:
                     entries.append((name, fixed, info.file_size, 'skip_size'))
+                else:
+                    # Keep unsupported files in the inventory. Their physical
+                    # presence can matter for SPK/ISO even when the current
+                    # parser cannot read the format.
+                    entries.append((name, fixed, info.file_size, 'unsupported'))
     except Exception as e:
         return {'text': f'[Ошибка открытия архива: {e}]', 'structured_data': {}}
 
@@ -1233,8 +1435,11 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
     # docx были в карточке даже если распознавание сканов ещё не закончилось
     entries.sort(key=lambda e: 0 if e[3] == 'text' else (1 if e[3] in ('image', 'pdf') else 2))
 
-    to_process = [e for e in entries if e[3] in ('text', 'image', 'pdf')][:MAX_ITEMS]
+    readable_entries = [e for e in entries if e[3] in ('text', 'image', 'pdf')]
+    to_process = readable_entries[:MAX_ITEMS]
     skipped = [e for e in entries if e[3] == 'skip_size']
+    unsupported = [e for e in entries if e[3] == 'unsupported']
+    not_processed_limit = readable_entries[MAX_ITEMS:]
     total = len(to_process)
 
     texts = []
@@ -1262,10 +1467,19 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                     except Exception as parse_error:
                         print(f"  ⚠️ Не удалось структурно разобрать {short}: {parse_error}")
                 txt = extract_text_from_file(data, short)
-                if txt and len(txt) > 10 and not txt.startswith('['):
-                    texts.append(f"--- {folder + '/' if folder else ''}{short} ---\n" + txt)
+                if txt and len(txt) > 10:
+                    prefix = f"--- {folder + '/' if folder else ''}{short} ---"
+                    if txt.startswith('['):
+                        texts.append(prefix + " ⚠️ ОШИБКА ЧТЕНИЯ\n" + txt)
+                    else:
+                        texts.append(prefix + "\n" + txt)
+                else:
+                    texts.append(
+                        f"--- {folder + '/' if folder else ''}{short} --- "
+                        "⚠️ ПУСТОЙ РЕЗУЛЬТАТ"
+                    )
             except Exception as e:
-                texts.append(f"--- {short} --- [ошибка: {e}]")
+                texts.append(f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n[{type(e).__name__}: {e}]")
 
         # PDF и фото — медленно (vision), поэтому по 2 одновременно вместо строго по одному.
         # VISION_SEMAPHORE всё равно не даст больше 2 разом на весь сервер.
@@ -1345,8 +1559,35 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
     except Exception as e:
         print(f"  ⚠️ Сверка по людям не удалась ({type(e).__name__}: {e}) — отдаю как есть, без свода")
 
-    PRIORITY_KEYWORDS = ['поставщик', 'объект', 'сотрудник', 'штатн', 'персонал',
-                          'список', 'перечень', 'работник', 'паспорт', 'диплом', 'трудов']
+    # A product-neutral inventory prevents the model from claiming a file is
+    # absent merely because its content failed to parse. This is especially
+    # important for SPK archives with equipment/measurement registers in custom
+    # formats and for scanned certificates.
+    processed_raw_names = {e[0] for e in to_process}
+    inventory_lines = []
+    for raw_name, fixed_name, size, kind in entries:
+        if raw_name in processed_raw_names:
+            status = 'прочитан/передан в анализ'
+        elif kind == 'skip_size':
+            status = 'найден, но превышает лимит размера'
+        elif kind == 'unsupported':
+            status = 'найден, формат пока не читается автоматически'
+        else:
+            status = 'найден, не обработан из-за лимита количества файлов'
+        inventory_lines.append(f"- {fixed_name} ({size // 1024} КБ) — {status}")
+    inventory_block = (
+        "=== 📦 СОСТАВ АРХИВА — ФАЙЛЫ ФИЗИЧЕСКИ НАЙДЕНЫ ===\n"
+        + ("\n".join(inventory_lines) if inventory_lines else "[архив пуст]")
+    )
+    texts.insert(0, inventory_block)
+
+    PRIORITY_KEYWORDS = [
+        'состав архива', 'виды работ', 'вид работ', 'оборудован', 'машин',
+        'механизм', 'средств измер', 'поверк', 'калибров', 'лаборатор',
+        'договор аренды', 'технологическ', 'поставщик', 'объект', 'сотрудник',
+        'штатн', 'персонал', 'список', 'перечень', 'работник', 'рабочие',
+        'паспорт', 'диплом', 'трудов', 'аттестат', 'удостоверен'
+    ]
     priority = [t for t in texts if any(k in t.lower() for k in PRIORITY_KEYWORDS)]
     other = [t for t in texts if t not in priority]
     ordered_blocks = priority + other
@@ -1372,8 +1613,12 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                     f'Если среди них важные документы — пришлите их отдельным сообщением.]')
     if skipped_notes:
         result += ('\n\n[Пропущены файлы крупнее лимита: ' + ', '.join(skipped_notes[:20]) + ']')
-    if len(entries) > MAX_ITEMS:
-        result += f'\n\n[В архиве {len(entries)} файлов, обработаны первые {MAX_ITEMS} — пришлите остальных отдельным заходом]'
+    if not_processed_limit:
+        result += (
+            f'\n\n[В архиве {len(entries)} файлов, из них автоматически читаемых '
+            f'{len(readable_entries)}; обработаны первые {MAX_ITEMS}. Остальные перечислены '
+            f'в блоке «СОСТАВ АРХИВА» и не считаются отсутствующими.]'
+        )
     structured_data = {}
     if structured_fragments and merge_company_attestation_sources:
         try:
@@ -1391,7 +1636,8 @@ def _extract_archive_zip(file_bytes, filename, _depth=0):
     import io
     texts = []
     skipped = []
-    READABLE = ('docx','doc','txt','csv','xlsx','pdf','zip','rar')
+    inventory = []
+    READABLE = ('docx','doc','txt','csv','xlsx','xls','pdf','zip','rar')
     # Файлы крупнее этого — почти всегда сканы актов/договоров/ОПЗ без полезного текста.
     # Читать их целиком (decode+regex) на Render Free (512 МБ) — верный способ упасть в OOM.
     # Пропускаем такие файлы, а не весь архив — так реальные объёмные папки клиента (сотни МБ
@@ -1405,26 +1651,41 @@ def _extract_archive_zip(file_bytes, filename, _depth=0):
                 name = info.filename
                 if name.endswith('/'): continue
                 inner_ext = name.rsplit('.',1)[-1].lower() if '.' in name else ''
-                if inner_ext not in READABLE: continue
                 fn = name.split('/')[-1].split('\\')[-1]
+                if inner_ext not in READABLE:
+                    inventory.append(f"- {name} — найден, формат пока не читается автоматически")
+                    continue
                 if info.file_size > INNER_FILE_LIMIT:
-                    skipped.append(f"{fn} ({info.file_size//1024//1024} МБ)")
+                    skipped.append(f"{name} ({info.file_size//1024//1024} МБ)")
+                    inventory.append(f"- {name} — найден, превышает лимит размера")
                     continue
                 if processed >= MAX_FILES:
-                    break
+                    inventory.append(f"- {name} — найден, не обработан из-за лимита количества")
+                    continue
                 try:
                     inner_bytes = z.read(name)
                     processed += 1
                     # Рекурсия для вложенных архивов
                     inner_text = extract_text_from_file(inner_bytes, fn, _depth+1)
-                    if inner_text and len(inner_text) > 10 and not inner_text.startswith('['):
-                        texts.append('--- ' + fn + ' ---\n' + inner_text)
-                except: pass
-        if texts or skipped:
+                    inventory.append(f"- {name} — прочитан/передан в анализ")
+                    if inner_text and len(inner_text) > 10:
+                        if inner_text.startswith('['):
+                            texts.append('--- ' + name + ' --- ⚠️ ОШИБКА ЧТЕНИЯ\n' + inner_text)
+                        else:
+                            texts.append('--- ' + name + ' ---\n' + inner_text)
+                    else:
+                        texts.append('--- ' + name + ' --- ⚠️ ПУСТОЙ РЕЗУЛЬТАТ')
+                except Exception as exc:
+                    inventory.append(f"- {name} — найден, ошибка чтения: {type(exc).__name__}")
+                    texts.append(f"--- {name} --- ⚠️ ОШИБКА\n[{type(exc).__name__}: {exc}]")
+        if texts or skipped or inventory:
             # Умная нарезка: сначала ищем приоритетные файлы
             PRIORITY_KEYWORDS = [
-                'поставщик', 'supplier', 'объект', 'object', 'сотрудник',
-                'штатн', 'персонал', 'список', 'перечень', 'работник'
+                'виды работ', 'вид работ', 'оборудован', 'машин', 'механизм',
+                'средств измер', 'поверк', 'калибров', 'лаборатор', 'аренд',
+                'технологическ', 'поставщик', 'supplier', 'объект', 'object',
+                'сотрудник', 'штатн', 'персонал', 'список', 'перечень',
+                'работник', 'рабочие', 'аттестат', 'удостоверен'
             ]
             priority = []
             other = []
@@ -1440,7 +1701,11 @@ def _extract_archive_zip(file_bytes, filename, _depth=0):
             # выбрасывал данные — теперь лимит намного больше, а обрезка (если всё же
             # нужна) явно называет какие файлы не поместились.
             MAX_CHARS = 300000
-            result = '\n\n'.join(ordered)
+            inventory_block = (
+                "=== 📦 СОСТАВ ВЛОЖЕННОГО АРХИВА — ФАЙЛЫ ФИЗИЧЕСКИ НАЙДЕНЫ ===\n"
+                + ("\n".join(inventory) if inventory else "[архив пуст]")
+            )
+            result = inventory_block + '\n\n' + '\n\n'.join(ordered)
             if len(result) > MAX_CHARS:
                 kept, running_len = [], 0
                 for block in ordered:
@@ -1465,7 +1730,8 @@ def _extract_archive_rar(file_bytes, filename, _depth=0):
     """Распаковывает RAR через rarfile или эвристику"""
     import io
     texts = []
-    READABLE = ('docx','doc','txt','csv','xlsx','pdf','zip','rar')
+    inventory = []
+    READABLE = ('docx','doc','txt','csv','xlsx','xls','pdf','zip','rar')
     INNER_FILE_LIMIT = 4 * 1024 * 1024
     try:
         import rarfile as _rar
@@ -1473,17 +1739,33 @@ def _extract_archive_rar(file_bytes, filename, _depth=0):
         for info in rf.infolist():
             name = info.filename
             inner_ext = name.rsplit('.',1)[-1].lower() if '.' in name else ''
-            if inner_ext not in READABLE: continue
-            if getattr(info, 'file_size', 0) > INNER_FILE_LIMIT: continue
+            if inner_ext not in READABLE:
+                inventory.append(f"- {name} — найден, формат пока не читается автоматически")
+                continue
+            if getattr(info, 'file_size', 0) > INNER_FILE_LIMIT:
+                inventory.append(f"- {name} — найден, превышает лимит размера")
+                continue
             try:
                 inner_bytes = rf.read(name)
                 fn = name.split('/')[-1].split('\\')[-1]
                 inner_text = extract_text_from_file(inner_bytes, fn, _depth+1)
-                if inner_text and len(inner_text) > 10 and not inner_text.startswith('['):
-                    texts.append('--- ' + fn + ' ---\n' + inner_text)
-            except: pass
-        if texts:
-            return '\n\n'.join(texts)[:280000]
+                inventory.append(f"- {name} — прочитан/передан в анализ")
+                if inner_text and len(inner_text) > 10:
+                    if inner_text.startswith('['):
+                        texts.append('--- ' + name + ' --- ⚠️ ОШИБКА ЧТЕНИЯ\n' + inner_text)
+                    else:
+                        texts.append('--- ' + name + ' ---\n' + inner_text)
+                else:
+                    texts.append('--- ' + name + ' --- ⚠️ ПУСТОЙ РЕЗУЛЬТАТ')
+            except Exception as exc:
+                inventory.append(f"- {name} — найден, ошибка чтения: {type(exc).__name__}")
+                texts.append(f"--- {name} --- ⚠️ ОШИБКА\n[{type(exc).__name__}: {exc}]")
+        if texts or inventory:
+            inventory_block = (
+                "=== 📦 СОСТАВ RAR-АРХИВА — ФАЙЛЫ ФИЗИЧЕСКИ НАЙДЕНЫ ===\n"
+                + ("\n".join(inventory) if inventory else "[архив пуст]")
+            )
+            return (inventory_block + '\n\n' + '\n\n'.join(texts))[:280000]
         return '[rar: файлы не найдены]'
     except ImportError:
         pass
