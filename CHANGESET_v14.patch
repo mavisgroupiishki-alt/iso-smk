@@ -1,0 +1,833 @@
+--- /mnt/data/project_v13/index.html	2026-08-03 06:06:28.855340725 +0000
++++ /mnt/data/project_v14/index.html	2026-08-03 06:32:18.427401915 +0000
+@@ -224,6 +224,31 @@
+ .ai-worker-add{width:100%;margin-top:6px;border:1px dashed #C9B4A7;background:#FFFDFC;color:#8B4A5C;border-radius:5px;padding:5px;font-size:10px;cursor:pointer}
+ .ai-missing-box{margin-top:7px;padding:7px 8px;border-radius:6px;background:#FFF4E8;border:1px solid #E8C5A8;color:#9A5C35;font-size:10px;line-height:1.4}
+ 
++
++/* ── KNOWLEDGE + EXPERIENCE ── */
++.igor-page-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.75fr);gap:16px;align-items:start}
++.igor-panel{background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 2px 8px rgba(80,50,40,.05);overflow:hidden}
++.igor-panel-head{padding:13px 16px;border-bottom:1px solid var(--border);background:#FAF6F0;display:flex;align-items:center;justify-content:space-between;gap:10px}
++.igor-panel-body{padding:15px}
++.igor-field{display:flex;flex-direction:column;gap:5px;margin-bottom:11px}
++.igor-field label{font-size:10.5px;font-weight:700;color:#8B4A5C;text-transform:uppercase;letter-spacing:.04em}
++.igor-field input,.igor-field select,.igor-field textarea{border:1px solid #D9C8BC;border-radius:7px;padding:8px 10px;font-family:inherit;font-size:12px;background:#fff;outline:none}
++.igor-field textarea{resize:vertical;min-height:92px}
++.igor-btn{border:none;border-radius:7px;padding:8px 13px;font-family:inherit;font-size:11.5px;font-weight:700;cursor:pointer}
++.igor-btn.primary{background:#8B4A5C;color:#fff}.igor-btn.soft{background:#F3E3E6;color:#8B4A5C;border:1px solid #D9BCC3}.igor-btn.danger{background:#FFF0ED;color:#B24F42;border:1px solid #EAB8B1}.igor-btn.green{background:#E9EFE0;color:#607A52;border:1px solid #B8C9A8}
++.knowledge-rule{border:1px solid #E5D7CC;border-radius:9px;padding:11px 12px;margin-bottom:8px;background:#fff}
++.knowledge-rule.inactive{opacity:.72;background:#FBF9F7}.knowledge-rule.draft{border-style:dashed;background:#FFF8E8}
++.knowledge-pill{display:inline-flex;padding:2px 7px;border-radius:10px;background:#F1E4E7;color:#8B4A5C;font-size:9.5px;font-weight:700;margin-right:4px}
++.stage-table-wrap{overflow:auto;border:1px solid #E4D7CC;border-radius:8px}
++.stage-table{width:100%;border-collapse:collapse;min-width:900px;font-size:11px}
++.stage-table th{background:#FAF6F0;color:#8B4A5C;padding:8px;border-bottom:1px solid #E4D7CC;text-align:left;white-space:nowrap}
++.stage-table td{padding:5px;border-bottom:1px solid #F0E8E1;vertical-align:middle}.stage-table tr:last-child td{border-bottom:none}
++.stage-table input[type="text"],.stage-table input[type="date"]{width:100%;min-width:120px;border:1px solid #DED0C5;border-radius:5px;padding:5px;font-family:inherit;font-size:10.5px}
++.stage-row-warning{background:#FFF5BF!important}
++.stage-result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
++.stage-result{border-radius:9px;padding:12px;background:#F7F2EC;border:1px solid #E4D7CC}.stage-result b{display:block;font-size:16px;color:#8B4A5C;margin-top:4px}
++@media(max-width:1000px){.igor-page-grid{grid-template-columns:1fr}.stage-result-grid{grid-template-columns:1fr}}
++
+ @media(max-width:700px){
+   #sidebar{display:none}
+   .g2,.g3,.g4{grid-template-columns:1fr}
+@@ -248,6 +273,12 @@
+   <div class="sb-item" data-page="companies" onclick="nav('companies',this)">
+     <span class="icon">🏢</span> Компании
+   </div>
++  <div class="sb-item" data-page="experience" onclick="nav('experience',this)">
++    <span class="icon">🧮</span> Расчёт стажа
++  </div>
++  <div class="sb-item" data-page="knowledge" onclick="nav('knowledge',this)">
++    <span class="icon">🧠</span> Знания ИИгоря
++  </div>
+   <div class="sb-item" data-page="journal" onclick="nav('journal',this)">
+     <span class="icon">📋</span> Журнал
+   </div>
+@@ -436,6 +467,7 @@
+             <button onclick="aiQuick('Добавь объект: ')" class="ai-qr">🏗 Объект</button>
+             <button onclick="aiQuick('Поставщики: ')" class="ai-qr">📦 Поставщики</button>
+             <button onclick="aiQuick('Удостоверения ОТ сотрудников: ')" class="ai-qr">🛡 ОТ</button>
++            <button onclick="aiQuick('Обучись: ')" class="ai-qr">🧠 Обучить</button>
+           </div>
+ 
+           <!-- INPUT -->
+@@ -470,6 +502,84 @@
+           </div>
+         </div>
+       </div>
++
++    </div>
++
++    <!-- PAGE: EXPERIENCE CALCULATOR -->
++    <div id="page-experience" class="page-content" style="display:none">
++      <div class="igor-panel" style="margin-bottom:14px">
++        <div class="igor-panel-head">
++          <div><b style="color:#8B4A5C">🧮 Расчёт трудового стажа</b><div style="font-size:10px;color:#A8938A;margin-top:2px">Периоды из трудовой книжки, ручной ввод и сохранение результата в карточку сотрудника</div></div>
++          <button class="igor-btn soft" onclick="stageReloadCompanies()">↻ Обновить компании</button>
++        </div>
++        <div class="igor-panel-body">
++          <div style="display:grid;grid-template-columns:1.2fr 1.2fr .7fr;gap:10px">
++            <div class="igor-field"><label>Компания</label><select id="stage-company" onchange="stageSelectCompany()"><option value="">Выберите компанию</option></select></div>
++            <div class="igor-field"><label>Сотрудник</label><select id="stage-person" onchange="stageSelectPerson()"><option value="">Выберите сотрудника</option></select></div>
++            <div class="igor-field"><label>Дата расчёта</label><input type="date" id="stage-calc-date" onchange="stageCalculate()"></div>
++          </div>
++          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
++            <button class="igor-btn primary" onclick="stageAddRow()">+ Добавить период</button>
++            <label class="igor-btn soft" style="display:inline-flex;align-items:center;gap:5px">📎 Распознать трудовую<input id="stage-labour-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" style="display:none" onchange="stageReadLabourFile(this.files[0])"></label>
++            <label style="font-size:11px;color:#6E625C"><input type="checkbox" id="stage-merge-overlaps" checked onchange="stageCalculate()"> объединять пересекающиеся периоды</label>
++            <label style="font-size:11px;color:#6E625C"><input type="checkbox" id="stage-inclusive" checked onchange="stageCalculate()"> учитывать день увольнения</label>
++          </div>
++          <div class="stage-table-wrap">
++            <table class="stage-table">
++              <thead><tr><th>Начало</th><th>Окончание</th><th>Организация</th><th>Должность</th><th>По виду деятельности</th><th>Текущая компания</th><th>Уверенность</th><th></th></tr></thead>
++              <tbody id="stage-periods-body"></tbody>
++            </table>
++          </div>
++          <div id="stage-warnings" style="font-size:11px;color:#A6503D;margin-top:8px"></div>
++          <div class="stage-result-grid">
++            <div class="stage-result"><span style="font-size:10px;color:#8B7E76">Общий календарный стаж</span><b id="stage-total-result">0 лет 0 мес. 0 дн.</b></div>
++            <div class="stage-result"><span style="font-size:10px;color:#8B7E76">По заявляемому виду</span><b id="stage-relevant-result">0 лет 0 мес. 0 дн.</b></div>
++            <div class="stage-result"><span style="font-size:10px;color:#8B7E76">В текущей организации</span><b id="stage-current-result">0 лет 0 мес. 0 дн.</b></div>
++          </div>
++          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
++            <button class="igor-btn green" onclick="stageSaveToPerson()">💾 Сохранить сотруднику</button>
++            <button class="igor-btn soft" onclick="stageClearRows()">Очистить периоды</button>
++          </div>
++        </div>
++      </div>
++
++      <div class="igor-panel">
++        <div class="igor-panel-head"><b style="color:#8B4A5C">Расчёт на дату по уже известному стажу</b></div>
++        <div class="igor-panel-body">
++          <div style="display:grid;grid-template-columns:1fr repeat(3,.6fr) 1fr;gap:10px;align-items:end">
++            <div class="igor-field"><label>Дата начала отсчёта</label><input type="date" id="stage-base-start"></div>
++            <div class="igor-field"><label>Лет</label><input type="number" min="0" value="0" id="stage-base-years"></div>
++            <div class="igor-field"><label>Месяцев</label><input type="number" min="0" value="0" id="stage-base-months"></div>
++            <div class="igor-field"><label>Дней</label><input type="number" min="0" value="0" id="stage-base-days"></div>
++            <div class="igor-field"><label>Дата расчёта</label><input type="date" id="stage-base-end"></div>
++          </div>
++          <button class="igor-btn primary" onclick="stageCalculateFromBase()">Рассчитать</button>
++          <div id="stage-base-result" style="font-size:16px;font-weight:700;color:#8B4A5C;margin-top:10px"></div>
++        </div>
++      </div>
++    </div>
++
++    <!-- PAGE: KNOWLEDGE -->
++    <div id="page-knowledge" class="page-content" style="display:none">
++      <div class="igor-page-grid">
++        <div class="igor-panel">
++          <div class="igor-panel-head"><div><b style="color:#8B4A5C">🧠 Обучить ИИгоря</b><div style="font-size:10px;color:#A8938A;margin-top:2px">Обучать могут все эксперты и оформители. Каждое правило сохраняет автора и историю изменений.</div></div></div>
++          <div class="igor-panel-body">
++            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
++              <div class="igor-field"><label>Кто обучает</label><input id="knowledge-author" placeholder="ФИО или имя"></div>
++              <div class="igor-field"><label>Область действия</label><select id="knowledge-scope"><option value="all">Все продукты</option><option value="iso">ISO 9001</option><option value="suot">СУОТ</option><option value="iso_suot">ISO + СУОТ</option><option value="spk">Все СПК</option><option value="spk_stroy">СПК Стройкомплекс</option><option value="spk_bisp">СПК БИСП</option><option value="company_att">Аттестация компании</option><option value="att">Аттестация специалиста</option></select></div>
++            </div>
++            <div class="igor-field"><label>Что ИИгорь должен запомнить</label><textarea id="knowledge-instruction" placeholder="Например: при виде работ 7.8.4 в Форму №2 добавлять ..."></textarea></div>
++            <div class="igor-field"><label>Регламент или правильный пример</label><input type="file" id="knowledge-file" accept=".txt,.doc,.docx,.pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg" onchange="knowledgeReadSelectedFile(this.files[0])"><div id="knowledge-file-status" style="font-size:10px;color:#A8938A"></div></div>
++            <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="igor-btn primary" onclick="knowledgePreviewRule()">Показать, что понял ИИгорь</button><button class="igor-btn soft" onclick="knowledgeClearForm()">Очистить</button></div>
++            <div id="knowledge-preview" style="margin-top:12px"></div>
++          </div>
++        </div>
++        <div class="igor-panel">
++          <div class="igor-panel-head"><b style="color:#8B4A5C">Активные правила и черновики</b><button class="igor-btn soft" onclick="knowledgeLoadRules()">↻</button></div>
++          <div class="igor-panel-body"><div class="igor-field"><input id="knowledge-search" placeholder="Поиск по правилам" oninput="knowledgeRenderRules()"></div><div id="knowledge-rules-list"><div style="color:#A8938A;font-size:11px">Загрузка...</div></div></div>
++        </div>
++      </div>
+     </div>
+ 
+   </div><!-- /content -->
+@@ -692,12 +802,14 @@
+   document.getElementById('page-' + page).style.display = page === 'ai' ? 'flex' : 'block';
+   currentPage = page;
+ 
+-  const titles = { docs: 'Документы ИСО', companies: 'Компании', journal: 'Журнал генераций', ai:'ИИгорь Оформитель'};
++  const titles = { docs: 'Документы ИСО', companies: 'Компании', experience:'Расчёт стажа', knowledge:'Знания ИИгоря', journal: 'Журнал генераций', ai:'ИИгорь Оформитель'};
+   document.getElementById('page-title').textContent = titles[page] || page;
+   document.getElementById('btn-gen-top').style.display = page === 'docs' ? 'flex' : 'none';
+ 
+   if (page === 'companies') loadCompanies();
+   if (page === 'journal') loadJournal();
++  if (page === 'experience') stageReloadCompanies();
++  if (page === 'knowledge') knowledgeInitPage();
+ }
+ 
+ function switchTab(name, el) {
+@@ -1264,7 +1376,7 @@
+ 
+ function aiBuildCompanyPayload() {
+   return {
+-    version: 13,
++    version: 14,
+     data: aiCloneForStorage(aiCurrentData),
+     history: aiCompactHistory(aiHistory),
+     savedAt: new Date().toISOString(),
+@@ -1620,7 +1732,7 @@
+     p.style.display = 'none';
+   });
+   document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
+-  const titles = {docs:'Документы ИСО', companies:'Компании', journal:'Журнал генераций', ai:'ИИгорь Оформитель'};
++  const titles = {docs:'Документы ИСО', companies:'Компании', experience:'Расчёт стажа', knowledge:'Знания ИИгоря', journal:'Журнал генераций', ai:'ИИгорь Оформитель'};
+   document.getElementById('page-title').textContent = titles[page] || page;
+   if(el) el.classList.add('active');
+ 
+@@ -1638,6 +1750,8 @@
+ 
+   if(page==='companies') loadCompanies && loadCompanies();
+   if(page==='journal') loadJournal && loadJournal();
++  if(page==='experience') stageReloadCompanies();
++  if(page==='knowledge') knowledgeInitPage();
+   if(page==='docs') loadDocs && loadDocs();
+ }
+ 
+@@ -3090,6 +3204,23 @@
+     }
+   }
+ 
++  // Команда «Обучись:» создаёт общее правило базы знаний, а не меняет карточку компании.
++  // Обучать могут все пользователи; правило сначала показывается как черновик и
++  // становится активным после нажатия «Подтвердить обучение».
++  if(/^\s*обучись\s*:/i.test(text)) {
++    try {
++      aiRemoveTyping();
++      knowledgeSourceFilename = fileNames || '';
++      await knowledgeCreateDraftFromChat(text, filesContent);
++    } catch(e) {
++      aiRemoveTyping();
++      aiAddMsg('ai', '❌ Не удалось подготовить правило: ' + e.message);
++    }
++    aiLoading = false;
++    document.getElementById('ai-send-btn').disabled = false;
++    return;
++  }
++
+   // Собираем контент для ИИ
+   let content = '';
+   if(savedCompanyContext) content += savedCompanyContext;
+@@ -3110,7 +3241,7 @@
+     const resp = await fetch('/api/ai/chat', {
+       method: 'POST',
+       headers: {'Content-Type':'application/json'},
+-      body: JSON.stringify({messages: aiHistory.slice(-10)})
++      body: JSON.stringify({messages: aiHistory.slice(-10), product: aiCurrentData?.certification?.standard || 'all'})
+     });
+     const result = await resp.json();
+     aiRemoveTyping();
+@@ -3604,6 +3735,263 @@
+   }
+ }
+ 
++// ── ЗНАНИЯ ИИГОРЯ ─────────────────────────────────────────────
++let knowledgeRules = [];
++let knowledgeSourceText = '';
++let knowledgeSourceFilename = '';
++let knowledgePageInitialized = false;
++
++function igorEscape(value) {
++  return String(value == null ? '' : value)
++    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
++    .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
++}
++
++async function knowledgePost(path, payload) {
++  const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload || {})});
++  const data = await response.json();
++  if(!response.ok || data.success === false) throw new Error(data.error || `HTTP ${response.status}`);
++  return data;
++}
++
++function knowledgeInitPage() {
++  const author = document.getElementById('knowledge-author');
++  if(author && !author.value) {
++    try { author.value = localStorage.getItem('igor:knowledge:author') || ''; } catch(_) {}
++  }
++  knowledgePageInitialized = true;
++  knowledgeLoadRules();
++}
++
++async function knowledgeReadSelectedFile(file) {
++  knowledgeSourceText = '';
++  knowledgeSourceFilename = '';
++  const status = document.getElementById('knowledge-file-status');
++  if(!file) { if(status) status.textContent=''; return; }
++  if(status) status.textContent = `⏳ Читаю «${file.name}»...`;
++  try {
++    const result = await aiReadFile(file);
++    knowledgeSourceText = result.content || '';
++    knowledgeSourceFilename = file.name;
++    if(status) status.textContent = `✅ «${file.name}» прочитан, ${knowledgeSourceText.length.toLocaleString('ru-RU')} знаков`;
++  } catch(e) {
++    if(status) status.textContent = '❌ ' + e.message;
++  }
++}
++
++function knowledgeScopeLabel(scope) {
++  const labels = {all:'Все продукты',iso:'ISO 9001',suot:'СУОТ',iso_suot:'ISO + СУОТ',spk:'Все СПК',spk_stroy:'СПК Стройкомплекс',spk_bisp:'СПК БИСП',company_att:'Аттестация компании',att:'Аттестация специалиста',periodika:'Периодика'};
++  return labels[scope] || scope || 'Все продукты';
++}
++
++function knowledgeRulePreviewHtml(rule, chatMode=false) {
++  const cond = (rule.conditions || []).map(v=>`<li>${igorEscape(v)}</li>`).join('');
++  const acts = (rule.actions || []).map(v=>`<li>${igorEscape(v)}</li>`).join('');
++  const conflict = rule.conflict_warning ? `<div style="margin-top:8px;padding:8px;border-radius:6px;background:#FFF0ED;color:#A6503D"><b>⚠️ Возможный конфликт:</b> ${igorEscape(rule.conflict_warning)}</div>` : '';
++  const controls = rule.active
++    ? `<button class="igor-btn soft" onclick="knowledgeSetActive('${rule.id}',false)">Отключить</button>`
++    : `<button class="igor-btn green" onclick="knowledgeSetActive('${rule.id}',true)">✅ Подтвердить обучение</button>`;
++  return `<div class="knowledge-rule ${rule.active?'':'draft'}" id="knowledge-rule-${rule.id}">
++    <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div><b style="color:#8B4A5C">${igorEscape(rule.title)}</b><div style="margin-top:4px"><span class="knowledge-pill">${igorEscape(knowledgeScopeLabel(rule.scope))}</span><span class="knowledge-pill">версия ${Number(rule.version||1)}</span></div></div><span style="font-size:10px;color:#A8938A">${igorEscape(rule.author||'')}</span></div>
++    <div style="font-size:12px;line-height:1.5;margin-top:9px;white-space:pre-wrap">${igorEscape(rule.instruction)}</div>
++    ${cond?`<div style="font-size:11px;margin-top:7px"><b>Когда применять:</b><ul style="margin:4px 0 0 18px">${cond}</ul></div>`:''}
++    ${acts?`<div style="font-size:11px;margin-top:7px"><b>Что делать:</b><ul style="margin:4px 0 0 18px">${acts}</ul></div>`:''}
++    ${rule.source_filename?`<div style="font-size:10px;color:#8B7E76;margin-top:6px">Источник: ${igorEscape(rule.source_filename)}</div>`:''}
++    ${conflict}
++    <div style="display:flex;gap:7px;margin-top:10px;flex-wrap:wrap">${controls}${chatMode?'':`<button class="igor-btn soft" onclick="knowledgeEditRule('${rule.id}')">Редактировать</button><button class="igor-btn danger" onclick="knowledgeDeleteRule('${rule.id}')">Удалить</button>`}</div>
++  </div>`;
++}
++
++async function knowledgePreviewRule() {
++  const instruction = (document.getElementById('knowledge-instruction')?.value || '').trim();
++  const scope = document.getElementById('knowledge-scope')?.value || 'all';
++  const author = (document.getElementById('knowledge-author')?.value || '').trim() || 'Пользователь ИИгоря';
++  try { localStorage.setItem('igor:knowledge:author', author); } catch(_) {}
++  const box = document.getElementById('knowledge-preview');
++  if(box) box.innerHTML = '<div style="font-size:11px;color:#A8938A">⏳ ИИгорь формулирует правило и проверяет конфликты...</div>';
++  try {
++    const data = await knowledgePost('/api/knowledge/preview', {instruction, scope, author, source_filename:knowledgeSourceFilename, source_text:knowledgeSourceText});
++    if(box) box.innerHTML = `<div style="font-size:10px;color:#A8938A;margin-bottom:6px">Проверьте формулировку. Правило начнёт действовать только после подтверждения.</div>${knowledgeRulePreviewHtml(data.rule)}`;
++    await knowledgeLoadRules();
++  } catch(e) {
++    if(box) box.innerHTML = `<div style="color:#A6503D;font-size:11px">❌ ${igorEscape(e.message)}</div>`;
++  }
++}
++
++function knowledgeClearForm() {
++  const ids=['knowledge-instruction','knowledge-file'];
++  ids.forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
++  knowledgeSourceText=''; knowledgeSourceFilename='';
++  const status=document.getElementById('knowledge-file-status'); if(status) status.textContent='';
++  const preview=document.getElementById('knowledge-preview'); if(preview) preview.innerHTML='';
++}
++
++async function knowledgeLoadRules() {
++  try {
++    const response = await fetch('/api/knowledge/list');
++    const data = await response.json();
++    knowledgeRules = data.rules || [];
++    knowledgeRenderRules();
++  } catch(e) {
++    const box=document.getElementById('knowledge-rules-list'); if(box) box.innerHTML=`<div style="color:#A6503D">${igorEscape(e.message)}</div>`;
++  }
++}
++
++function knowledgeRenderRules() {
++  const box=document.getElementById('knowledge-rules-list'); if(!box) return;
++  const q=(document.getElementById('knowledge-search')?.value || '').toLowerCase().trim();
++  const rows=knowledgeRules.filter(r=>!q || `${r.title} ${r.instruction} ${r.author} ${r.scope}`.toLowerCase().includes(q));
++  if(!rows.length){box.innerHTML='<div style="font-size:11px;color:#A8938A">Правил пока нет</div>';return;}
++  box.innerHTML=rows.map(r=>knowledgeRulePreviewHtml(r)).join('');
++}
++
++async function knowledgeSetActive(id, active) {
++  try {
++    const data=await knowledgePost('/api/knowledge/activate',{id,active});
++    const node=document.getElementById('knowledge-rule-'+id);
++    if(node) node.outerHTML=knowledgeRulePreviewHtml(data.rule, node.closest?.('.ai-bubble-ai')!=null);
++    await knowledgeLoadRules();
++    if(active) aiAddMsg('ai','✅ Правило активировано. ИИгорь будет учитывать его в следующих ответах и при формировании документов.');
++  } catch(e){alert('Ошибка: '+e.message);}
++}
++
++async function knowledgeDeleteRule(id) {
++  if(!confirm('Удалить правило из базы знаний?')) return;
++  try { await knowledgePost('/api/knowledge/delete',{id}); await knowledgeLoadRules(); }
++  catch(e){alert('Ошибка: '+e.message);}
++}
++
++async function knowledgeEditRule(id) {
++  const rule=knowledgeRules.find(r=>r.id===id); if(!rule) return;
++  const instruction=prompt('Исправьте текст правила:',rule.instruction); if(instruction===null) return;
++  const title=prompt('Название правила:',rule.title); if(title===null) return;
++  try { await knowledgePost('/api/knowledge/update',{id,title,instruction,author:(document.getElementById('knowledge-author')?.value||rule.author)}); await knowledgeLoadRules(); }
++  catch(e){alert('Ошибка: '+e.message);}
++}
++
++async function knowledgeCreateDraftFromChat(text, filesContent) {
++  const instruction=String(text||'').replace(/^\s*обучись\s*:\s*/i,'').trim();
++  const scope=aiCurrentData?.certification?.standard || 'all';
++  let author='Пользователь ИИгоря';
++  try { author=localStorage.getItem('igor:knowledge:author') || author; } catch(_) {}
++  const data=await knowledgePost('/api/knowledge/preview',{instruction,scope,author,source_filename:knowledgeSourceFilename || '',source_text:String(filesContent||'').slice(0,120000)});
++  aiAddMsg('ai',`<div style="font-size:11px;color:#A8938A;margin-bottom:6px">Вот что ИИгорь понял. Нажмите подтверждение, чтобы правило стало общим для всех пользователей.</div>${knowledgeRulePreviewHtml(data.rule,true)}`);
++  knowledgeRules.unshift(data.rule);
++}
++
++// ── КАЛЬКУЛЯТОР СТАЖА ─────────────────────────────────────────────
++let stageCompanies=[];
++let stageCompanyPayload=null;
++let stageCompanyKey='';
++let stagePeople=[];
++let stageSelectedPerson=null;
++let stageLastResult=null;
++
++function stageTodayIso(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
++function stageParseDate(value){if(!value)return null;const m=String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);if(!m)return null;const d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3]));return Number.isNaN(d.getTime())?null:d;}
++function stageToIso(value){if(!value)return '';const s=String(value).trim();let m=s.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);if(m)return `${m[3]}-${m[2]}-${m[1]}`;m=s.match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?s:'';}
++function stageFromIso(value){const m=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?`${m[3]}.${m[2]}.${m[1]}`:'';}
++function stageDaysToYmd(days){days=Math.max(0,Math.floor(Number(days)||0));const years=Math.floor(days/360);const rem=days-years*360;const months=Math.floor(rem/30);return {years,months,days:rem-months*30,totalDays:days,text:`${years} ${stagePlural(years,'год','года','лет')} ${months} мес. ${rem-months*30} дн.`};}
++function stagePlural(n,a,b,c){n=Math.abs(n)%100;const n1=n%10;if(n>10&&n<20)return c;if(n1>1&&n1<5)return b;if(n1===1)return a;return c;}
++function stageMergeIntervals(intervals){const sorted=intervals.slice().sort((a,b)=>a.start-b.start);const out=[];for(const it of sorted){const last=out[out.length-1];if(last&&it.start<=new Date(last.end.getTime()+86400000)){if(it.end>last.end)last.end=it.end;}else out.push({start:new Date(it.start),end:new Date(it.end)});}return out;}
++function stageIntervalDays(intervals,inclusive=true,merge=true){const valid=intervals.filter(x=>x.start&&x.end&&x.end>=x.start);const arr=merge?stageMergeIntervals(valid):valid;return arr.reduce((sum,x)=>sum+Math.floor((x.end-x.start)/86400000)+(inclusive?1:0),0);}
++
++async function stageReloadCompanies(){
++  const select=document.getElementById('stage-company'); if(!select)return;
++  const current=select.value;
++  stageCompanies=await aiListSavedCompanies();
++  select.innerHTML='<option value="">Выберите компанию</option>'+stageCompanies.map(c=>`<option value="${igorEscape(c.key)}">${igorEscape(c.label||'Без названия')}</option>`).join('');
++  if(current&&stageCompanies.some(c=>c.key===current))select.value=current;
++  const calcDate=document.getElementById('stage-calc-date');if(calcDate&&!calcDate.value)calcDate.value=stageTodayIso();
++  const baseEnd=document.getElementById('stage-base-end');if(baseEnd&&!baseEnd.value)baseEnd.value=stageTodayIso();
++}
++
++async function stageSelectCompany(){
++  stageCompanyKey=document.getElementById('stage-company')?.value||'';
++  stageCompanyPayload=null;stagePeople=[];stageSelectedPerson=null;
++  const personSel=document.getElementById('stage-person');if(personSel)personSel.innerHTML='<option value="">Выберите сотрудника</option>';
++  stageClearRows(false);
++  if(!stageCompanyKey)return;
++  stageCompanyPayload=aiLocalGetCompany(stageCompanyKey);
++  if(!stageCompanyPayload){const r=await kvGet(stageCompanyKey);if(r&&r.value)stageCompanyPayload=JSON.parse(r.value);}
++  const data=stageCompanyPayload?.data||{};
++  const map=new Map();
++  function add(list,path){(list||[]).forEach((p,i)=>{const fio=String(p?.fio||'').trim();if(!fio)return;const key=fio.toLowerCase();const existing=map.get(key);const ref={fio,position:p.position||'',person:p,path,index:i};if(!existing||((p.employment_periods||[]).length>(existing.person.employment_periods||[]).length))map.set(key,ref);});}
++  add(data.staff,'staff');add(data.company_attestation?.itr,'company_attestation.itr');add(data.attestation?.persons,'attestation.persons');
++  stagePeople=[...map.values()].sort((a,b)=>a.fio.localeCompare(b.fio,'ru'));
++  if(personSel)personSel.innerHTML='<option value="">Выберите сотрудника</option>'+stagePeople.map((p,i)=>`<option value="${i}">${igorEscape(p.fio)}${p.position?' — '+igorEscape(p.position):''}</option>`).join('');
++}
++
++function stageSelectPerson(){
++  const rawValue=document.getElementById('stage-person')?.value ?? '';
++  const idx=rawValue===''?-1:Number(rawValue);
++  stageSelectedPerson=Number.isInteger(idx)&&idx>=0&&stagePeople[idx]?stagePeople[idx]:null;
++  stageClearRows(false);
++  if(!stageSelectedPerson)return;
++  const periods=stageSelectedPerson.person.employment_periods||[];
++  periods.forEach(p=>stageAddRow({start:stageToIso(p.start),end:p.end===null||p.end===''?'':stageToIso(p.end),employer:p.employer||'',position:p.position||'',relevant:p.relevant!==false,current:!!p.is_current_employer,confidence:p.confidence==null?1:Number(p.confidence)}));
++  if(!periods.length)stageAddRow();
++  stageCalculate();
++}
++
++function stageAddRow(period={}){
++  const body=document.getElementById('stage-periods-body');if(!body)return;
++  const tr=document.createElement('tr');
++  const conf=period.confidence==null?1:period.confidence;
++  tr.innerHTML=`<td><input type="date" class="st-start" value="${igorEscape(period.start||'')}" onchange="stageCalculate()"></td><td><input type="date" class="st-end" value="${igorEscape(period.end||'')}" onchange="stageCalculate()" title="Оставьте пустым, если сотрудник продолжает работать"></td><td><input type="text" class="st-employer" value="${igorEscape(period.employer||'')}" oninput="stageCalculate()"></td><td><input type="text" class="st-position" value="${igorEscape(period.position||'')}" oninput="stageCalculate()"></td><td style="text-align:center"><input type="checkbox" class="st-relevant" ${period.relevant===false?'':'checked'} onchange="stageCalculate()"></td><td style="text-align:center"><input type="checkbox" class="st-current" ${period.current?'checked':''} onchange="stageCalculate()"></td><td><input type="number" class="st-confidence" min="0" max="1" step="0.05" value="${Number(conf).toFixed(2)}" style="width:65px" onchange="stageCalculate()"></td><td><button class="ai-mini-btn" onclick="this.closest('tr').remove();stageCalculate()">✕</button></td>`;
++  body.appendChild(tr);stageCalculate();
++}
++
++function stageClearRows(addBlank=true){const body=document.getElementById('stage-periods-body');if(body)body.innerHTML='';if(addBlank)stageAddRow();else stageCalculate();}
++function stageCollectRows(){
++  const calcIso=document.getElementById('stage-calc-date')?.value||stageTodayIso();
++  const rows=[...document.querySelectorAll('#stage-periods-body tr')];
++  return rows.map(tr=>{const start=tr.querySelector('.st-start').value;let end=tr.querySelector('.st-end').value;const open=!end;if(open)end=calcIso;return {tr,start,end,open,employer:tr.querySelector('.st-employer').value.trim(),position:tr.querySelector('.st-position').value.trim(),relevant:tr.querySelector('.st-relevant').checked,current:tr.querySelector('.st-current').checked,confidence:Number(tr.querySelector('.st-confidence').value||0)};});
++}
++
++function stageCalculate(){
++  const inclusive=document.getElementById('stage-inclusive')?.checked!==false;
++  const merge=document.getElementById('stage-merge-overlaps')?.checked!==false;
++  const rows=stageCollectRows();const warnings=[];const valid=[];
++  rows.forEach((r,i)=>{r.tr.classList.remove('stage-row-warning');const start=stageParseDate(r.start),end=stageParseDate(r.end);let rowWarning=false;if(!start||!end||end<start){if(r.start||r.end||r.employer||r.position)warnings.push(`Строка ${i+1}: неполная или неверная дата`);r.tr.classList.add('stage-row-warning');return;}if(!r.employer){warnings.push(`Строка ${i+1}: не указана организация`);rowWarning=true;}if(!r.position){warnings.push(`Строка ${i+1}: не указана должность`);rowWarning=true;}if(r.confidence<.85){warnings.push(`Строка ${i+1}: низкая уверенность распознавания`);rowWarning=true;}if(rowWarning)r.tr.classList.add('stage-row-warning');valid.push({...r,start,end});});
++  const all=stageDaysToYmd(stageIntervalDays(valid,inclusive,merge));
++  const relevant=stageDaysToYmd(stageIntervalDays(valid.filter(x=>x.relevant),inclusive,merge));
++  const current=stageDaysToYmd(stageIntervalDays(valid.filter(x=>x.current),inclusive,merge));
++  document.getElementById('stage-total-result').textContent=all.text;document.getElementById('stage-relevant-result').textContent=relevant.text;document.getElementById('stage-current-result').textContent=current.text;
++  document.getElementById('stage-warnings').innerHTML=warnings.length?'⚠️ '+warnings.map(igorEscape).join('<br>⚠️ '):'✅ Все используемые периоды имеют полные даты';
++  stageLastResult={all,relevant,current,warnings,rows,calculation_date:document.getElementById('stage-calc-date')?.value||stageTodayIso(),inclusive,merge};return stageLastResult;
++}
++
++function stageFindPersonTargets(data,fio){const targets=[];(data.staff||[]).forEach(p=>{if((p.fio||'').trim().toLowerCase()===fio.toLowerCase())targets.push(p)});(data.company_attestation?.itr||[]).forEach(p=>{if((p.fio||'').trim().toLowerCase()===fio.toLowerCase())targets.push(p)});(data.attestation?.persons||[]).forEach(p=>{if((p.fio||'').trim().toLowerCase()===fio.toLowerCase())targets.push(p)});return targets;}
++
++async function stageSaveToPerson(){
++  if(!stageCompanyPayload||!stageSelectedPerson){alert('Сначала выберите компанию и сотрудника');return;}
++  const result=stageCalculate();const data=stageCompanyPayload.data||{};const targets=stageFindPersonTargets(data,stageSelectedPerson.fio);if(!targets.length){alert('Сотрудник не найден в карточке');return;}
++  const periods=result.rows.filter(r=>r.start||r.employer||r.position).map(r=>{const uncertain=[];if(!r.start)uncertain.push('start');if(!r.position)uncertain.push('position');if(!r.employer)uncertain.push('employer');if(r.confidence<.85)uncertain.push('recognition');return {start:stageFromIso(r.start),end:r.open?null:stageFromIso(r.end),position:r.position,employer:r.employer,is_current_employer:r.current,relevant:r.relevant,confidence:r.confidence,uncertain_fields:uncertain};});
++  targets.forEach(person=>{person.employment_periods=periods;person.stage_source='calculated';person.stage_is_final=result.warnings.length===0;person.stage_years=result.relevant.text;person.stage_years_here=result.current.text;person.stage_calculation={calculation_date:stageFromIso(result.calculation_date),total_days:result.relevant.totalDays,current_company_days:result.current.totalDays,merge_overlaps:result.merge,inclusive_end_day:result.inclusive,warnings:result.warnings};if(Array.isArray(person.requests)){person.requests.forEach(req=>{req.stage_months=result.relevant.years*12+result.relevant.months;req.work_experience_text=result.relevant.text;});}});
++  stageCompanyPayload.savedAt=new Date().toISOString();stageCompanyPayload.data=data;aiLocalSetCompany(stageCompanyKey,stageCompanyPayload);try{await kvSet(stageCompanyKey,JSON.stringify(stageCompanyPayload));}catch(e){console.warn(e);}
++  if(stageCompanyKey===aiCurrentCompanyKey){aiCurrentData=data;aiRenderCardFromCurrent();}
++  alert('Стаж рассчитан и сохранён в карточку сотрудника');
++}
++
++function stageCalculateFromBase(){
++  const start=stageParseDate(document.getElementById('stage-base-start')?.value);const end=stageParseDate(document.getElementById('stage-base-end')?.value);const box=document.getElementById('stage-base-result');if(!start||!end||end<start){box.textContent='Заполните корректные даты';return;}
++  const initial=(Number(document.getElementById('stage-base-years').value)||0)*360+(Number(document.getElementById('stage-base-months').value)||0)*30+(Number(document.getElementById('stage-base-days').value)||0);
++  const added=Math.floor((end-start)/86400000)+(document.getElementById('stage-inclusive')?.checked!==false?1:0);box.textContent=stageDaysToYmd(initial+added).text;
++}
++
++async function stageReadLabourFile(file){
++  if(!file||!stageSelectedPerson){alert('Сначала выберите сотрудника');return;}
++  const btnLabel=document.querySelector('label[for="stage-labour-file"]');
++  try{
++    const parsedFile=await aiReadFile(file);const product=stageCompanyPayload?.data?.certification?.standard||'company_att';
++    const prompt=`Извлеки из трудовой книжки все периоды работы для сотрудника ${stageSelectedPerson.fio}. Сохраняй только реальные полные даты; не придумывай день и месяц. Верни их в data.company_attestation.itr[0].employment_periods.\n\n${parsedFile.content}`;
++    const response=await fetch('/api/ai/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({product,messages:[{role:'user',content:prompt}]})});const raw=await response.json();if(!raw.success)throw new Error(raw.error||'Ошибка распознавания');const parsed=aiParseResponse(raw.text);const candidates=parsed.data?.company_attestation?.itr?.[0]?.employment_periods||parsed.data?.staff?.[0]?.employment_periods||[];if(!candidates.length)throw new Error('Периоды работы не найдены');stageClearRows(false);candidates.forEach(p=>stageAddRow({start:stageToIso(p.start),end:p.end?stageToIso(p.end):'',employer:p.employer||'',position:p.position||'',relevant:p.relevant!==false,current:!!p.is_current_employer,confidence:(p.confidence==null?0.75:p.confidence)}));stageCalculate();
++  }catch(e){alert('Не удалось распознать трудовую: '+e.message);}
++  finally{document.getElementById('stage-labour-file').value='';}
++}
++
++
+ // Автозапуск — открываем ИИгорь Оформитель сразу
+ document.addEventListener('DOMContentLoaded', () => {
+   const aiItem = document.querySelector('.sb-item[data-page="ai"]');
+--- /mnt/data/project_v13/server.py	2026-08-03 06:05:43.851338948 +0000
++++ /mnt/data/project_v14/server.py	2026-08-03 06:34:51.727407969 +0000
+@@ -60,9 +60,10 @@
+ OUT_DIR     = _DATA/'output'
+ KV_DIR      = _DATA/'kv'
+ TASKS_DIR   = _DATA/'tasks'
++KNOWLEDGE_DIR = _DATA/'knowledge'
+ PORT = int(os.environ.get("PORT", 8766))
+ 
+-for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR]:
++for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR, KNOWLEDGE_DIR]:
+     d.mkdir(parents=True, exist_ok=True)
+ 
+ _STORAGE_LOCK = __import__('threading').RLock()
+@@ -114,6 +115,211 @@
+             continue
+     return keys
+ 
++
++# ── База знаний ИИгоря ───────────────────────────────────────────────
++# Обучать ИИгоря могут все пользователи приложения. Правила хранятся отдельно
++# от карточек компаний, имеют автора, область действия, версию и историю правок.
++# Перед активацией правило создаётся как черновик: пользователь видит, что именно
++# ИИгорь понял, и подтверждает это одной кнопкой.
++_KNOWLEDGE_SCOPE_ALIASES = {
++    'iso': {'all', 'iso'},
++    'suot': {'all', 'suot'},
++    'iso_suot': {'all', 'iso', 'suot', 'iso_suot'},
++    'spk': {'all', 'spk'},
++    'spk_stroy': {'all', 'spk', 'spk_stroy'},
++    'spk_bisp': {'all', 'spk', 'spk_bisp'},
++    'company_att': {'all', 'company_att'},
++    'att': {'all', 'att'},
++    'periodika': {'all', 'periodika', 'iso', 'suot', 'iso_suot'},
++}
++
++def _knowledge_file(rule_id: str) -> Path:
++    safe = re.sub(r'[^a-zA-Z0-9_-]', '', str(rule_id or ''))[:80]
++    return KNOWLEDGE_DIR / f'{safe}.json'
++
++def _knowledge_read(rule_id: str):
++    fp = _knowledge_file(rule_id)
++    if not fp.exists():
++        return None
++    try:
++        return json.loads(fp.read_text('utf-8'))
++    except Exception:
++        return None
++
++def knowledge_list(active_only=False, scope=None):
++    rows = []
++    for fp in KNOWLEDGE_DIR.glob('*.json'):
++        try:
++            row = json.loads(fp.read_text('utf-8'))
++        except Exception:
++            continue
++        if active_only and not row.get('active'):
++            continue
++        if scope:
++            accepted = _KNOWLEDGE_SCOPE_ALIASES.get(scope, {'all', scope})
++            if row.get('scope', 'all') not in accepted:
++                continue
++        rows.append(row)
++    rows.sort(key=lambda x: (str(x.get('updated_at') or ''), str(x.get('created_at') or '')), reverse=True)
++    return rows
++
++def _knowledge_save(row: dict):
++    if not row.get('id'):
++        import uuid
++        row['id'] = 'kn_' + uuid.uuid4().hex[:12]
++    now = datetime.now().isoformat(timespec='seconds')
++    row.setdefault('created_at', now)
++    row['updated_at'] = now
++    row.setdefault('active', False)
++    row.setdefault('scope', 'all')
++    row.setdefault('rule_type', 'rule')
++    row.setdefault('version', 1)
++    row.setdefault('history', [])
++    _atomic_write_text(_knowledge_file(row['id']), json.dumps(row, ensure_ascii=False, indent=2))
++    return row
++
++def knowledge_create(payload: dict):
++    title = str(payload.get('title') or 'Новое правило').strip()[:180]
++    instruction = str(payload.get('instruction') or '').strip()
++    if not instruction:
++        raise ValueError('Текст правила не заполнен')
++    row = {
++        'title': title,
++        'instruction': instruction[:60000],
++        'scope': str(payload.get('scope') or 'all'),
++        'rule_type': str(payload.get('rule_type') or 'rule'),
++        'author': str(payload.get('author') or 'Пользователь ИИгоря').strip()[:120],
++        'source_filename': str(payload.get('source_filename') or '').strip()[:300],
++        'source_text': str(payload.get('source_text') or '')[:120000],
++        'conditions': payload.get('conditions') if isinstance(payload.get('conditions'), list) else [],
++        'actions': payload.get('actions') if isinstance(payload.get('actions'), list) else [],
++        'conflict_warning': str(payload.get('conflict_warning') or '').strip(),
++        'active': bool(payload.get('active', False)),
++        'version': int(payload.get('version') or 1),
++        'history': [],
++    }
++    return _knowledge_save(row)
++
++def knowledge_update(payload: dict):
++    rule_id = str(payload.get('id') or '')
++    row = _knowledge_read(rule_id)
++    if not row:
++        raise KeyError('Правило не найдено')
++    snapshot = {k: row.get(k) for k in ('title','instruction','scope','rule_type','author','active','version','updated_at')}
++    row.setdefault('history', []).append(snapshot)
++    row['history'] = row['history'][-25:]
++    limits = {'title':180,'instruction':60000,'author':120,'source_filename':300,'source_text':120000,'conflict_warning':4000}
++    for key in ('title','instruction','scope','rule_type','author','source_filename','source_text','conditions','actions','conflict_warning'):
++        if key not in payload:
++            continue
++        value = payload[key]
++        if key in ('conditions','actions'):
++            row[key] = [str(item)[:1000] for item in (value or []) if str(item).strip()][:50] if isinstance(value, list) else []
++        elif key in limits:
++            row[key] = str(value or '').strip()[:limits[key]]
++        else:
++            row[key] = str(value or '').strip()[:80]
++    if 'active' in payload:
++        row['active'] = bool(payload['active'])
++    row['version'] = int(row.get('version') or 1) + 1
++    return _knowledge_save(row)
++
++def knowledge_delete(rule_id: str):
++    fp = _knowledge_file(rule_id)
++    if fp.exists():
++        fp.unlink()
++        return True
++    return False
++
++def knowledge_public(row: dict):
++    public = dict(row or {})
++    source_text = str(public.pop('source_text', '') or '')
++    public['source_excerpt'] = source_text[:500]
++    public['source_length'] = len(source_text)
++    return public
++
++def knowledge_context(scope='all', max_chars=32000):
++    rows = knowledge_list(active_only=True, scope=scope)
++    if not rows:
++        return ''
++    parts = []
++    for index, row in enumerate(rows, 1):
++        conditions = '; '.join(str(v) for v in (row.get('conditions') or []) if v)
++        actions = '; '.join(str(v) for v in (row.get('actions') or []) if v)
++        block = [
++            f"ПРАВИЛО {index}: {row.get('title','Без названия')}",
++            f"Область: {row.get('scope','all')}",
++            f"Инструкция: {row.get('instruction','')}",
++        ]
++        if conditions: block.append('Условия: ' + conditions)
++        if actions: block.append('Действия: ' + actions)
++        if row.get('source_filename'): block.append('Источник: ' + str(row['source_filename']))
++        source_fragment = str(row.get('source_text') or '').strip()
++        if source_fragment:
++            block.append('Фрагмент регламента-источника:\n' + source_fragment[:6000])
++        parts.append('\n'.join(block))
++    text = '\n\n'.join(parts)
++    return text[:max_chars]
++
++def knowledge_preview(payload: dict, api_key: str):
++    raw_instruction = str(payload.get('instruction') or '').strip()
++    source_text = str(payload.get('source_text') or '').strip()[:70000]
++    source_filename = str(payload.get('source_filename') or '').strip()
++    scope = str(payload.get('scope') or 'all')
++    author = str(payload.get('author') or 'Пользователь ИИгоря').strip()
++    if not raw_instruction and not source_text:
++        raise ValueError('Добавьте инструкцию или файл с регламентом')
++    existing = knowledge_context(scope, max_chars=10000)
++    prompt = f"""Ты методолог ИИгоря. Преврати ввод пользователя и приложенный регламент в ОДНО ясное рабочее правило.
++Не добавляй фактов, которых нет во вводе. Сохраняй точные названия полей, документов, видов работ и форм.
++Если новое правило конфликтует с действующими, укажи конфликт отдельно.
++
++Область действия: {scope}
++Фраза пользователя:
++{raw_instruction or '[не указана]'}
++
++Файл: {source_filename or '[нет файла]'}
++Содержимое файла:
++{source_text or '[нет содержимого]'}
++
++Действующие правила для сравнения:
++{existing or '[нет]'}
++
++Верни строго JSON:
++{{
++  "title":"короткое название",
++  "instruction":"точная нормализованная инструкция, что делать в дальнейшем",
++  "conditions":["когда применять"],
++  "actions":["что конкретно делать"],
++  "conflict_warning":"пусто или описание конфликта"
++}}"""
++    result = None
++    if api_key:
++        try:
++            raw = _simple_ai_call(prompt, api_key, max_tokens=1800)
++            candidate = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip(), flags=re.I|re.S)
++            result = json.loads(candidate)
++        except Exception as exc:
++            print(f'⚠️ Не удалось подготовить AI-предпросмотр правила: {exc}')
++    if not isinstance(result, dict):
++        result = {
++            'title': (raw_instruction.splitlines()[0][:120] if raw_instruction else source_filename or 'Правило из регламента'),
++            'instruction': raw_instruction or (f'Применять требования из файла «{source_filename}». ' + source_text[:5000]),
++            'conditions': [],
++            'actions': [],
++            'conflict_warning': '',
++        }
++    draft = knowledge_create({
++        **result,
++        'scope': scope,
++        'rule_type': payload.get('rule_type') or 'rule',
++        'author': author,
++        'source_filename': source_filename,
++        'source_text': source_text,
++        'active': False,
++    })
++    return draft
++
+ # Хранилище фоновых задач генерации (на диске - переживает перезапуск)
+ import threading
+ # Render Free = 512 МБ RAM. Генерация пакета (параллельные запросы к BitrixGPT + сборка ZIP)
+@@ -488,7 +694,7 @@
+     return json.dumps(payload, ensure_ascii=False)
+ 
+ 
+-def call_ai(messages, api_key):
++def call_ai(messages, api_key, knowledge_text=""):
+     """Вызов BitrixGPT через Vibe Code API — с повторными попытками при таймауте.
+     Чат с Игорем может обрабатывать сразу несколько файлов/специалистов за раз (например,
+     аттестация 3 человек одним сообщением) — 60 сек не всегда хватает, особенно если
+@@ -501,7 +707,7 @@
+                 VIBE_URL,
+                 headers={"Content-Type":"application/json","X-Api-Key":api_key},
+                 json={"model":VIBE_MODEL,"max_tokens":3000,"messages":[
+-                    {"role":"system","content":AI_SYSTEM},
++                    {"role":"system","content":AI_SYSTEM + (("\n\n=== АКТИВНЫЕ ПРАВИЛА БАЗЫ ЗНАНИЙ ИИГОРЯ (НОВЫЕ ПРАВИЛА ИДУТ ПЕРВЫМИ И ИМЕЮТ ПРИОРИТЕТ ПРИ КОНФЛИКТЕ) ===\n" + knowledge_text + "\n=== КОНЕЦ ПРАВИЛ ===") if knowledge_text else "")},
+                     *messages[-10:]
+                 ]},
+                 timeout=150
+@@ -2053,6 +2259,13 @@
+             qs = _urlparse.parse_qs(_urlparse.urlsplit(self.path).query)
+             prefix = (qs.get('prefix') or [''])[0]
+             self._json({'keys': kv_list(prefix)})
++        elif p=='/api/knowledge/list':
++            import urllib.parse as _urlparse
++            qs = _urlparse.parse_qs(_urlparse.urlsplit(self.path).query)
++            scope = (qs.get('scope') or [''])[0] or None
++            active_raw = (qs.get('active') or [''])[0].lower()
++            active_only = active_raw in ('1','true','yes')
++            self._json({'rules': [knowledge_public(row) for row in knowledge_list(active_only=active_only, scope=scope)]})
+         elif p.startswith('/api/task/'):
+             task_id = p.split('/')[-1]
+             task = TASKS.get(task_id) or load_task(task_id)
+@@ -2328,9 +2541,45 @@
+                 if not api_key:
+                     self._json({'success':False,'error':'VIBE_API_KEY не задан на сервере. Добавьте в Environment на Render.'},500); return
+                 messages=req.get('messages',[])
+-                text=call_ai(messages, api_key)
++                product_scope = str(req.get('product') or 'all')
++                text=call_ai(messages, api_key, knowledge_context(product_scope))
+                 self._json({'success':True,'text':text})
+ 
++            elif p=='/api/knowledge/preview':
++                req=json.loads(body)
++                api_key=os.environ.get('VIBE_API_KEY','')
++                try:
++                    draft = knowledge_preview(req, api_key)
++                    self._json({'success':True,'rule':draft})
++                except Exception as exc:
++                    self._json({'success':False,'error':str(exc)},400)
++
++            elif p=='/api/knowledge/create':
++                try:
++                    rule = knowledge_create(json.loads(body))
++                    self._json({'success':True,'rule':rule})
++                except Exception as exc:
++                    self._json({'success':False,'error':str(exc)},400)
++
++            elif p=='/api/knowledge/update':
++                try:
++                    rule = knowledge_update(json.loads(body))
++                    self._json({'success':True,'rule':rule})
++                except Exception as exc:
++                    self._json({'success':False,'error':str(exc)},400)
++
++            elif p=='/api/knowledge/activate':
++                try:
++                    req=json.loads(body)
++                    rule = knowledge_update({'id':req.get('id'),'active':bool(req.get('active',True))})
++                    self._json({'success':True,'rule':rule})
++                except Exception as exc:
++                    self._json({'success':False,'error':str(exc)},400)
++
++            elif p=='/api/knowledge/delete':
++                req=json.loads(body)
++                self._json({'success':knowledge_delete(str(req.get('id') or ''))})
++
+             elif p=='/api/companies/save':
+                 d=json.loads(body); self._json({'success':True,'id':save_company(d)})
+             elif p=='/api/companies/delete':
+@@ -2368,6 +2617,8 @@
+                                 save_task(_tid, TASKS[_tid])
+                                 print(f"  [{step}/{total}] {msg}")
+ 
++                            _data = dict(_data or {})
++                            _data['_knowledge_context'] = knowledge_context(_prod)
+                             result = generate_package(_data, _key, _prod, on_prog)
+                             docs = result['docs']
+                             if result.get('error') or not docs:
+--- /mnt/data/project_v13/generator.py	2026-07-31 06:22:46.000000000 +0000
++++ /mnt/data/project_v14/generator.py	2026-08-03 06:34:16.975406596 +0000
+@@ -12,6 +12,7 @@
+ BASE_DIR = Path(__file__).parent.resolve()
+ VIBE_URL = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
+ VIBE_MODEL = "bitrix/bitrixgpt-5.5"
++_GENERATION_KNOWLEDGE_CONTEXT = ''
+ 
+ LIBS_PATH = BASE_DIR / 'libs.json'
+ LIBS = json.loads(LIBS_PATH.read_text('utf-8')) if LIBS_PATH.exists() else {'di': {}, 'ri': {}}
+@@ -124,12 +125,18 @@
+ def vibe_call(messages, api_key, max_tokens=3000, retries=3):
+     import time
+     last_err = None
++    effective_messages = list(messages or [])
++    if _GENERATION_KNOWLEDGE_CONTEXT:
++        effective_messages = [{
++            "role": "system",
++            "content": "АКТИВНЫЕ ПРАВИЛА БАЗЫ ЗНАНИЙ ИИГОРЯ. Новые правила перечислены первыми и имеют приоритет при конфликте. Применяй их к этому документу, если они относятся к выбранному продукту. Не выдумывай требования сверх правил.\n\n" + _GENERATION_KNOWLEDGE_CONTEXT
++        }] + effective_messages
+     for attempt in range(retries):
+         try:
+             resp = req_lib.post(
+                 VIBE_URL,
+                 headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+-                json={"model": VIBE_MODEL, "max_tokens": max_tokens, "messages": messages},
++                json={"model": VIBE_MODEL, "max_tokens": max_tokens, "messages": effective_messages},
+                 timeout=180
+             )
+             resp.raise_for_status()
+@@ -791,6 +798,8 @@
+     return result
+ 
+ def generate_package(company_data: dict, api_key: str, product: str, progress_cb=None) -> dict:
++    global _GENERATION_KNOWLEDGE_CONTEXT
++    _GENERATION_KNOWLEDGE_CONTEXT = str((company_data or {}).get('_knowledge_context') or '')[:32000]
+     company  = company_data.get('company', {})
+     staff    = company_data.get('staff', [])
+     dates_in = company_data.get('dates', {}) or company_data.get('certification', {})

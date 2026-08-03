@@ -60,9 +60,10 @@ CO_DIR      = _DATA/'companies'
 OUT_DIR     = _DATA/'output'
 KV_DIR      = _DATA/'kv'
 TASKS_DIR   = _DATA/'tasks'
+KNOWLEDGE_DIR = _DATA/'knowledge'
 PORT = int(os.environ.get("PORT", 8766))
 
-for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR]:
+for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR, KNOWLEDGE_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 _STORAGE_LOCK = __import__('threading').RLock()
@@ -113,6 +114,211 @@ def kv_list(prefix: str = ''):
         except Exception:
             continue
     return keys
+
+
+# ── База знаний ИИгоря ───────────────────────────────────────────────
+# Обучать ИИгоря могут все пользователи приложения. Правила хранятся отдельно
+# от карточек компаний, имеют автора, область действия, версию и историю правок.
+# Перед активацией правило создаётся как черновик: пользователь видит, что именно
+# ИИгорь понял, и подтверждает это одной кнопкой.
+_KNOWLEDGE_SCOPE_ALIASES = {
+    'iso': {'all', 'iso'},
+    'suot': {'all', 'suot'},
+    'iso_suot': {'all', 'iso', 'suot', 'iso_suot'},
+    'spk': {'all', 'spk'},
+    'spk_stroy': {'all', 'spk', 'spk_stroy'},
+    'spk_bisp': {'all', 'spk', 'spk_bisp'},
+    'company_att': {'all', 'company_att'},
+    'att': {'all', 'att'},
+    'periodika': {'all', 'periodika', 'iso', 'suot', 'iso_suot'},
+}
+
+def _knowledge_file(rule_id: str) -> Path:
+    safe = re.sub(r'[^a-zA-Z0-9_-]', '', str(rule_id or ''))[:80]
+    return KNOWLEDGE_DIR / f'{safe}.json'
+
+def _knowledge_read(rule_id: str):
+    fp = _knowledge_file(rule_id)
+    if not fp.exists():
+        return None
+    try:
+        return json.loads(fp.read_text('utf-8'))
+    except Exception:
+        return None
+
+def knowledge_list(active_only=False, scope=None):
+    rows = []
+    for fp in KNOWLEDGE_DIR.glob('*.json'):
+        try:
+            row = json.loads(fp.read_text('utf-8'))
+        except Exception:
+            continue
+        if active_only and not row.get('active'):
+            continue
+        if scope:
+            accepted = _KNOWLEDGE_SCOPE_ALIASES.get(scope, {'all', scope})
+            if row.get('scope', 'all') not in accepted:
+                continue
+        rows.append(row)
+    rows.sort(key=lambda x: (str(x.get('updated_at') or ''), str(x.get('created_at') or '')), reverse=True)
+    return rows
+
+def _knowledge_save(row: dict):
+    if not row.get('id'):
+        import uuid
+        row['id'] = 'kn_' + uuid.uuid4().hex[:12]
+    now = datetime.now().isoformat(timespec='seconds')
+    row.setdefault('created_at', now)
+    row['updated_at'] = now
+    row.setdefault('active', False)
+    row.setdefault('scope', 'all')
+    row.setdefault('rule_type', 'rule')
+    row.setdefault('version', 1)
+    row.setdefault('history', [])
+    _atomic_write_text(_knowledge_file(row['id']), json.dumps(row, ensure_ascii=False, indent=2))
+    return row
+
+def knowledge_create(payload: dict):
+    title = str(payload.get('title') or 'Новое правило').strip()[:180]
+    instruction = str(payload.get('instruction') or '').strip()
+    if not instruction:
+        raise ValueError('Текст правила не заполнен')
+    row = {
+        'title': title,
+        'instruction': instruction[:60000],
+        'scope': str(payload.get('scope') or 'all'),
+        'rule_type': str(payload.get('rule_type') or 'rule'),
+        'author': str(payload.get('author') or 'Пользователь ИИгоря').strip()[:120],
+        'source_filename': str(payload.get('source_filename') or '').strip()[:300],
+        'source_text': str(payload.get('source_text') or '')[:120000],
+        'conditions': payload.get('conditions') if isinstance(payload.get('conditions'), list) else [],
+        'actions': payload.get('actions') if isinstance(payload.get('actions'), list) else [],
+        'conflict_warning': str(payload.get('conflict_warning') or '').strip(),
+        'active': bool(payload.get('active', False)),
+        'version': int(payload.get('version') or 1),
+        'history': [],
+    }
+    return _knowledge_save(row)
+
+def knowledge_update(payload: dict):
+    rule_id = str(payload.get('id') or '')
+    row = _knowledge_read(rule_id)
+    if not row:
+        raise KeyError('Правило не найдено')
+    snapshot = {k: row.get(k) for k in ('title','instruction','scope','rule_type','author','active','version','updated_at')}
+    row.setdefault('history', []).append(snapshot)
+    row['history'] = row['history'][-25:]
+    limits = {'title':180,'instruction':60000,'author':120,'source_filename':300,'source_text':120000,'conflict_warning':4000}
+    for key in ('title','instruction','scope','rule_type','author','source_filename','source_text','conditions','actions','conflict_warning'):
+        if key not in payload:
+            continue
+        value = payload[key]
+        if key in ('conditions','actions'):
+            row[key] = [str(item)[:1000] for item in (value or []) if str(item).strip()][:50] if isinstance(value, list) else []
+        elif key in limits:
+            row[key] = str(value or '').strip()[:limits[key]]
+        else:
+            row[key] = str(value or '').strip()[:80]
+    if 'active' in payload:
+        row['active'] = bool(payload['active'])
+    row['version'] = int(row.get('version') or 1) + 1
+    return _knowledge_save(row)
+
+def knowledge_delete(rule_id: str):
+    fp = _knowledge_file(rule_id)
+    if fp.exists():
+        fp.unlink()
+        return True
+    return False
+
+def knowledge_public(row: dict):
+    public = dict(row or {})
+    source_text = str(public.pop('source_text', '') or '')
+    public['source_excerpt'] = source_text[:500]
+    public['source_length'] = len(source_text)
+    return public
+
+def knowledge_context(scope='all', max_chars=32000):
+    rows = knowledge_list(active_only=True, scope=scope)
+    if not rows:
+        return ''
+    parts = []
+    for index, row in enumerate(rows, 1):
+        conditions = '; '.join(str(v) for v in (row.get('conditions') or []) if v)
+        actions = '; '.join(str(v) for v in (row.get('actions') or []) if v)
+        block = [
+            f"ПРАВИЛО {index}: {row.get('title','Без названия')}",
+            f"Область: {row.get('scope','all')}",
+            f"Инструкция: {row.get('instruction','')}",
+        ]
+        if conditions: block.append('Условия: ' + conditions)
+        if actions: block.append('Действия: ' + actions)
+        if row.get('source_filename'): block.append('Источник: ' + str(row['source_filename']))
+        source_fragment = str(row.get('source_text') or '').strip()
+        if source_fragment:
+            block.append('Фрагмент регламента-источника:\n' + source_fragment[:6000])
+        parts.append('\n'.join(block))
+    text = '\n\n'.join(parts)
+    return text[:max_chars]
+
+def knowledge_preview(payload: dict, api_key: str):
+    raw_instruction = str(payload.get('instruction') or '').strip()
+    source_text = str(payload.get('source_text') or '').strip()[:70000]
+    source_filename = str(payload.get('source_filename') or '').strip()
+    scope = str(payload.get('scope') or 'all')
+    author = str(payload.get('author') or 'Пользователь ИИгоря').strip()
+    if not raw_instruction and not source_text:
+        raise ValueError('Добавьте инструкцию или файл с регламентом')
+    existing = knowledge_context(scope, max_chars=10000)
+    prompt = f"""Ты методолог ИИгоря. Преврати ввод пользователя и приложенный регламент в ОДНО ясное рабочее правило.
+Не добавляй фактов, которых нет во вводе. Сохраняй точные названия полей, документов, видов работ и форм.
+Если новое правило конфликтует с действующими, укажи конфликт отдельно.
+
+Область действия: {scope}
+Фраза пользователя:
+{raw_instruction or '[не указана]'}
+
+Файл: {source_filename or '[нет файла]'}
+Содержимое файла:
+{source_text or '[нет содержимого]'}
+
+Действующие правила для сравнения:
+{existing or '[нет]'}
+
+Верни строго JSON:
+{{
+  "title":"короткое название",
+  "instruction":"точная нормализованная инструкция, что делать в дальнейшем",
+  "conditions":["когда применять"],
+  "actions":["что конкретно делать"],
+  "conflict_warning":"пусто или описание конфликта"
+}}"""
+    result = None
+    if api_key:
+        try:
+            raw = _simple_ai_call(prompt, api_key, max_tokens=1800)
+            candidate = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip(), flags=re.I|re.S)
+            result = json.loads(candidate)
+        except Exception as exc:
+            print(f'⚠️ Не удалось подготовить AI-предпросмотр правила: {exc}')
+    if not isinstance(result, dict):
+        result = {
+            'title': (raw_instruction.splitlines()[0][:120] if raw_instruction else source_filename or 'Правило из регламента'),
+            'instruction': raw_instruction or (f'Применять требования из файла «{source_filename}». ' + source_text[:5000]),
+            'conditions': [],
+            'actions': [],
+            'conflict_warning': '',
+        }
+    draft = knowledge_create({
+        **result,
+        'scope': scope,
+        'rule_type': payload.get('rule_type') or 'rule',
+        'author': author,
+        'source_filename': source_filename,
+        'source_text': source_text,
+        'active': False,
+    })
+    return draft
 
 # Хранилище фоновых задач генерации (на диске - переживает перезапуск)
 import threading
@@ -488,7 +694,7 @@ def _sanitize_ai_visible_response(raw_text):
     return json.dumps(payload, ensure_ascii=False)
 
 
-def call_ai(messages, api_key):
+def call_ai(messages, api_key, knowledge_text=""):
     """Вызов BitrixGPT через Vibe Code API — с повторными попытками при таймауте.
     Чат с Игорем может обрабатывать сразу несколько файлов/специалистов за раз (например,
     аттестация 3 человек одним сообщением) — 60 сек не всегда хватает, особенно если
@@ -501,7 +707,7 @@ def call_ai(messages, api_key):
                 VIBE_URL,
                 headers={"Content-Type":"application/json","X-Api-Key":api_key},
                 json={"model":VIBE_MODEL,"max_tokens":3000,"messages":[
-                    {"role":"system","content":AI_SYSTEM},
+                    {"role":"system","content":AI_SYSTEM + (("\n\n=== АКТИВНЫЕ ПРАВИЛА БАЗЫ ЗНАНИЙ ИИГОРЯ (НОВЫЕ ПРАВИЛА ИДУТ ПЕРВЫМИ И ИМЕЮТ ПРИОРИТЕТ ПРИ КОНФЛИКТЕ) ===\n" + knowledge_text + "\n=== КОНЕЦ ПРАВИЛ ===") if knowledge_text else "")},
                     *messages[-10:]
                 ]},
                 timeout=150
@@ -2053,6 +2259,13 @@ class H(http.server.BaseHTTPRequestHandler):
             qs = _urlparse.parse_qs(_urlparse.urlsplit(self.path).query)
             prefix = (qs.get('prefix') or [''])[0]
             self._json({'keys': kv_list(prefix)})
+        elif p=='/api/knowledge/list':
+            import urllib.parse as _urlparse
+            qs = _urlparse.parse_qs(_urlparse.urlsplit(self.path).query)
+            scope = (qs.get('scope') or [''])[0] or None
+            active_raw = (qs.get('active') or [''])[0].lower()
+            active_only = active_raw in ('1','true','yes')
+            self._json({'rules': [knowledge_public(row) for row in knowledge_list(active_only=active_only, scope=scope)]})
         elif p.startswith('/api/task/'):
             task_id = p.split('/')[-1]
             task = TASKS.get(task_id) or load_task(task_id)
@@ -2328,8 +2541,44 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not api_key:
                     self._json({'success':False,'error':'VIBE_API_KEY не задан на сервере. Добавьте в Environment на Render.'},500); return
                 messages=req.get('messages',[])
-                text=call_ai(messages, api_key)
+                product_scope = str(req.get('product') or 'all')
+                text=call_ai(messages, api_key, knowledge_context(product_scope))
                 self._json({'success':True,'text':text})
+
+            elif p=='/api/knowledge/preview':
+                req=json.loads(body)
+                api_key=os.environ.get('VIBE_API_KEY','')
+                try:
+                    draft = knowledge_preview(req, api_key)
+                    self._json({'success':True,'rule':draft})
+                except Exception as exc:
+                    self._json({'success':False,'error':str(exc)},400)
+
+            elif p=='/api/knowledge/create':
+                try:
+                    rule = knowledge_create(json.loads(body))
+                    self._json({'success':True,'rule':rule})
+                except Exception as exc:
+                    self._json({'success':False,'error':str(exc)},400)
+
+            elif p=='/api/knowledge/update':
+                try:
+                    rule = knowledge_update(json.loads(body))
+                    self._json({'success':True,'rule':rule})
+                except Exception as exc:
+                    self._json({'success':False,'error':str(exc)},400)
+
+            elif p=='/api/knowledge/activate':
+                try:
+                    req=json.loads(body)
+                    rule = knowledge_update({'id':req.get('id'),'active':bool(req.get('active',True))})
+                    self._json({'success':True,'rule':rule})
+                except Exception as exc:
+                    self._json({'success':False,'error':str(exc)},400)
+
+            elif p=='/api/knowledge/delete':
+                req=json.loads(body)
+                self._json({'success':knowledge_delete(str(req.get('id') or ''))})
 
             elif p=='/api/companies/save':
                 d=json.loads(body); self._json({'success':True,'id':save_company(d)})
@@ -2368,6 +2617,8 @@ class H(http.server.BaseHTTPRequestHandler):
                                 save_task(_tid, TASKS[_tid])
                                 print(f"  [{step}/{total}] {msg}")
 
+                            _data = dict(_data or {})
+                            _data['_knowledge_context'] = knowledge_context(_prod)
                             result = generate_package(_data, _key, _prod, on_prog)
                             docs = result['docs']
                             if result.get('error') or not docs:

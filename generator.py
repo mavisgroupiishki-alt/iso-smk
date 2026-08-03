@@ -12,9 +12,16 @@ import requests as req_lib
 BASE_DIR = Path(__file__).parent.resolve()
 VIBE_URL = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
 VIBE_MODEL = "bitrix/bitrixgpt-5.5"
+_GENERATION_KNOWLEDGE_CONTEXT = ''
 
 LIBS_PATH = BASE_DIR / 'libs.json'
 LIBS = json.loads(LIBS_PATH.read_text('utf-8')) if LIBS_PATH.exists() else {'di': {}, 'ri': {}}
+
+try:
+    from docx_review import apply_package_review
+except Exception as _review_import_error:
+    apply_package_review = None
+    print(f'⚠️  Универсальная жёлтая проверка не загружена: {_review_import_error}')
 
 
 def _fio(person):
@@ -118,12 +125,18 @@ def select_responsible(itr: list) -> dict:
 def vibe_call(messages, api_key, max_tokens=3000, retries=3):
     import time
     last_err = None
+    effective_messages = list(messages or [])
+    if _GENERATION_KNOWLEDGE_CONTEXT:
+        effective_messages = [{
+            "role": "system",
+            "content": "АКТИВНЫЕ ПРАВИЛА БАЗЫ ЗНАНИЙ ИИГОРЯ. Новые правила перечислены первыми и имеют приоритет при конфликте. Применяй их к этому документу, если они относятся к выбранному продукту. Не выдумывай требования сверх правил.\n\n" + _GENERATION_KNOWLEDGE_CONTEXT
+        }] + effective_messages
     for attempt in range(retries):
         try:
             resp = req_lib.post(
                 VIBE_URL,
                 headers={"Content-Type": "application/json", "X-Api-Key": api_key},
-                json={"model": VIBE_MODEL, "max_tokens": max_tokens, "messages": messages},
+                json={"model": VIBE_MODEL, "max_tokens": max_tokens, "messages": effective_messages},
                 timeout=180
             )
             resp.raise_for_status()
@@ -753,7 +766,40 @@ def create_docx_from_text(text: str) -> bytes:
 
 # ── Главная функция генерации пакета ─────────────────────────
 
+def _finalize_package_result(result: dict, company_data: dict, product: str) -> dict:
+    """Apply one review policy to every product before returning the package.
+
+    This is deliberately outside individual template modules: ISO/SUOT, SPK,
+    specialist attestation and company attestation must behave identically.
+    """
+    if not isinstance(result, dict) or not apply_package_review:
+        return result
+    try:
+        docs, review_warnings, review_items = apply_package_review(
+            result.get('docs') or [],
+            company_data or {},
+            product,
+            result.get('warnings') or [],
+        )
+        result['docs'] = docs
+        # Preserve module warnings and append the universal review list without duplicates.
+        merged = []
+        for warning in list(result.get('warnings') or []) + list(review_warnings or []):
+            if warning and warning not in merged:
+                merged.append(warning)
+        result['warnings'] = merged
+        result['review_items'] = review_items
+        result['review_count'] = len(review_items)
+    except Exception as exc:
+        print(f'⚠️  Не удалось применить универсальную жёлтую проверку: {type(exc).__name__}: {exc}')
+        result.setdefault('warnings', []).append(
+            f'Не удалось применить жёлтую проверку пакета: {type(exc).__name__}: {exc}'
+        )
+    return result
+
 def generate_package(company_data: dict, api_key: str, product: str, progress_cb=None) -> dict:
+    global _GENERATION_KNOWLEDGE_CONTEXT
+    _GENERATION_KNOWLEDGE_CONTEXT = str((company_data or {}).get('_knowledge_context') or '')[:32000]
     company  = company_data.get('company', {})
     staff    = company_data.get('staff', [])
     dates_in = company_data.get('dates', {}) or company_data.get('certification', {})
@@ -834,7 +880,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
                 company, person, reqs, api_key, vibe_call, progress_cb=lambda s, t, m: p_att(m)
             )
 
-        return {
+        return _finalize_package_result({
             'docs': att_docs,
             'dates': dates,
             'responsible': {},
@@ -842,7 +888,8 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
             'workers_count': 0,
             'professions': [],
             'persons_count': len(persons),
-        }
+            'warnings': [],
+        }, company_data, product)
 
     if product == 'company_att':
         try:
@@ -862,15 +909,15 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
 
         result_ca = generate_company_attestation_package(company, att_data, api_key, vibe_call, progress_cb=p_ca)
 
-        return {
+        return _finalize_package_result({
             'docs': result_ca['docs'],
             'dates': dates,
             'responsible': {},
             'itr_count': len(att_data.get('itr', [])),
-            'workers_count': 0,
+            'workers_count': len(att_data.get('workers', [])),
             'professions': [],
             'warnings': result_ca.get('warnings', []),
-        }
+        }, company_data, product)
 
     WORKER_KEYWORDS = [
         'штукатур','маляр','сварщик','электрогаз','облицовщик','плиточник',
@@ -955,7 +1002,10 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
             docs.extend(result_is['docs'])
             warnings.extend(result_is.get('warnings', []))
         except Exception as e:
-            print(f"  ❌ Модуль ИСО/СУОТ (настоящие шаблоны) не загружен, откат на старый ИИ-генератор: {e}")
+            fallback_warning = (f"Основной модуль ИСО/СУОТ не сработал; использован резервный генератор: "
+                                f"{type(e).__name__}: {e}")
+            warnings.append(fallback_warning)
+            print(f"  ❌ {fallback_warning}")
             if product in ('iso', 'iso_suot'):
                 _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p)
             if product in ('suot', 'iso_suot'):
@@ -969,10 +1019,13 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
             docs.extend(result_spk['docs'])
             warnings.extend(result_spk.get('warnings', []))
         except Exception as e:
-            print(f"  ❌ Модуль СПК (настоящие шаблоны) не загружен, откат на старый ИИ-генератор: {e}")
+            fallback_warning = (f"Основной модуль СПК не сработал; использован резервный генератор: "
+                                f"{type(e).__name__}: {e}")
+            warnings.append(fallback_warning)
+            print(f"  ❌ {fallback_warning}")
             _gen_spk(org, company, dates, resp, itr, api_key, add, p, variant=product)
 
-    return {
+    return _finalize_package_result({
         'docs': docs,
         'dates': dates,
         'responsible': resp,
@@ -980,7 +1033,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
         'workers_count': len(workers),
         'professions': worker_professions,
         'warnings': warnings,
-    }
+    }, company_data, product)
 
 
 def _parallel(tasks, max_workers=2):
