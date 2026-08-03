@@ -1,13 +1,11 @@
 services:
   - type: web
-    name: iso-smk-generator
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python server.py"
+    name: mavis-task-tracker
+    env: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
     envVars:
-      - key: VIBE_API_KEY
+      - key: VITE_SUPABASE_URL
         sync: false
-      # Для постоянного серверного хранения подключите Render Persistent Disk
-      # и задайте IGOR_DATA_DIR равным его mount path, например /data.
-      - key: IGOR_DATA_DIR
-        value: /data
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
