@@ -29,15 +29,51 @@ except Exception as e:
     print(f"⚠️  Парсер заполненных Форм 1–5 не загружен: {e}")
 
 
-# Render: без persistent disk — храним в /tmp или рядом с приложением
-_DATA = Path('/data') if Path('/data').exists() else BASE_DIR/'_data'
+# ── Постоянное хранилище ───────────────────────────────────────────────
+# На Render файлы внутри репозитория исчезают при перезапуске/новом deploy.
+# Если подключён Persistent Disk, укажите IGOR_DATA_DIR (например /data).
+# Даже без диска фронтенд v13 хранит полную карточку ещё и в localStorage браузера.
+def _resolve_data_dir():
+    candidates = [
+        os.environ.get('IGOR_DATA_DIR'),
+        os.environ.get('RENDER_DISK_PATH'),
+        '/data' if Path('/data').exists() else None,
+        str(BASE_DIR / '_data'),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser().resolve()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / '.write_test'
+            probe.write_text('ok', encoding='utf-8')
+            probe.unlink(missing_ok=True)
+            return path
+        except Exception:
+            continue
+    raise RuntimeError('Не удалось выбрать каталог для хранения данных')
+
+_DATA = _resolve_data_dir()
 JOURNAL_DIR = _DATA/'journal'
 CO_DIR      = _DATA/'companies'
 OUT_DIR     = _DATA/'output'
 KV_DIR      = _DATA/'kv'
+TASKS_DIR   = _DATA/'tasks'
 PORT = int(os.environ.get("PORT", 8766))
 
-for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR]: d.mkdir(parents=True, exist_ok=True)
+for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
+
+_STORAGE_LOCK = __import__('threading').RLock()
+
+def _atomic_write_text(path: Path, text: str):
+    """Атомарная запись: закрытие вкладки/перезапуск не оставит обрезанный JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f'.tmp-{os.getpid()}-{__import__("threading").get_ident()}')
+    with _STORAGE_LOCK:
+        tmp.write_text(text, encoding='utf-8')
+        os.replace(tmp, path)
 
 def _kv_safe_filename(key: str) -> str:
     """window.storage работает только внутри артефактов Claude.ai — на обычном сайте
@@ -49,8 +85,10 @@ def _kv_safe_filename(key: str) -> str:
     return f"{safe}__{h}.json"
 
 def kv_set(key: str, value: str):
-    (KV_DIR / _kv_safe_filename(key)).write_text(
-        json.dumps({'key': key, 'value': value}, ensure_ascii=False), 'utf-8')
+    _atomic_write_text(
+        KV_DIR / _kv_safe_filename(key),
+        json.dumps({'key': key, 'value': value}, ensure_ascii=False)
+    )
 
 def kv_get(key: str):
     fp = KV_DIR / _kv_safe_filename(key)
@@ -103,16 +141,16 @@ def _prune_tasks(keep=2):
                 TASKS.pop(old_id, None)
     except Exception:
         pass
-TASKS_DIR = BASE_DIR / 'tasks'
-TASKS_DIR.mkdir(exist_ok=True)
 
 def save_task(task_id, data):
     try:
         # zipB64 может быть очень большим (десятки МБ) — не пишем его в файл задачи на диск,
         # он нужен только в памяти TASKS для одноразовой отдачи фронту
         to_save = {k: v for k, v in data.items() if k != 'zipB64'}
-        (TASKS_DIR / f'{task_id}.json').write_text(
-            json.dumps(to_save, ensure_ascii=False), 'utf-8')
+        _atomic_write_text(
+            TASKS_DIR / f'{task_id}.json',
+            json.dumps(to_save, ensure_ascii=False)
+        )
     except: pass
 
 def load_task(task_id):
@@ -193,6 +231,29 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
   приказы, ИТР, рабочих и виды работ.
 - Если документ найден, но данные из него не удалось уверенно разобрать, сохрани факт наличия
   документа и запроси проверку конкретного поля, а не повторную загрузку всего архива.
+- Все найденные сведения сохраняй в структурированный JSON, а не только в message: реквизиты — company,
+  сотрудники — staff/workers, объекты — objects, поставщики — suppliers, СПК-данные — spk,
+  удостоверения/ответственные ISO-СУОТ — iso_suot, перечень обработанных файлов — source_documents.
+- При корректировке одного сотрудника/объекта/поставщика возвращай также его ФИО/наименование; приложение
+  объединит запись с сохранённой и не должно терять остальные записи.
+
+ФОРМАТ ОТВЕТА ПОСЛЕ ЗАГРУЗКИ АРХИВА — ДЛЯ ВСЕХ ПРОДУКТОВ:
+- НЕ копируй пользователю технические разделы «СОСТАВ АРХИВА» и «ИСХОДНЫЕ ДОКУМЕНТЫ» и не
+  пересказывай полный текст каждого файла. Эти блоки нужны тебе как скрытый источник данных.
+- Сообщение должно быть компактным: 1) что найдено и заполнено; 2) что требует сверки;
+  3) только действительно отсутствующие данные. Обычно не более 8–12 строк.
+- Не называй успешно прочитанный Excel ошибкой. Заголовок вида «[Лист: TDSheet]» означает,
+  что лист Excel прочитан нормально.
+- Если имя файла и содержание расходятся (например, в имени одна фамилия, а внутри удостоверения
+  другая), не выбирай вариант молча: сохрани оба, поставь needs_review=true, confidence<0.85 и
+  перечисли конкретное расхождение пользователю.
+
+УНИВЕРСАЛЬНАЯ НЕУВЕРЕННОСТЬ И ЖЁЛТОЕ ВЫДЕЛЕНИЕ:
+- Это правило действует одинаково для ISO/СУОТ, СПК, аттестации специалиста и компании.
+- В любой сущности можно и нужно сохранять uncertain_fields:["имя_поля"], needs_review:true,
+  confidence:0..1 и review_reason. Неуверенное значение не исправляй и не угадывай.
+- Пустые обязательные поля, варианты чтения «[X или Y]», конфликты источников и значения с
+  confidence<0.85 попадут в жёлтую проверку готового Word-пакета.
 
 СПК (Свидетельство о технической компетентности):
 - Виды работ: берём из КП если прикреплено, иначе спрашиваем у клиента
@@ -331,7 +392,24 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
     "workers": ["Штукатур","Маляр","Электрогазосварщик"],
     "objects": [{"name":"","year":"","customer":""}],
     "suppliers": [{"name":"","type":""}],
+    "source_documents": [{"filename":"","document_type":"","status":"read|error|needs_review","summary":"","needs_review":false,"review_reason":""}],
+    "iso_suot": {
+        "ot_certificates": [{"fio":"","number":"","date":"","organization":"","confidence":1.0,"needs_review":false}],
+        "instructions": [{"title":"","profession":""}],
+        "responsible_persons": [{"fio":"","responsibility":""}]
+    },
+    "spk": {
+        "premises": [{"address":"","area":"","ownership":"","document":""}],
+        "measurement_tools": [{"name":"","model":"","factory_number":"","range":"","quantity":1}],
+        "verification_documents": [{"tool":"","number":"","date":"","valid_until":""}],
+        "ttk": [{"code":"","name":"","developer":"","valid_until":"","work_type":""}],
+        "machinery": [{"name":"","model":"","quantity":1,"ownership":""}],
+        "laboratories": [{"name":"","contract":"","scope":""}],
+        "rental_documents": [{"subject":"","number":"","date":"","valid_until":""}],
+        "incoming_control_products": [{"name":"","supplier":"","standard":""}]
+    },
     "flags": [{"type":"error|warning|ok","text":""}],
+    "review_items": [{"field":"путь.поля","value":"распознанное значение","reason":"почему нужно проверить","confidence":0.0}],
     "readiness": "waiting|partial|review|ready",
     "work_types": ["Производство штукатурных работ","Производство малярных работ"],
     "attestation": {"persons": [{
@@ -377,6 +455,39 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 
 
 
+def _sanitize_ai_visible_response(raw_text):
+    """Prevent the model from dumping internal archive source blocks into chat.
+
+    The full archive text remains in the prompt and in the raw-check details; only
+    the human-facing ``message`` is shortened. Structured ``data`` and questions
+    are preserved unchanged.
+    """
+    text = str(raw_text or '').strip()
+    candidate = re.sub(r'^```(?:json)?\s*|\s*```$', '', text, flags=re.I | re.S).strip()
+    try:
+        payload = json.loads(candidate)
+    except Exception:
+        return raw_text
+    if not isinstance(payload, dict):
+        return raw_text
+    message = str(payload.get('message') or '')
+    technical_markers = (
+        '=== 📦 СОСТАВ АРХИВА', '=== СОСТАВ АРХИВА',
+        '=== 📚 ИСХОДНЫЕ ДОКУМЕНТЫ', '--- СТРАНИЦЫ',
+    )
+    if any(marker in message for marker in technical_markers) or (
+        len(message) > 3500 and ('--- ' in message or '[Лист:' in message)
+    ):
+        review_count = len((payload.get('data') or {}).get('review_items') or [])
+        suffix = (f' Сведений для ручной проверки: {review_count}.' if review_count else '')
+        payload['message'] = (
+            'Архив прочитан, найденные сведения перенесены в карточку. '
+            'Полный технический текст скрыт и доступен через «Проверить исходный архив».'
+            + suffix
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def call_ai(messages, api_key):
     """Вызов BitrixGPT через Vibe Code API — с повторными попытками при таймауте.
     Чат с Игорем может обрабатывать сразу несколько файлов/специалистов за раз (например,
@@ -401,7 +512,7 @@ def call_ai(messages, api_key):
                 raise RuntimeError(data["error"])
             text = "".join(c.get("message",{}).get("content","") for c in data.get("choices",[]))
             if text:
-                return text
+                return _sanitize_ai_visible_response(text)
             last_err = "Пустой ответ от модели"
             time.sleep(2)
         except req_lib.exceptions.Timeout:
@@ -453,7 +564,7 @@ def get_companies():
 def save_company(data):
     cid=data.get('id') or f"c{int(datetime.now().timestamp()*1000)}"
     data['id']=cid
-    (CO_DIR/f'{cid}.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),'utf-8')
+    _atomic_write_text(CO_DIR/f'{cid}.json', json.dumps(data,ensure_ascii=False,indent=2))
     return cid
 
 def get_journal():
@@ -462,7 +573,7 @@ def get_journal():
 def save_journal(entry):
     eid=f"j{int(datetime.now().timestamp()*1000)}"
     entry.update({'id':eid,'created':datetime.now().strftime('%d.%m.%Y %H:%M')})
-    (JOURNAL_DIR/f'{eid}.json').write_text(json.dumps(entry,ensure_ascii=False,indent=2),'utf-8')
+    _atomic_write_text(JOURNAL_DIR/f'{eid}.json', json.dumps(entry,ensure_ascii=False,indent=2))
     return eid
 
 def get_zip(eid):
@@ -1382,6 +1493,107 @@ def _reconcile_all_people(texts, api_key):
     return final_parts
 
 
+def _is_extraction_error_text(text):
+    """Return True only for explicit technical extraction errors.
+
+    Successful spreadsheet output starts with ``[Лист: ...]`` and must not be
+    labelled as an error merely because it starts with a square bracket.
+    """
+    value = str(text or '').lstrip()
+    if value.startswith('[Лист:'):
+        return False
+    error_prefixes = (
+        '[Ошибка', '[ошибка', '[XLS:', '[XLSX:', '[PDF_', '[DOC:', '[DOCX:',
+        '[Скан слишком большой', '[Не удалось', '[не удалось', '[Файл поврежден',
+        '[файл поврежден', '[Vision', '[таймаут', '[Timeout',
+    )
+    return value.startswith(error_prefixes)
+
+
+def _archive_document_blocks(result_text):
+    return re.findall(r'^---\s*(.+?)\s*---(?:\s*⚠️[^\n]*)?\n(.*?)(?=\n\n---|\n\n===|\Z)',
+                      str(result_text or ''), flags=re.M | re.S)
+
+
+def _compact_archive_summary(result_text):
+    """Build a human-facing summary without exposing the raw document dump."""
+    text = str(result_text or '')
+    inventory_match = re.search(
+        r'===\s*📦\s*СОСТАВ АРХИВА[^=]*===\s*\n(.*?)(?=\n\n===|\Z)',
+        text, flags=re.S,
+    )
+    inventory_lines = []
+    if inventory_match:
+        inventory_lines = [line.strip() for line in inventory_match.group(1).splitlines() if line.strip().startswith('- ')]
+    found = len(inventory_lines)
+    read_count = sum('прочитан/передан в анализ' in line for line in inventory_lines)
+    unread = found - read_count
+
+    names = [line[2:].split(' (', 1)[0] for line in inventory_lines]
+    joined_names = '\n'.join(names).casefold().replace('ё', 'е')
+    categories = []
+    category_rules = (
+        ('реквизиты компании', ('реквизит', 'счет-заказ', 'счёт-заказ')),
+        ('список сотрудников/штат', ('сотрудник', 'штат', 'персонал')),
+        ('перечень поставщиков', ('поставщик',)),
+        ('перечень объектов', ('объект',)),
+        ('удостоверения по охране труда', ('удостоверен', 'охрана труда')),
+        ('виды работ', ('виды работ', 'вид работ')),
+        ('оборудование и механизмы', ('оборудован', 'механизм', 'машин')),
+        ('средства измерений/поверка', ('средств измер', 'поверк', 'калибров')),
+        ('технологическая документация', ('ттк', 'технологическ')),
+        ('трудовые, дипломы и аттестаты', ('трудов', 'диплом', 'аттестат')),
+    )
+    for label, keywords in category_rules:
+        if any(keyword in joined_names for keyword in keywords):
+            categories.append(label)
+
+    staff_rows = 0
+    for path, block in _archive_document_blocks(text):
+        if path.lower().endswith(('.xls', '.xlsx')) and any(k in path.casefold() for k in ('сотрудник', 'штат', 'персонал')):
+            staff_rows += len(re.findall(r'^\s*\d+\s*\|', block, flags=re.M))
+
+    review = []
+    explicit_errors = re.findall(r'^---\s*(.+?)\s*---[^\n]*⚠️\s*(?:ОШИБКА|ОШИБКА ЧТЕНИЯ)', text, flags=re.M)
+    for path in explicit_errors[:5]:
+        review.append(f'не удалось надёжно прочитать: {path.strip()}')
+
+    # Detect a common and dangerous conflict: a surname in the certificate file
+    # name differs from the surname printed inside the certificate.
+    for path, block in _archive_document_blocks(text):
+        if 'удостовер' not in path.casefold():
+            continue
+        inside = re.search(r'(?:Кому выдано|Выдано)\s*:\s*([А-ЯЁ][а-яё-]+)', block)
+        if not inside:
+            continue
+        inside_surname = inside.group(1)
+        filename_words = re.findall(r'[А-ЯЁ][а-яё-]+', Path(path).stem)
+        candidates = [w for w in filename_words if w.casefold() not in {
+            'удостоверение', 'охрана', 'труда', 'по', 'от'
+        }]
+        if candidates and all(_norm.casefold() != inside_surname.casefold() for _norm in candidates[-3:]):
+            review.append(
+                f'{Path(path).name}: в имени файла и внутри документа указаны разные фамилии '
+                f'(в документе — {inside_surname})'
+            )
+
+    lines = [f'✅ Архив разобран: найдено {found or "не определено"} файлов' +
+             (f', прочитано {read_count}' if found else '') + '.']
+    if categories:
+        lines.append('Найдено: ' + '; '.join(categories) + '.')
+    if staff_rows:
+        lines.append(f'В списке сотрудников распознано строк: {staff_rows}.')
+    if unread > 0:
+        lines.append(f'⚠️ Не прочитано автоматически: {unread} файл(а/ов); они сохранены в составе архива.')
+    if review:
+        lines.append('⚠️ Требует сверки:')
+        lines.extend(f'• {item}' for item in review[:6])
+    else:
+        lines.append('Критических ошибок чтения не обнаружено.')
+    lines.append('Полный распознанный текст сохранён для заполнения карточки и скрыт из обычного сообщения.')
+    return '\n'.join(lines)
+
+
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
@@ -1469,7 +1681,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                 txt = extract_text_from_file(data, short)
                 if txt and len(txt) > 10:
                     prefix = f"--- {folder + '/' if folder else ''}{short} ---"
-                    if txt.startswith('['):
+                    if _is_extraction_error_text(txt):
                         texts.append(prefix + " ⚠️ ОШИБКА ЧТЕНИЯ\n" + txt)
                     else:
                         texts.append(prefix + "\n" + txt)
@@ -1501,7 +1713,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                 # Сначала быстрая попытка вытащить текстовый слой (мгновенно, бесплатно).
                 # Если это скан (нет текстового слоя) — падаем в vision, как с фото.
                 fast_txt = extract_text_from_file(data, short)
-                if fast_txt and len(fast_txt) > 10 and not fast_txt.startswith('['):
+                if fast_txt and len(fast_txt) > 10 and not _is_extraction_error_text(fast_txt):
                     return f"--- {folder + '/' if folder else ''}{short} ---\n" + fast_txt
                 # PDF конвертируется в изображения с динамическим лимитом:
                 # до 24 страниц для трудовых книжек и до 6 для прочих документов.
@@ -1525,7 +1737,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
             # показываются — с пометкой, чтобы сразу было видно что это сбой, а не
             # то что файл прочитан пустым.
             if txt and len(txt) > 10:
-                if txt.startswith('['):
+                if _is_extraction_error_text(txt):
                     return f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n" + txt
                 return f"--- {folder + '/' if folder else ''}{short} ---\n" + txt
             return f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ПУСТОЙ РЕЗУЛЬТАТ (короче 10 символов)"
@@ -1625,8 +1837,10 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
             structured_data = merge_company_attestation_sources(structured_fragments)
         except Exception as merge_error:
             print(f"  ⚠️ Не удалось объединить структурированные Формы 1–5: {merge_error}")
+    final_text = result or '[Архив: читаемых данных не найдено]'
     return {
-        'text': result or '[Архив: читаемых данных не найдено]',
+        'text': final_text,
+        'summary': _compact_archive_summary(final_text),
         'structured_data': structured_data,
     }
 
@@ -1942,7 +2156,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 # PDF: сначала пробуем текстовый парсер (быстро и точно, без похода в vision)
                 if ext == 'pdf':
                     text_from_pdf = extract_text_from_file(file_bytes, filename)
-                    if text_from_pdf and len(text_from_pdf) > 50 and not text_from_pdf.startswith('['):
+                    if text_from_pdf and len(text_from_pdf) > 50 and not _is_extraction_error_text(text_from_pdf):
                         self._json({'success':True,'text':text_from_pdf,'method':'text'}); return
 
                 KNOWN_VISION_EXTS = ('pdf','jpg','jpeg','png','webp','heic','heif')
@@ -2091,11 +2305,14 @@ class H(http.server.BaseHTTPRequestHandler):
                         result_bundle = extract_archive_with_vision(_bytes, _fn, _key, progress_cb=on_prog)
                         if isinstance(result_bundle, dict):
                             result_text = result_bundle.get('text', '')
+                            result_summary = result_bundle.get('summary') or _compact_archive_summary(result_text)
                             structured_data = result_bundle.get('structured_data') or {}
                         else:
                             result_text = str(result_bundle or '')
+                            result_summary = _compact_archive_summary(result_text)
                             structured_data = {}
                         TASKS[_tid].update({'status':'done','kind':'archive','text':result_text,
+                                            'summary': result_summary,
                                             'structured_data': structured_data,'filename':_fn})
                         _prune_tasks()
                     except Exception as _ex:

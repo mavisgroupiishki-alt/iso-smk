@@ -372,7 +372,7 @@ input::placeholder{color:#CDB8AA}
     <div id="page-companies" class="page-content" style="display:none">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
         <div style="font-size:13px;color:var(--muted)" id="co-count">Загрузка...</div>
-        <button class="tb-btn navy" onclick="openCoModal()">+ Добавить компанию</button>
+        <button class="tb-btn navy" onclick="startCompanyFromRegistry()">+ Добавить компанию</button>
       </div>
       <div id="co-list" class="co-grid"></div>
     </div>
@@ -799,48 +799,157 @@ function renderDocLists() {
 
 // ── COMPANIES ─────────────────────────────────────────────
 async function loadCompanies() {
-  const res = await fetch('/api/companies');
-  companies = await res.json();
+  // Единый реестр ИИгоря: здесь отображается полная сохранённая карточка,
+  // а не старый сокращённый набор полей из /api/companies.
+  companies = await aiListSavedCompanies();
   renderCompanies();
+}
+
+function _companyArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function _companyDisplayName(item) {
+  const data = item?.data || {};
+  const c = data.company || {};
+  const form = c.form || 'Организация';
+  const name = c.name || 'Черновик без названия';
+  return `${form} «${name}»`;
+}
+
+function _companyDetailLines(item) {
+  const data = item?.data || {};
+  const c = data.company || {};
+  const ca = data.company_attestation || {};
+  const spk = data.spk || {};
+  const staff = _companyArray(data.staff).length || _companyArray(ca.itr).length;
+  const workers = _companyArray(data.workers).length || _companyArray(ca.workers).length;
+  const objects = _companyArray(data.objects).length || _companyArray(ca.experience_objects).length || _companyArray(spk.objects).length;
+  const suppliers = _companyArray(data.suppliers).length || _companyArray(spk.suppliers).length;
+  const measurementTools = _companyArray(spk.measurement_tools).length;
+  const ttk = _companyArray(spk.ttk).length;
+  const product = data.certification?.standard || 'не выбран';
+  const requisites = [c.unp && `УНП ${c.unp}`, c.city || c.legal_address || c.address].filter(Boolean).join(' · ');
+  const counts = [`ИТР: ${staff}`, `рабочих: ${workers}`, `объектов: ${objects}`, `поставщиков: ${suppliers}`, `СИ: ${measurementTools}`, `ТТК: ${ttk}`].join(' · ');
+  return { requisites, counts, product, director: c.director_fio || 'не указан' };
 }
 
 function renderCompanies() {
   const c = document.getElementById('co-list');
+  if(!c) return;
   document.getElementById('co-count').textContent = `${companies.length} ${pluralize(companies.length, 'компания', 'компании', 'компаний')}`;
-  
+
   if (!companies.length) {
-    c.innerHTML = `<div class="empty"><div class="ei">🏢</div><p>Нет компаний. Добавьте первую!</p></div>`;
+    c.innerHTML = `<div class="empty"><div class="ei">🏢</div><p>Нет сохранённых карточек. Добавьте первую компанию в ИИгоре.</p></div>`;
     return;
   }
-  
-  c.innerHTML = companies.map(co => `
-    <div class="co-card${selectedCompanyId === co.id ? ' selected' : ''}" onclick="selectCompany('${co.id}')">
-      <div class="co-name">${co.orgForm} «${co.orgName}»</div>
-      <div class="co-meta">📅 ${co.implDate || '—'} &nbsp;·&nbsp; 🏙 ${co.city || 'Минск'}</div>
-      <div class="co-meta">👤 Директор: ${co.dirSurname} ${co.dirInitials}</div>
-      <div class="co-actions">
-        <button class="co-btn edit" onclick="event.stopPropagation();editCompany('${co.id}')">✎ Редактировать</button>
-        <button class="co-btn gen" onclick="event.stopPropagation();selectAndGen('${co.id}')">⚡ Сформировать</button>
-        <button class="co-btn del" onclick="event.stopPropagation();deleteCompany('${co.id}')">🗑</button>
-      </div>
-    </div>`).join('');
+
+  c.innerHTML = companies.map(item => {
+    const d = _companyDetailLines(item);
+    const dateStr = item.savedAt ? new Date(item.savedAt).toLocaleString('ru-RU') : '—';
+    const key = encodeURIComponent(item.key || '');
+    return `
+      <div class="co-card${aiCurrentCompanyKey === item.key ? ' selected' : ''}">
+        <div class="co-name">${aiEscapeHtml(_companyDisplayName(item))}</div>
+        <div class="co-meta">📌 Продукт: ${aiEscapeHtml(d.product)} &nbsp;·&nbsp; 👤 ${aiEscapeHtml(d.director)}</div>
+        <div class="co-meta">${aiEscapeHtml(d.requisites || 'Реквизиты пока не заполнены')}</div>
+        <div class="co-meta">${aiEscapeHtml(d.counts)}</div>
+        <div class="co-meta">💾 ${aiEscapeHtml(dateStr)}</div>
+        <div class="co-actions">
+          <button class="co-btn edit" onclick="showSavedCompanyDetails(decodeURIComponent('${key}'))">Все данные</button>
+          <button class="co-btn gen" onclick="openSavedCompanyFromRegistry(decodeURIComponent('${key}'))">Открыть в ИИгоре</button>
+          <button class="co-btn del" onclick="deleteSavedCompanyFromRegistry(decodeURIComponent('${key}'))">🗑</button>
+        </div>
+      </div>`;
+  }).join('');
 }
 
-function selectCompany(id) {
-  selectedCompanyId = id;
-  renderCompanies();
+async function startCompanyFromRegistry() {
+  await aiStartNewCompany();
+  const aiItem = document.querySelector('.sb-item[data-page="ai"]');
+  if(aiItem) nav('ai', aiItem);
 }
 
-function selectAndGen(id) {
-  selectedCompanyId = id;
-  openGenModal();
+async function openSavedCompanyFromRegistry(key) {
+  const ok = await aiLoadCompany(key);
+  if(!ok) { alert('Не удалось загрузить карточку компании'); return; }
+  aiRestoreChatUI();
+  aiRenderCardFromCurrent();
+  const aiItem = document.querySelector('.sb-item[data-page="ai"]');
+  if(aiItem) nav('ai', aiItem);
 }
 
-async function deleteCompany(id) {
-  if (!confirm('Удалить компанию?')) return;
-  await fetch('/api/companies/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id}) });
-  loadCompanies();
+async function deleteSavedCompanyFromRegistry(key) {
+  if(!confirm('Удалить сохранённую карточку компании?')) return;
+  await aiDeleteSavedCompany(key);
+  if(aiCurrentCompanyKey === key) {
+    aiCurrentCompanyKey = null;
+    aiCurrentData = {};
+    aiHistory = [];
+  }
+  await loadCompanies();
 }
+
+async function showSavedCompanyDetails(key) {
+  const item = companies.find(row => row.key === key);
+  if(!item) return;
+  const data = item.data || {};
+  const company = data.company || {};
+  const ca = data.company_attestation || {};
+  const spk = data.spk || {};
+  const people = _companyArray(data.staff).length ? _companyArray(data.staff) : _companyArray(ca.itr);
+  const workers = _companyArray(data.workers).length ? _companyArray(data.workers) : _companyArray(ca.workers);
+  const objects = _companyArray(data.objects).length ? _companyArray(data.objects) : (_companyArray(ca.experience_objects).length ? _companyArray(ca.experience_objects) : _companyArray(spk.objects));
+  const suppliers = _companyArray(data.suppliers).length ? _companyArray(data.suppliers) : _companyArray(spk.suppliers);
+
+  const value = v => aiEscapeHtml(v || '—');
+  const personLine = p => value(p.fio || p.name || p.full_name || p.profession || p.position || JSON.stringify(p));
+  const listBlock = (title, rows, formatter) => `
+    <div style="margin-top:14px"><b>${aiEscapeHtml(title)} (${rows.length})</b>
+      <div style="margin-top:5px;color:#5f5350">${rows.length ? rows.map((r,i)=>`${i+1}. ${formatter(r)}`).join('<br>') : '—'}</div>
+    </div>`;
+
+  let modal = document.getElementById('company-details-modal');
+  if(!modal) {
+    modal = document.createElement('div');
+    modal.id = 'company-details-modal';
+    document.body.appendChild(modal);
+  }
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(20,20,20,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.onclick = e => { if(e.target === modal) modal.style.display='none'; };
+  modal.innerHTML = `<div style="background:#fff;border-radius:12px;width:min(760px,96vw);max-height:86vh;overflow:auto;padding:20px;box-shadow:0 16px 50px rgba(0,0,0,.25)">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+      <h3 style="margin:0;color:#8B4A5C">${aiEscapeHtml(_companyDisplayName(item))}</h3>
+      <button onclick="document.getElementById('company-details-modal').style.display='none'" style="border:none;background:none;font-size:20px;cursor:pointer">×</button>
+    </div>
+    <div style="font-size:12px;line-height:1.6;margin-top:12px">
+      <b>УНП:</b> ${value(company.unp)}<br>
+      <b>Юридический адрес:</b> ${value(company.legal_address || company.address)}<br>
+      <b>Почтовый адрес:</b> ${value(company.postal_address)}<br>
+      <b>Банк / счёт / БИК:</b> ${value(company.bank_name)} / ${value(company.account)} / ${value(company.bik)}<br>
+      <b>Телефон / e-mail:</b> ${value(company.phone)} / ${value(company.email)}<br>
+      <b>Руководитель:</b> ${value(company.director_position)} ${value(company.director_fio)}<br>
+      <b>Продукт:</b> ${value(data.certification?.standard)}
+      ${listBlock('ИТР и сотрудники', people, personLine)}
+      ${listBlock('Рабочие', workers, personLine)}
+      ${listBlock('Объекты', objects, o => value(o.name || o.object_name || o.address || (typeof o === 'string' ? o : JSON.stringify(o))))}
+      ${listBlock('Поставщики', suppliers, o => value(o.name || o.supplier || (typeof o === 'string' ? o : JSON.stringify(o))))}
+      ${listBlock('Виды работ', _companyArray(data.work_types).length ? _companyArray(data.work_types) : _companyArray(ca.work_items), o => value(typeof o === 'string' ? o : (o.name || o.title || o.code || JSON.stringify(o))))}
+      ${listBlock('Средства измерений', _companyArray(spk.measurement_tools), o => value(o.name || o.model || JSON.stringify(o)))}
+      ${listBlock('Документы поверки', _companyArray(spk.verification_documents), o => value(o.number || o.tool || JSON.stringify(o)))}
+      ${listBlock('ТТК', _companyArray(spk.ttk), o => value(o.code || o.name || JSON.stringify(o)))}
+      ${listBlock('Машины и оборудование', _companyArray(spk.machinery), o => value(o.name || o.model || JSON.stringify(o)))}
+      ${listBlock('Помещения', _companyArray(spk.premises), o => value(o.address || o.document || JSON.stringify(o)))}
+      ${listBlock('Исходные документы', _companyArray(data.source_documents), o => value(o.filename || o.path || JSON.stringify(o)))}
+    </div>
+  </div>`;
+}
+
+// Оставляем старые имена функций для совместимости с уже открытыми страницами.
+function selectCompany(id) { selectedCompanyId = id; }
+function selectAndGen(id) { selectedCompanyId = id; openSavedCompanyFromRegistry(id); }
+function editCompany(id) { openSavedCompanyFromRegistry(id); }
+async function deleteCompany(id) { return deleteSavedCompanyFromRegistry(id); }
 
 // ── COMPANY MODAL ─────────────────────────────────────────
 function openCoModal(data) {
@@ -1107,95 +1216,229 @@ function aiShowPhotoFull(filename) {
   document.body.appendChild(overlay);
 }
 let aiLoading = false;
-let aiCurrentCompanyKey = null; // ключ текущей компании в storage (генерируется по УНП или имени)
+let aiCurrentCompanyKey = null; // стабильный ключ карточки, не меняется при исправлении названия/УНП
+const AI_LOCAL_PREFIX = 'igor:company:';
+const AI_LAST_COMPANY_KEY = 'igor:last-company-key';
+const AI_AUTOSAVE_INTERVAL_MS = 12000;
+let aiAutosaveTimer = null;
 
-// ── Постоянное хранилище данных ИИгоря (СВОЙ сервер — window.storage существует только
-//    внутри артефактов Claude.ai, на обычном сайте (наш случай) его нет вообще, и любой
-//    вызов сразу падал с ошибкой) ──
+function aiEscapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+}
+
+function aiMakeStableCompanyKey() {
+  if (globalThis.crypto?.randomUUID) return AI_LOCAL_PREFIX + globalThis.crypto.randomUUID();
+  return AI_LOCAL_PREFIX + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+}
+
+function aiEnsureCompanyKey() {
+  if (!aiCurrentCompanyKey) aiCurrentCompanyKey = aiMakeStableCompanyKey();
+  return aiCurrentCompanyKey;
+}
+
+function aiCompactHistory(history) {
+  // Сырые тексты архивов могут занимать мегабайты и переполнить localStorage.
+  // В карточке сохраняются все структурированные данные; в локальной истории — только
+  // последние сообщения в компактном виде для восстановления интерфейса.
+  const rows = Array.isArray(history) ? history.slice(-40) : [];
+  let total = 0;
+  const result = [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i] || {};
+    let content = String(row.content || '');
+    content = content
+      .replace(/===\s*📦?\s*СОСТАВ АРХИВА[\s\S]*?(?=\n===|\nЗАПРОС:|$)/gi, '[состав архива сохранён в структурированных данных]')
+      .replace(/===\s*📚?\s*ИСХОДНЫЕ ДОКУМЕНТЫ[\s\S]*?(?=\n===|\nЗАПРОС:|$)/gi, '[исходные документы обработаны]');
+    if(content.length > 16000) content = content.slice(0, 16000) + '\n[сообщение сокращено при сохранении]';
+    if(total + content.length > 450000) break;
+    total += content.length;
+    result.unshift({role: row.role, content});
+  }
+  return result;
+}
+
+function aiCloneForStorage(value) {
+  try { return JSON.parse(JSON.stringify(value ?? {})); }
+  catch (_) { return {}; }
+}
+
+function aiBuildCompanyPayload() {
+  return {
+    version: 13,
+    data: aiCloneForStorage(aiCurrentData),
+    history: aiCompactHistory(aiHistory),
+    savedAt: new Date().toISOString(),
+    label: `${aiCurrentData?.company?.form || 'Организация'} «${aiCurrentData?.company?.name || 'Черновик'}»`,
+  };
+}
+
+function aiLocalSetCompany(key, payload) {
+  try {
+    localStorage.setItem(key, JSON.stringify(payload));
+    localStorage.setItem(AI_LAST_COMPANY_KEY, key);
+    return true;
+  } catch (e) {
+    console.warn('Локальное сохранение не выполнено:', e);
+    return false;
+  }
+}
+
+function aiLocalGetCompany(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    console.warn('Повреждённая локальная карточка:', key, e);
+    return null;
+  }
+}
+
+function aiLocalListCompanies() {
+  const rows = [];
+  try {
+    for(let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if(!key || !key.startsWith(AI_LOCAL_PREFIX)) continue;
+      const payload = aiLocalGetCompany(key);
+      if(payload) rows.push({key, ...payload, source:'local'});
+    }
+  } catch (e) {
+    console.warn('Не удалось прочитать локальный реестр компаний:', e);
+  }
+  return rows;
+}
+
+function aiSaveCurrentCompanyLocal() {
+  if (!aiCurrentData || !Object.keys(aiCurrentData).length) return false;
+  const key = aiEnsureCompanyKey();
+  return aiLocalSetCompany(key, aiBuildCompanyPayload());
+}
+
+// ── Серверное KV-хранилище. Оно является синхронизацией/резервной копией.
+// Локальная копия создаётся синхронно и переживает закрытие вкладки даже тогда,
+// когда Render перезапускается или запрос не успевает завершиться.
 async function kvSet(key, value) {
-  const r = await fetch('/api/kv/set', {
+  const response = await fetch('/api/kv/set', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({key, value})
-  }).then(r => r.json());
-  return r;
+  });
+  const result = await response.json().catch(() => ({}));
+  if(!response.ok || result.success === false) throw new Error(result.error || `HTTP ${response.status}`);
+  return result;
 }
 async function kvGet(key) {
-  const r = await fetch('/api/kv/get?key=' + encodeURIComponent(key)).then(r => r.json());
+  const response = await fetch('/api/kv/get?key=' + encodeURIComponent(key));
+  if(!response.ok) throw new Error(`HTTP ${response.status}`);
+  const r = await response.json();
   return (r && r.value != null) ? r : null;
 }
 async function kvList(prefix) {
-  const r = await fetch('/api/kv/list?prefix=' + encodeURIComponent(prefix || '')).then(r => r.json());
+  const response = await fetch('/api/kv/list?prefix=' + encodeURIComponent(prefix || ''));
+  if(!response.ok) throw new Error(`HTTP ${response.status}`);
+  const r = await response.json();
   return (r && r.keys) || [];
 }
 async function kvDelete(key) {
-  await fetch('/api/kv/delete', {
+  const response = await fetch('/api/kv/delete', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({key})
   });
+  if(!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
-function aiCompanyStorageKey(data) {
-  const unp = (data?.company?.unp || '').trim();
-  const name = (data?.company?.name || '').trim();
-  const key = unp || name;
-  if (!key) return null;
-  return 'igor:company:' + key.toLowerCase().replace(/[^a-zа-я0-9]/gi, '_').slice(0, 100);
+function aiCompanyStorageKey() {
+  // Ключ намеренно не строится из названия/УНП: пользователь может исправить их,
+  // а карточка при этом не должна раздваиваться или исчезать.
+  return aiEnsureCompanyKey();
 }
 
 async function aiSaveCurrentCompany() {
-  if (!aiCurrentData || !Object.keys(aiCurrentData).length) return;
-  const key = aiCompanyStorageKey(aiCurrentData);
-  if (!key) return; // нет УНП/имени ещё — рано сохранять
-  aiCurrentCompanyKey = key;
+  if (!aiCurrentData || !Object.keys(aiCurrentData).length) return false;
+  const key = aiCompanyStorageKey();
+  const payload = aiBuildCompanyPayload();
+
+  // Сначала синхронная локальная запись — это главный фикс потери данных при закрытии.
+  aiLocalSetCompany(key, payload);
+
   try {
-    const payload = {
-      data: aiCurrentData,
-      history: aiHistory,
-      savedAt: new Date().toISOString(),
-      label: `${aiCurrentData.company?.form || 'ООО'} «${aiCurrentData.company?.name || '?'}»`,
-    };
     await kvSet(key, JSON.stringify(payload));
-    // Поддерживаем общий индекс всех компаний для списка
-    const keys = await kvList('igor:company:');
-    if (!keys.includes(key)) {
-      // индекс не нужен отдельно — kvList уже даёт реальные ключи по префиксу
-    }
+    return true;
   } catch (e) {
-    console.warn('aiSaveCurrentCompany error:', e);
+    // Не считаем потерей данных: локальная копия уже записана.
+    console.warn('Серверная синхронизация карточки не выполнена:', e);
+    return false;
   }
 }
 
 async function aiListSavedCompanies() {
+  const merged = new Map();
+  aiLocalListCompanies().forEach(item => merged.set(item.key, item));
+
   try {
-    const keys = await kvList('igor:company:');
-    const results = [];
+    const keys = await kvList(AI_LOCAL_PREFIX);
     for (const key of keys) {
       try {
         const r = await kvGet(key);
-        if (r) results.push({ key, ...JSON.parse(r.value) });
-      } catch (e) { /* пропускаем повреждённые записи */ }
+        if(!r) continue;
+        const serverItem = {key, ...JSON.parse(r.value), source:'server'};
+        const localItem = merged.get(key);
+        if(!localItem || String(serverItem.savedAt || '') > String(localItem.savedAt || '')) {
+          merged.set(key, serverItem);
+          // Восстанавливаем локальную копию после очистки браузера/на другом открытии.
+          aiLocalSetCompany(key, serverItem);
+        }
+      } catch (e) {
+        console.warn('Пропущена повреждённая серверная карточка:', key, e);
+      }
     }
-    results.sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''));
-    return results;
   } catch (e) {
-    console.warn('aiListSavedCompanies error:', e);
-    return [];
+    console.warn('Серверный список недоступен, используется локальный:', e);
   }
+
+  const results = [...merged.values()];
+  results.sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
+  return results;
 }
 
 async function aiLoadCompany(key) {
   try {
-    const r = await kvGet(key);
-    if (!r) return false;
-    const payload = JSON.parse(r.value);
+    let payload = aiLocalGetCompany(key);
+    if(!payload) {
+      const r = await kvGet(key);
+      if(r) payload = JSON.parse(r.value);
+    }
+    if(!payload) return false;
     aiCurrentData = payload.data || {};
-    aiHistory = payload.history || [];
+    aiHistory = Array.isArray(payload.history) ? payload.history : [];
     aiCurrentCompanyKey = key;
+    aiLocalSetCompany(key, payload);
     return true;
   } catch (e) {
     console.warn('aiLoadCompany error:', e);
     return false;
   }
+}
+
+async function aiDeleteSavedCompany(key) {
+  try { localStorage.removeItem(key); } catch (_) {}
+  try {
+    if(localStorage.getItem(AI_LAST_COMPANY_KEY) === key) localStorage.removeItem(AI_LAST_COMPANY_KEY);
+  } catch (_) {}
+  try { await kvDelete(key); } catch (e) { console.warn('Серверное удаление не выполнено:', e); }
+}
+
+function aiInstallAutosaveGuards() {
+  if(aiAutosaveTimer) clearInterval(aiAutosaveTimer);
+  aiAutosaveTimer = setInterval(() => {
+    if(aiCurrentData && Object.keys(aiCurrentData).length) aiSaveCurrentCompany().catch(()=>{});
+  }, AI_AUTOSAVE_INTERVAL_MS);
+
+  // В beforeunload асинхронный fetch ненадёжен; localStorage пишется синхронно.
+  window.addEventListener('beforeunload', aiSaveCurrentCompanyLocal);
+  window.addEventListener('pagehide', aiSaveCurrentCompanyLocal);
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'hidden') aiSaveCurrentCompanyLocal();
+  });
 }
 
 // ── Постоянный журнал генераций (свой сервер, переживает перезапуск Render) ──
@@ -1276,9 +1519,16 @@ async function aiDeleteFromJournal(key) {
 }
 
 async function aiStartNewCompany() {
+  // Сохраняем текущую карточку до очистки. Раньше нажатие «Новая компания»
+  // могло стереть последние изменения, если серверный autosave ещё не завершился.
+  aiSaveCurrentCompanyLocal();
+  if(aiCurrentData && Object.keys(aiCurrentData).length) {
+    await aiSaveCurrentCompany().catch(()=>{});
+  }
   aiCurrentData = {};
   aiHistory = [];
-  aiCurrentCompanyKey = null;
+  aiCurrentCompanyKey = aiMakeStableCompanyKey();
+  try { localStorage.setItem(AI_LAST_COMPANY_KEY, aiCurrentCompanyKey); } catch (_) {}
   aiRenderCard(null);
   document.getElementById('ai-messages').innerHTML = '';
   aiAddMsg('ai', 'Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.<br><br>💡 Если людей больше 3-4 или архив большой (много фото) — присылайте по одному человеку за раз (2-3 фото), так меньше риск ошибок при распознавании.');
@@ -2198,6 +2448,59 @@ function aiDeleteCompanyWorker(index) {
   workers.splice(index,1); aiNormalizeCompanyAttestation(); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
 }
 
+function aiDeepMergeDefined(base, patch) {
+  if(patch === undefined) return base;
+  if(Array.isArray(patch)) return patch.map(item => (item && typeof item === 'object') ? aiCloneForStorage(item) : item);
+  if(!patch || typeof patch !== 'object') return patch;
+  const out = (base && typeof base === 'object' && !Array.isArray(base)) ? {...base} : {};
+  Object.entries(patch).forEach(([key, value]) => {
+    if(value === undefined) return;
+    out[key] = (value && typeof value === 'object' && !Array.isArray(value))
+      ? aiDeepMergeDefined(out[key], value)
+      : (Array.isArray(value) ? value.map(item => (item && typeof item === 'object') ? aiCloneForStorage(item) : item) : value);
+  });
+  return out;
+}
+
+function aiNormIdentity(value) {
+  return String(value || '').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/gi,' ').trim();
+}
+
+function aiMergeEntityArray(previous, incoming, keyFn) {
+  const oldRows = Array.isArray(previous) ? previous : [];
+  const newRows = Array.isArray(incoming) ? incoming : [];
+  if(!newRows.length) return oldRows; // неполный ответ ИИ не должен стирать сохранённый список
+  const out = oldRows.map(row => aiCloneForStorage(row));
+  const index = new Map();
+  out.forEach((row, i) => {
+    const key = keyFn(row);
+    if(key) index.set(key, i);
+  });
+  newRows.forEach(row => {
+    const key = keyFn(row);
+    if(key && index.has(key) && row && typeof row === 'object' && !Array.isArray(row)) {
+      const pos = index.get(key);
+      out[pos] = aiDeepMergeDefined(out[pos], row);
+    } else if(key && index.has(key)) {
+      out[index.get(key)] = row;
+    } else {
+      out.push(aiCloneForStorage(row));
+      if(key) index.set(key, out.length - 1);
+    }
+  });
+  return out;
+}
+
+function aiMergePrimitiveArray(previous, incoming) {
+  const out = Array.isArray(previous) ? [...previous] : [];
+  const seen = new Set(out.map(aiNormIdentity));
+  (Array.isArray(incoming) ? incoming : []).forEach(item => {
+    const key = aiNormIdentity(typeof item === 'string' ? item : JSON.stringify(item));
+    if(key && !seen.has(key)) { out.push(aiCloneForStorage(item)); seen.add(key); }
+  });
+  return out;
+}
+
 function aiRenderCard(data) {
   if(data === null) {
     // Полная очистка карточки (для новой компании)
@@ -2211,21 +2514,54 @@ function aiRenderCard(data) {
     return;
   }
   if(!data) return;
-  // Мержим данные. Важно: false, 0, null и пустые массивы — осознанные значения,
-  // поэтому отбрасываем только undefined. Это позволяет удалять ошибочные данные и менять флаги.
-  const mergeDefined = (base, patch) => {
-    const out = {...(base || {})};
-    Object.entries(patch || {}).forEach(([k,v]) => { if(v !== undefined) out[k] = v; });
-    return out;
-  };
-  if(data.company !== undefined) aiCurrentData.company = mergeDefined(aiCurrentData.company, data.company);
-  if(data.certification !== undefined) aiCurrentData.certification = mergeDefined(aiCurrentData.certification, data.certification);
-  if(data.dates !== undefined) aiCurrentData.dates = mergeDefined(aiCurrentData.dates, data.dates);
-  ['staff','workers','work_types','objects','suppliers','flags'].forEach(k => {
-    if(data[k] !== undefined) aiCurrentData[k] = Array.isArray(data[k]) ? data[k] : [];
-  });
+  // Глубокое объединение: частичный ответ ИИ не должен стирать сохранённые реквизиты,
+  // сотрудников, объекты, поставщиков, оборудование, СИ, ТТК и документы.
+  if(data.company !== undefined) aiCurrentData.company = aiDeepMergeDefined(aiCurrentData.company, data.company);
+  if(data.certification !== undefined) aiCurrentData.certification = aiDeepMergeDefined(aiCurrentData.certification, data.certification);
+  if(data.dates !== undefined) aiCurrentData.dates = aiDeepMergeDefined(aiCurrentData.dates, data.dates);
+
+  if(data.staff !== undefined) {
+    aiCurrentData.staff = aiMergeEntityArray(aiCurrentData.staff, data.staff,
+      row => aiNormIdentity(row?.fio || row?.name || row?.full_name));
+  }
+  if(data.workers !== undefined) {
+    const incomingWorkers = Array.isArray(data.workers) ? data.workers : [];
+    const objectWorkers = incomingWorkers.some(x => x && typeof x === 'object');
+    aiCurrentData.workers = objectWorkers
+      ? aiMergeEntityArray(aiCurrentData.workers, incomingWorkers,
+          row => aiNormIdentity(row?.fio || row?.profession || row?.name))
+      : aiMergePrimitiveArray(aiCurrentData.workers, incomingWorkers);
+  }
+  if(data.work_types !== undefined) aiCurrentData.work_types = aiMergePrimitiveArray(aiCurrentData.work_types, data.work_types);
+  if(data.objects !== undefined) {
+    aiCurrentData.objects = aiMergeEntityArray(aiCurrentData.objects, data.objects,
+      row => aiNormIdentity(typeof row === 'string' ? row : (row?.name || row?.object_name || row?.address)));
+  }
+  if(data.suppliers !== undefined) {
+    aiCurrentData.suppliers = aiMergeEntityArray(aiCurrentData.suppliers, data.suppliers,
+      row => aiNormIdentity(typeof row === 'string' ? row : (row?.name || row?.supplier)));
+  }
+  if(data.source_documents !== undefined) {
+    aiCurrentData.source_documents = aiMergeEntityArray(aiCurrentData.source_documents, data.source_documents,
+      row => aiNormIdentity(row?.filename || row?.path));
+  }
+  if(data.flags !== undefined) aiCurrentData.flags = Array.isArray(data.flags) ? data.flags : [];
+  if(data.review_items !== undefined) aiCurrentData.review_items = aiMergeEntityArray(
+    aiCurrentData.review_items, data.review_items,
+    row => aiNormIdentity(`${row?.field || ''}|${row?.value || ''}|${row?.reason || ''}`)
+  );
+  if(data.iso_suot !== undefined) aiCurrentData.iso_suot = aiDeepMergeDefined(aiCurrentData.iso_suot, data.iso_suot);
+  if(data.spk !== undefined) aiCurrentData.spk = aiDeepMergeDefined(aiCurrentData.spk, data.spk);
   if(data.readiness !== undefined) aiCurrentData.readiness = data.readiness;
-  if(data.attestation !== undefined) aiCurrentData.attestation = mergeDefined(aiCurrentData.attestation, data.attestation);
+  if(data.attestation !== undefined) {
+    const previousAtt = aiCurrentData.attestation || {};
+    const incomingAtt = data.attestation || {};
+    aiCurrentData.attestation = aiDeepMergeDefined(previousAtt, incomingAtt);
+    if(incomingAtt.persons !== undefined) {
+      aiCurrentData.attestation.persons = aiMergeEntityArray(previousAtt.persons, incomingAtt.persons,
+        row => aiNormIdentity(row?.fio || row?.name));
+    }
+  }
   if(data.company_attestation !== undefined) {
     const incoming = data.company_attestation || {};
     const previous = aiCurrentData.company_attestation || {};
@@ -2236,7 +2572,7 @@ function aiRenderCard(data) {
     Object.entries(incoming).forEach(([k,v]) => {
       if(!['itr','work_items','workers','experience_objects'].includes(k)) scalarPatch[k] = v;
     });
-    aiCurrentData.company_attestation = mergeDefined(previous, scalarPatch);
+    aiCurrentData.company_attestation = aiDeepMergeDefined(previous, scalarPatch);
 
     if(incoming.itr !== undefined) {
       aiCurrentData.company_attestation.itr = aiMergeItrRecords(
@@ -2287,6 +2623,14 @@ function aiRenderCard(data) {
   (aiCurrentData.flags||[]).forEach(f => {
     const cls = f.type==='error'?'ai-flag-err':f.type==='warning'?'ai-flag-warn':'ai-flag-ok';
     html += `<div class="${cls}">${f.text}</div>`;
+  });
+
+  // Сведения, которые ИИ/распознавание пометили для ручной проверки.
+  (aiCurrentData.review_items||[]).forEach(item => {
+    const field = item.field ? `<b>${item.field}:</b> ` : '';
+    const value = item.value || 'НЕ ЗАПОЛНЕНО';
+    const reason = item.reason ? ` — ${item.reason}` : '';
+    html += `<div class="ai-flag-warn">🟨 ${field}${value}${reason}</div>`;
   });
 
   // Компания
@@ -2963,6 +3307,7 @@ async function aiReadArchiveAsync(file) {
       } else if(tr.status === 'done') {
         aiUpdateMsg(progressMsgId, `✅ Архив «${file.name}» разобран`);
         return {name: file.name, content: tr.text || '[Архив: данные не найдены]',
+                summary: tr.summary || '',
                 structured_data: tr.structured_data || null};
       } else if(tr.status === 'error') {
         aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${tr.error || 'ошибка обработки'}`);
@@ -2991,17 +3336,22 @@ async function aiRawCheckArchive(file) {
   aiAddMsg('user', `🔍 Проверка архива «${file.name}» — данные для копирования`);
   const result = await aiReadArchiveAsync(file);
   const text = result.content || '[пусто]';
+  const summary = result.summary || 'Архив разобран. Подробный распознанный текст доступен ниже.';
 
-  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const boxId = 'raw-copy-' + Date.now();
-  const hasDiscrepancy = text.includes('⚠️');
+  const hasDiscrepancy = summary.includes('⚠️');
 
-  const html = `<div style="font-size:11px;color:#A6837D;margin-bottom:8px">`
-             + (hasDiscrepancy ? `<span style="color:#C97A5F">⚠️ есть отмеченные расхождения между документами — проверьте помеченные строки</span>` : `<span style="color:#6B9B7A">✅ расхождений не отмечено</span>`)
+  const html = `<div style="font-size:12px;line-height:1.55;background:#FDF8EE;border:1px solid #E8DCC8;border-radius:8px;padding:12px;margin-bottom:10px;white-space:pre-wrap">${esc(summary)}</div>`
+             + `<div style="font-size:11px;color:#A6837D;margin-bottom:8px">`
+             + (hasDiscrepancy ? `<span style="color:#C97A5F">⚠️ проверьте перечисленные расхождения</span>` : `<span style="color:#6B9B7A">✅ технических ошибок чтения не отмечено</span>`)
              + `</div>`
-             + `<button onclick="navigator.clipboard.writeText(document.getElementById('${boxId}').innerText).then(()=>{this.innerText='✅ Скопировано'; setTimeout(()=>this.innerText='📋 Скопировать всё',1500)})" `
-             + `style="margin-bottom:8px;padding:6px 14px;border-radius:6px;border:1px solid #C97A5F;background:#F7DDE1;color:#8B4A5C;font-size:11px;cursor:pointer;font-family:inherit">📋 Скопировать всё</button>`
-             + `<pre id="${boxId}" style="white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:11.5px;background:#FDF8EE;border:1px solid #E8DCC8;border-radius:8px;padding:12px;max-height:600px;overflow-y:auto;margin:0">${esc(text)}</pre>`;
+             + `<details style="border:1px solid #E8DCC8;border-radius:8px;padding:8px;background:#fff">`
+             + `<summary style="cursor:pointer;color:#8B4A5C;font-size:11.5px;font-weight:700">Показать полный распознанный текст</summary>`
+             + `<button onclick="navigator.clipboard.writeText(document.getElementById('${boxId}').innerText).then(()=>{this.innerText='✅ Скопировано'; setTimeout(()=>this.innerText='📋 Скопировать полный текст',1500)})" `
+             + `style="margin:8px 0;padding:6px 14px;border-radius:6px;border:1px solid #C97A5F;background:#F7DDE1;color:#8B4A5C;font-size:11px;cursor:pointer;font-family:inherit">📋 Скопировать полный текст</button>`
+             + `<pre id="${boxId}" style="white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:11px;background:#FDF8EE;border:1px solid #E8DCC8;border-radius:8px;padding:12px;max-height:500px;overflow-y:auto;margin:0">${esc(text)}</pre>`
+             + `</details>`;
 
   aiAddMsg('ai', html);
 }
@@ -3268,23 +3618,28 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Автозагрузка последней сохранённой компании (данные переживают перезагрузку страницы)
-  aiListSavedCompanies().then(list => {
+  aiInstallAutosaveGuards();
+
+  // Восстанавливаем именно последнюю открытую карточку. Если она недоступна — самую свежую.
+  aiListSavedCompanies().then(async list => {
     if(list && list.length) {
-      const last = list[0]; // уже отсортировано по дате, самая свежая первая
-      aiLoadCompany(last.key).then(ok => {
-        if(ok) {
-          aiRestoreChatUI();
-          aiRenderCardFromCurrent();
-          // Явно показываем что это восстановленные данные, а не "зависшая" страница —
-          // раньше это происходило молча и выглядело как будто приложение не обновилось.
-          const companyLabel = last.label || (aiCurrentData?.company?.name ? `${aiCurrentData.company.form||'ООО'} «${aiCurrentData.company.name}»` : 'сохранённая компания');
-          aiAddMsg('ai', `🔄 Восстановлена предыдущая работа с ${companyLabel} (сохранено ранее). ` +
-                          `Если хотите начать новый тест с чистого листа — нажмите «➕ Новая компания» слева.`);
-        }
-      }).catch(e => console.warn('autoload failed:', e));
+      let preferredKey = null;
+      try { preferredKey = localStorage.getItem(AI_LAST_COMPANY_KEY); } catch (_) {}
+      const last = list.find(item => item.key === preferredKey) || list[0];
+      const ok = await aiLoadCompany(last.key);
+      if(ok) {
+        aiRestoreChatUI();
+        aiRenderCardFromCurrent();
+        const companyLabel = last.label || (aiCurrentData?.company?.name ? `${aiCurrentData.company.form||'ООО'} «${aiCurrentData.company.name}»` : 'сохранённая компания');
+        aiAddMsg('ai', `🔄 Восстановлена предыдущая работа с ${companyLabel}. Все реквизиты, сотрудники, рабочие, объекты, поставщики и продукт загружены из сохранённой карточки.`);
+      }
+    } else {
+      aiCurrentCompanyKey = aiMakeStableCompanyKey();
     }
-  }).catch(e => console.warn('aiListSavedCompanies failed on startup:', e));
+  }).catch(e => {
+    console.warn('aiListSavedCompanies failed on startup:', e);
+    aiCurrentCompanyKey = aiMakeStableCompanyKey();
+  });
 });
 </script>
 

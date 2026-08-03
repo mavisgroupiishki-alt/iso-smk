@@ -2,8 +2,12 @@ services:
   - type: web
     name: iso-smk-generator
     env: python
-    buildCommand: "pip install requests rarfile"
-    startCommand: python server.py
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python server.py"
     envVars:
       - key: VIBE_API_KEY
         sync: false
+      # Для постоянного серверного хранения подключите Render Persistent Disk
+      # и задайте IGOR_DATA_DIR равным его mount path, например /data.
+      - key: IGOR_DATA_DIR
+        value: /data
