@@ -2,43 +2,56 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   AlertCircle,
+  Archive,
   ArrowRight,
   BarChart3,
   Briefcase,
   CalendarClock,
   CalendarDays,
   CheckCircle2,
+  CheckSquare2,
+  ClipboardCopy,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
   Clock,
   Database,
+  FileCheck2,
   Download,
   Edit3,
   ExternalLink,
   FileUp,
   FolderKanban,
   FolderPlus,
+  HeartPulse,
   GripVertical,
   History,
   Layers3,
+  LayoutTemplate,
   Link2,
   List,
   ListChecks,
+  LogIn,
+  LogOut,
+  KeyRound,
+  Gauge,
   MessageSquare,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
+  SlidersHorizontal,
   ShieldCheck,
   Sparkles,
   Trash2,
+  Undo2,
   UserPlus,
   UserRound,
   Users,
   X,
 } from 'lucide-react';
-import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Bar, BarChart, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -52,6 +65,7 @@ const STAGES_STORAGE_KEY = 'mavis_task_tracker_project_stages_v1';
 const RESCHEDULES_STORAGE_KEY = 'mavis_task_tracker_reschedules_v1';
 const SECTIONS_STORAGE_KEY = 'mavis_task_tracker_sections_v1';
 const CALENDAR_BACKUPS_STORAGE_KEY = 'mavis_task_tracker_calendar_backups_v1';
+const TEMPLATES_STORAGE_KEY = 'mavis_task_tracker_project_templates_v1';
 
 const DEFAULT_EMPLOYEES = [
   { id: 'default-sasha', name: 'Саша', role: 'Руководитель отдела продаж', color: '#7c3aed' },
@@ -60,9 +74,18 @@ const DEFAULT_EMPLOYEES = [
   { id: 'default-victoria', name: 'Виктория', role: 'Директор', color: '#059669' },
 ];
 
-const EMPLOYEE_COLORS = ['#7c3aed', '#0284c7', '#ea580c', '#059669', '#db2777', '#4f46e5', '#0891b2', '#ca8a04'];
-const PROJECT_COLORS = ['#7c3aed', '#2563eb', '#059669', '#ea580c', '#db2777', '#0891b2', '#4f46e5', '#be123c'];
-const SECTION_COLORS = ['#0f766e', '#0369a1', '#7c3aed', '#c2410c', '#be123c', '#4f46e5', '#047857', '#a16207'];
+const PASTEL_COLORS = [
+  '#E7D8FF', '#D8E4FF', '#D5F0FF', '#CDEFF2', '#D3F3E2', '#E4F4C8',
+  '#FFF0B8', '#FFE1B8', '#FFD4C9', '#FFD3E1', '#F2D4F7', '#E2D9F3',
+  '#C9E4DE', '#C6DEF1', '#DBCDF0', '#F2C6DE', '#F7D9C4', '#FAEDCB',
+  '#DDE5B6', '#BDE0FE', '#A2D2FF', '#CDB4DB', '#FFC8DD', '#FFAFCC',
+  '#D9ED92', '#B5E48C', '#99D98C', '#76C893', '#A9DEF9', '#E4C1F9',
+  '#FCF6BD', '#FF99C8', '#F1FAEE', '#E0FBFC', '#E8E8E4', '#D8E2DC',
+];
+const EMPLOYEE_COLORS = PASTEL_COLORS;
+const PROJECT_COLORS = PASTEL_COLORS;
+const SECTION_COLORS = PASTEL_COLORS;
+const STATUS_CHART_COLORS = ['#CDB4DB', '#A2D2FF', '#BDE0FE', '#FFD6A5', '#FFADAD', '#B5E48C'];
 const TASK_STATUSES = ['Ожидает', 'Новая', 'В работе', 'На проверке', 'Блокер', 'Готово'];
 const PROJECT_STATUSES = ['Ожидает', 'В работе', 'На паузе', 'Готово'];
 const PRIORITIES = ['Низкий', 'Средний', 'Высокий'];
@@ -228,12 +251,26 @@ function resourceLabel(value) {
   }
 }
 
+function contrastTextColor(hex) {
+  const normalized = String(hex || '').replace('#', '');
+  if (!/^[0-9a-f]{6}$/i.test(normalized)) return '#0f172a';
+  const r = parseInt(normalized.slice(0, 2), 16);
+  const g = parseInt(normalized.slice(2, 4), 16);
+  const b = parseInt(normalized.slice(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.67 ? '#334155' : '#ffffff';
+}
+
 function normalizeEmployee(employee, index = 0) {
   return {
     id: employee.id || `local-employee-${Date.now()}-${index}`,
     name: normalizeOwner(employee.name),
     role: employee.role || 'Сотрудник',
     color: employee.color || EMPLOYEE_COLORS[index % EMPLOYEE_COLORS.length],
+    login: String(employee.login || '').trim(),
+    task_capacity: Math.max(1, Number(employee.task_capacity || 10)),
+    is_active: employee.is_active !== false,
+    auth_user_id: employee.auth_user_id || null,
     created_at: employee.created_at || new Date().toISOString(),
   };
 }
@@ -249,6 +286,8 @@ function normalizeProject(project, index = 0) {
     deadline: project.deadline || '',
     status: PROJECT_STATUSES.includes(project.status) ? project.status : 'В работе',
     color: project.color || PROJECT_COLORS[index % PROJECT_COLORS.length],
+    archived: Boolean(project.archived),
+    archived_at: project.archived_at || '',
     created_at: project.created_at || new Date().toISOString(),
   };
 }
@@ -317,6 +356,90 @@ function normalizeReschedule(item) {
     reason: item.reason || '',
   };
 }
+
+function normalizeTemplate(template, index = 0) {
+  const data = template.template_data || template.data || {};
+  return {
+    id: template.id || `local-template-${Date.now()}-${index}`,
+    name: String(template.name || 'Новый шаблон').trim(),
+    description: template.description || '',
+    owner: normalizeOwner(template.owner || 'Саша'),
+    customer: template.customer || '',
+    section_id: template.section_id || null,
+    color: template.color || PROJECT_COLORS[index % PROJECT_COLORS.length],
+    template_data: {
+      project_deadline_offset: Number(data.project_deadline_offset ?? 14),
+      stages: Array.isArray(data.stages) ? data.stages : [],
+      tasks: Array.isArray(data.tasks) ? data.tasks : [],
+    },
+    is_builtin: Boolean(template.is_builtin),
+    created_at: template.created_at || new Date().toISOString(),
+  };
+}
+
+function dateDiffDays(fromIso, toIso) {
+  if (!fromIso || !toIso) return null;
+  const from = new Date(`${fromIso}T12:00:00`);
+  const to = new Date(`${toIso}T12:00:00`);
+  return Math.round((to - from) / 86400000);
+}
+
+function projectHealth(project, projectTasks) {
+  if (project.archived || project.status === 'Готово') return { level: 'done', label: 'Завершён', detail: 'Проект в архиве или закрыт' };
+  const active = projectTasks.filter((task) => !isTaskCompleted(task));
+  const overdue = active.filter((task) => task.deadline && task.deadline < todayIso());
+  const blockers = active.filter((task) => task.status === 'Блокер');
+  const dueSoon = active.filter((task) => task.deadline && task.deadline >= todayIso() && task.deadline <= addDays(todayIso(), 3));
+  if (blockers.length || overdue.length >= 3 || (project.deadline && project.deadline < todayIso())) {
+    return { level: 'critical', label: 'Критический', detail: `${blockers.length} блокеров · ${overdue.length} просрочено` };
+  }
+  if (overdue.length || dueSoon.length >= 3 || project.status === 'На паузе') {
+    return { level: 'risk', label: 'Есть риск', detail: `${overdue.length} просрочено · ${dueSoon.length} скоро` };
+  }
+  if (!active.length) return { level: 'empty', label: 'Нет активных', detail: 'Добавьте задачи или завершите проект' };
+  return { level: 'healthy', label: 'В норме', detail: `${active.length} активных · без критичных отклонений` };
+}
+
+function HealthBadge({ health }) {
+  const styles = {
+    healthy: 'bg-emerald-100 text-emerald-800',
+    risk: 'bg-amber-100 text-amber-800',
+    critical: 'bg-rose-100 text-rose-800',
+    done: 'bg-slate-200 text-slate-700',
+    empty: 'bg-sky-100 text-sky-800',
+  };
+  return <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${styles[health.level] || styles.empty}`} title={health.detail}><HeartPulse className="mr-1.5 h-3.5 w-3.5" />{health.label}</span>;
+}
+
+const BUILTIN_TEMPLATES = [
+  normalizeTemplate({ id: 'builtin-automation', name: 'Автоматизация процесса', description: 'Анализ → проектирование → разработка → тест → запуск', owner: 'Аня', color: '#c4b5fd', is_builtin: true, template_data: { project_deadline_offset: 30, stages: [
+    { key: 'analysis', title: 'Анализ процесса', offset: 5 }, { key: 'design', title: 'Проектирование решения', offset: 10 }, { key: 'build', title: 'Разработка и настройка', offset: 20 }, { key: 'test', title: 'Тестирование', offset: 25 }, { key: 'launch', title: 'Запуск и контроль', offset: 30 },
+  ], tasks: [
+    { stage_key: 'analysis', title: 'Зафиксировать текущий процесс и проблемы', offset: 3, priority: 'Высокий' },
+    { stage_key: 'design', title: 'Согласовать целевой процесс и критерии результата', offset: 8, priority: 'Высокий' },
+    { stage_key: 'build', title: 'Настроить рабочее решение', offset: 18, priority: 'Средний' },
+    { stage_key: 'test', title: 'Провести тест на реальных кейсах', offset: 23, priority: 'Высокий' },
+    { stage_key: 'launch', title: 'Запустить и собрать обратную связь', offset: 29, priority: 'Средний' },
+  ] } }),
+  normalizeTemplate({ id: 'builtin-new-service', name: 'Запуск новой услуги', description: 'Продукт, экономика, регламент, продажи и пилот', owner: 'Саша', color: '#f9a8d4', is_builtin: true, template_data: { project_deadline_offset: 35, stages: [
+    { key: 'product', title: 'Проработка продукта', offset: 7 }, { key: 'process', title: 'Регламент оказания', offset: 16 }, { key: 'sales', title: 'Подготовка продаж', offset: 24 }, { key: 'pilot', title: 'Пилот и запуск', offset: 35 },
+  ], tasks: [
+    { stage_key: 'product', title: 'Определить состав услуги и целевую аудиторию', offset: 5, priority: 'Высокий' },
+    { stage_key: 'product', title: 'Рассчитать стоимость и маржу', offset: 7, priority: 'Высокий' },
+    { stage_key: 'process', title: 'Собрать чек-лист и ход работы', offset: 14, priority: 'Средний' },
+    { stage_key: 'sales', title: 'Подготовить КП, скрипт и материалы менеджерам', offset: 22, priority: 'Средний' },
+    { stage_key: 'pilot', title: 'Провести первую тестовую продажу', offset: 30, priority: 'Высокий' },
+  ] } }),
+  normalizeTemplate({ id: 'builtin-hiring', name: 'Найм сотрудника', description: 'Профиль → поиск → отбор → стажировка → адаптация', owner: 'Таня', color: '#bae6fd', is_builtin: true, template_data: { project_deadline_offset: 28, stages: [
+    { key: 'profile', title: 'Профиль кандидата', offset: 3 }, { key: 'search', title: 'Поиск и отбор', offset: 12 }, { key: 'internship', title: 'Стажировка', offset: 21 }, { key: 'adaptation', title: 'Адаптация', offset: 28 },
+  ], tasks: [
+    { stage_key: 'profile', title: 'Утвердить профиль и критерии кандидата', offset: 3, priority: 'Высокий' },
+    { stage_key: 'search', title: 'Сформировать воронку кандидатов', offset: 10, priority: 'Высокий' },
+    { stage_key: 'search', title: 'Провести интервью и выбрать финалистов', offset: 12, priority: 'Средний' },
+    { stage_key: 'internship', title: 'Провести стажировку и оценку', offset: 20, priority: 'Высокий' },
+    { stage_key: 'adaptation', title: 'Закрыть план адаптации и первый результат', offset: 28, priority: 'Средний' },
+  ] } }),
+];
 
 function parseLocal(key, fallback) {
   try {
@@ -687,12 +810,16 @@ export default function App() {
   const [stages, setStages] = useState([]);
   const [sections, setSections] = useState([]);
   const [reschedules, setReschedules] = useState([]);
+  const [templates, setTemplates] = useState(BUILTIN_TEMPLATES);
   const [activeTab, setActiveTab] = useState('sections');
   const [selectedDate, setSelectedDate] = useState(todayIso());
   const [selectedEmployee, setSelectedEmployee] = useState('Все');
   const [search, setSearch] = useState('');
   const [taskFilter, setTaskFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [sectionFilter, setSectionFilter] = useState('all');
+  const [priorityFilter, setPriorityFilter] = useState('all');
+  const [customerFilter, setCustomerFilter] = useState('all');
   const [sectionStatusFilters, setSectionStatusFilters] = useState({});
   const [dateFilterMode, setDateFilterMode] = useState('all');
   const [dateFilterDate, setDateFilterDate] = useState(todayIso());
@@ -703,29 +830,77 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [authLoading, setAuthLoading] = useState(Boolean(supabase));
+  const [session, setSession] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loginForm, setLoginForm] = useState({ login: '', password: '' });
+  const [loginError, setLoginError] = useState('');
 
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isStageModalOpen, setIsStageModalOpen] = useState(false);
   const [isSectionModalOpen, setIsSectionModalOpen] = useState(false);
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
+  const [isTemplateLaunchOpen, setIsTemplateLaunchOpen] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
+  const [selectedTaskIds, setSelectedTaskIds] = useState([]);
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [editingStageId, setEditingStageId] = useState(null);
   const [editingSectionId, setEditingSectionId] = useState(null);
+  const [editingEmployeeId, setEditingEmployeeId] = useState(null);
 
   const [taskForm, setTaskForm] = useState(emptyTaskForm(todayIso(), 'Саша'));
   const [projectForm, setProjectForm] = useState({ name: '', description: '', owner: 'Саша', customer: '', section_id: '', deadline: '', status: 'В работе', color: PROJECT_COLORS[0] });
   const [stageForm, setStageForm] = useState({ project_id: '', title: '', description: '', owner: 'Саша', deadline: '', sort_order: 1 });
   const [sectionForm, setSectionForm] = useState({ name: '', description: '', owner: 'Саша', color: SECTION_COLORS[0] });
-  const [employeeForm, setEmployeeForm] = useState({ name: '', role: '', color: EMPLOYEE_COLORS[0] });
+  const [employeeForm, setEmployeeForm] = useState({ name: '', role: '', login: '', password: '', task_capacity: 10, color: EMPLOYEE_COLORS[0], is_active: true });
+  const [templateLaunchForm, setTemplateLaunchForm] = useState({ name: '', section_id: '', owner: 'Саша', customer: '', start_date: todayIso() });
+  const [bulkForm, setBulkForm] = useState({ owner: '', status: '', priority: '', deadline: '' });
   const [deadlineChange, setDeadlineChange] = useState({ changed_by: 'Саша', reason: '' });
 
-  const employeeNames = useMemo(() => employees.map((employee) => employee.name), [employees]);
+  const employeeNames = useMemo(() => employees.filter((employee) => employee.is_active !== false).map((employee) => employee.name), [employees]);
+  const isAdmin = Boolean(currentUser?.is_admin);
   const currentWeekStart = getWeekStart(todayIso());
   const currentWeekEnd = addDays(currentWeekStart, 6);
   const nextWeekStart = addDays(currentWeekStart, 7);
   const nextWeekEnd = addDays(currentWeekStart, 13);
+
+  async function signIn(event) {
+    event?.preventDefault?.();
+    if (!supabase) return;
+    const login = String(loginForm.login || '').trim();
+    const password = String(loginForm.password || '');
+    if (!login || !password) {
+      setLoginError('Введите имя пользователя и пароль.');
+      return;
+    }
+    setAuthLoading(true);
+    setLoginError('');
+    try {
+      const { data: internalEmail, error: resolveError } = await supabase.rpc('resolve_login_email', { p_login: login });
+      if (resolveError) throw resolveError;
+      if (!internalEmail) throw new Error('Пользователь с таким логином не найден или отключён.');
+      const { error } = await supabase.auth.signInWithPassword({ email: internalEmail, password });
+      if (error) throw error;
+      setLoginForm({ login: '', password: '' });
+    } catch (error) {
+      setLoginError(error.message === 'Invalid login credentials' ? 'Неверный логин или пароль.' : error.message);
+      setAuthLoading(false);
+    }
+  }
+
+  async function signOut() {
+    if (supabase) await supabase.auth.signOut();
+    setCurrentUser(null);
+    setSession(null);
+    setTasks([]);
+    setProjects([]);
+    setStages([]);
+    setSections([]);
+    setEmployees([]);
+    setMessage('');
+  }
 
   async function loadData() {
     setDataLoaded(false);
@@ -738,6 +913,8 @@ export default function App() {
     const localSections = parseLocal(SECTIONS_STORAGE_KEY, []).map(normalizeSection);
     const localTasks = parseLocal(TASKS_STORAGE_KEY, supabase ? [] : SAMPLE_TASKS).map(normalizeTask);
     const localReschedules = parseLocal(RESCHEDULES_STORAGE_KEY, []).map(normalizeReschedule);
+    const localTemplates = parseLocal(TEMPLATES_STORAGE_KEY, []).map(normalizeTemplate);
+    const fallbackTemplates = [...BUILTIN_TEMPLATES, ...localTemplates.filter((item) => !item.is_builtin)];
 
     if (!supabase) {
       setEmployees(localEmployees);
@@ -746,6 +923,7 @@ export default function App() {
       setSections(localSections);
       setTasks(localTasks);
       setReschedules(localReschedules);
+      setTemplates(fallbackTemplates);
       setExpandedSections(Object.fromEntries(localSections.map((section) => [section.id, true])));
       setExpandedSections(Object.fromEntries(localSections.map((section) => [section.id, true])));
       setExpandedProjects(Object.fromEntries(localProjects.map((project) => [project.id, true])));
@@ -756,13 +934,14 @@ export default function App() {
     }
 
     try {
-      const [employeesResult, projectsResult, stagesResult, sectionsResult, tasksResult, reschedulesResult] = await Promise.all([
+      const [employeesResult, projectsResult, stagesResult, sectionsResult, tasksResult, reschedulesResult, templatesResult] = await Promise.all([
         supabase.from('employees').select('*').order('created_at', { ascending: true }),
         supabase.from('projects').select('*').order('created_at', { ascending: false }),
         supabase.from('project_stages').select('*').order('sort_order', { ascending: true }),
         supabase.from('task_sections').select('*').order('created_at', { ascending: true }),
         supabase.from('tasks').select('*').order('deadline', { ascending: true }).order('created_at', { ascending: false }),
         supabase.from('task_reschedules').select('*').order('changed_at', { ascending: false }),
+        supabase.from('project_templates').select('*').order('created_at', { ascending: false }),
       ]);
 
       if (tasksResult.error) throw tasksResult.error;
@@ -772,6 +951,7 @@ export default function App() {
       const loadedSections = sectionsResult.error ? localSections : (sectionsResult.data || []).map(normalizeSection);
       const loadedTasks = (tasksResult.data || []).map(normalizeTask);
       const loadedReschedules = reschedulesResult.error ? localReschedules : (reschedulesResult.data || []).map(normalizeReschedule);
+      const loadedTemplates = templatesResult.error ? fallbackTemplates : [...BUILTIN_TEMPLATES, ...(templatesResult.data || []).map(normalizeTemplate)];
 
       const employeeMap = new Map(loadedEmployees.map((employee) => [employee.name.toLowerCase(), employee]));
       loadedTasks.forEach((task, index) => {
@@ -788,13 +968,14 @@ export default function App() {
       setSections(loadedSections);
       setTasks(loadedTasks);
       setReschedules(loadedReschedules);
+      setTemplates(loadedTemplates);
       setExpandedSections(Object.fromEntries(loadedSections.map((section) => [section.id, true])));
       setExpandedProjects(Object.fromEntries(loadedProjects.map((project) => [project.id, true])));
 
-      const migrationMissing = projectsResult.error || stagesResult.error || sectionsResult.error || reschedulesResult.error;
+      const migrationMissing = projectsResult.error || stagesResult.error || sectionsResult.error || reschedulesResult.error || templatesResult.error;
       setMessage(migrationMissing
-        ? 'Основные данные загружены. Для разделов и заказчиков выполните файл supabase_hierarchy_sections_update.sql из архива.'
-        : 'Данные проектов, задач и истории переносов загружены из общей базы Supabase.');
+        ? 'Основные данные загружены. Для разделов и заказчиков выполните файл supabase_v5_workspace_update.sql из архива.'
+        : 'Данные разделов, проектов, шаблонов, задач и истории переносов загружены из общей базы Supabase.');
     } catch (error) {
       setEmployees(localEmployees);
       setProjects(localProjects);
@@ -802,6 +983,7 @@ export default function App() {
       setSections(localSections);
       setTasks(localTasks);
       setReschedules(localReschedules);
+      setTemplates(fallbackTemplates);
       setExpandedProjects(Object.fromEntries(localProjects.map((project) => [project.id, true])));
       setMessage(`Общая база недоступна, открыта локальная копия. ${error.message}`);
     } finally {
@@ -811,8 +993,60 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadData();
+    if (!supabase) {
+      setAuthLoading(false);
+      loadData();
+      return undefined;
+    }
+
+    let active = true;
+    async function restoreSession() {
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      setSession(data.session || null);
+      if (!data.session) setAuthLoading(false);
+    }
+    restoreSession();
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession || null);
+      if (!nextSession) {
+        setCurrentUser(null);
+        setDataLoaded(false);
+        setAuthLoading(false);
+      }
+    });
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
   }, []);
+
+  useEffect(() => {
+    if (!supabase || !session) return;
+    let active = true;
+    async function loadCurrentUser() {
+      setAuthLoading(true);
+      const { data, error } = await supabase.rpc('current_app_user');
+      if (!active) return;
+      const profile = Array.isArray(data) ? data[0] : data;
+      if (error || !profile) {
+        setCurrentUser(null);
+        setLoginError(error?.message || 'Для этого аккаунта не создан профиль сотрудника.');
+        await supabase.auth.signOut();
+        setAuthLoading(false);
+        return;
+      }
+      setCurrentUser(profile);
+      setSelectedEmployee(profile.employee_name || 'Все');
+      setAuthLoading(false);
+    }
+    loadCurrentUser();
+    return () => { active = false; };
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!supabase || currentUser) loadData();
+  }, [currentUser?.auth_user_id]);
 
   useEffect(() => { if (dataLoaded) localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks)); }, [tasks, dataLoaded]);
   useEffect(() => { if (dataLoaded) localStorage.setItem(EMPLOYEES_STORAGE_KEY, JSON.stringify(employees)); }, [employees, dataLoaded]);
@@ -820,6 +1054,7 @@ export default function App() {
   useEffect(() => { if (dataLoaded) localStorage.setItem(STAGES_STORAGE_KEY, JSON.stringify(stages)); }, [stages, dataLoaded]);
   useEffect(() => { if (dataLoaded) localStorage.setItem(SECTIONS_STORAGE_KEY, JSON.stringify(sections)); }, [sections, dataLoaded]);
   useEffect(() => { if (dataLoaded) localStorage.setItem(RESCHEDULES_STORAGE_KEY, JSON.stringify(reschedules)); }, [reschedules, dataLoaded]);
+  useEffect(() => { if (dataLoaded) localStorage.setItem(TEMPLATES_STORAGE_KEY, JSON.stringify(templates.filter((item) => !item.is_builtin))); }, [templates, dataLoaded]);
 
   useEffect(() => {
     if (selectedEmployee !== 'Все' && !employeeNames.includes(selectedEmployee)) setSelectedEmployee('Все');
@@ -836,6 +1071,7 @@ export default function App() {
       const project = projectById.get(String(task.project_id));
       const stage = stageById.get(String(task.stage_id));
       const section = sectionById.get(String(project?.section_id || task.section_id));
+      if (project?.archived) return false;
       const matchesEmployee = selectedEmployee === 'Все' || task.owner === selectedEmployee;
       const matchesSearch = !query || `${task.title} ${task.owner} ${task.comment} ${task.resource_url} ${task.result} ${project?.name || ''} ${stage?.title || ''} ${section?.name || ''}`.toLowerCase().includes(query);
       const matchesFilter = taskFilter === 'all'
@@ -846,14 +1082,21 @@ export default function App() {
         || (statusFilter === 'active' && !isTaskCompleted(task))
         || (statusFilter === 'completed' && isTaskCompleted(task))
         || task.status === statusFilter;
+      const matchesSection = sectionFilter === 'all' || String(section?.id || '') === String(sectionFilter);
+      const matchesPriority = priorityFilter === 'all' || task.priority === priorityFilter;
+      const matchesCustomer = customerFilter === 'all' || String(project?.customer || '') === customerFilter;
       const matchesDate = matchesDateFilter(task.deadline, dateFilterMode, dateFilterDate);
-      return matchesEmployee && matchesSearch && matchesFilter && matchesStatus && matchesDate;
+      return matchesEmployee && matchesSearch && matchesFilter && matchesStatus && matchesSection && matchesPriority && matchesCustomer && matchesDate;
     });
-  }, [tasks, search, selectedEmployee, taskFilter, statusFilter, dateFilterMode, dateFilterDate, projectById, stageById, sectionById]);
+  }, [tasks, search, selectedEmployee, taskFilter, statusFilter, sectionFilter, priorityFilter, customerFilter, dateFilterMode, dateFilterDate, projectById, stageById, sectionById]);
 
-  const filteredProjects = useMemo(() => {
+  const activeProjects = useMemo(() => projects.filter((project) => !project.archived), [projects]);
+  const archivedProjects = useMemo(() => projects.filter((project) => project.archived), [projects]);
+  const customers = useMemo(() => [...new Set(projects.map((project) => String(project.customer || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')), [projects]);
+
+  const applyProjectFilters = (sourceProjects) => {
     const query = search.trim().toLowerCase();
-    return projects.filter((project) => {
+    return sourceProjects.filter((project) => {
       const allProjectTasks = tasks.filter((task) => String(task.project_id) === String(project.id));
       const visibleProjectTasks = filteredTasks.filter((task) => String(task.project_id) === String(project.id));
       const employeeMatch = selectedEmployee === 'Все' || project.owner === selectedEmployee || allProjectTasks.some((task) => task.owner === selectedEmployee);
@@ -861,14 +1104,24 @@ export default function App() {
       const searchMatch = !query || `${project.name} ${project.description} ${project.owner} ${project.customer} ${projectSection?.name || ''}`.toLowerCase().includes(query)
         || allProjectTasks.some((task) => `${task.title} ${task.comment}`.toLowerCase().includes(query));
       const dateMatch = dateFilterMode === 'all' || matchesDateFilter(project.deadline, dateFilterMode, dateFilterDate) || visibleProjectTasks.length > 0;
-      return employeeMatch && searchMatch && dateMatch;
+      const sectionMatch = sectionFilter === 'all' || String(project.section_id || '') === String(sectionFilter);
+      const priorityMatch = priorityFilter === 'all' || allProjectTasks.some((task) => task.priority === priorityFilter);
+      const customerMatch = customerFilter === 'all' || String(project.customer || '') === customerFilter;
+      const statusMatch = statusFilter === 'all' || statusFilter === 'active' || statusFilter === 'completed'
+        ? (statusFilter === 'active' ? project.status !== 'Готово' : statusFilter === 'completed' ? project.status === 'Готово' : true)
+        : project.status === statusFilter || visibleProjectTasks.length > 0;
+      return employeeMatch && searchMatch && dateMatch && sectionMatch && priorityMatch && customerMatch && statusMatch;
     });
-  }, [projects, tasks, filteredTasks, search, selectedEmployee, dateFilterMode, dateFilterDate, sectionById]);
+  };
+
+  const filteredProjects = useMemo(() => applyProjectFilters(activeProjects), [activeProjects, tasks, filteredTasks, search, selectedEmployee, dateFilterMode, dateFilterDate, sectionFilter, priorityFilter, customerFilter, statusFilter, sectionById]);
+  const filteredArchivedProjects = useMemo(() => applyProjectFilters(archivedProjects), [archivedProjects, tasks, filteredTasks, search, selectedEmployee, dateFilterMode, dateFilterDate, sectionFilter, priorityFilter, customerFilter, statusFilter, sectionById]);
+
 
   const filteredSections = useMemo(() => {
     const query = search.trim().toLowerCase();
     return sections.filter((section) => {
-      const sectionProjects = projects.filter((project) => String(project.section_id) === String(section.id));
+      const sectionProjects = activeProjects.filter((project) => String(project.section_id) === String(section.id));
       const projectIds = new Set(sectionProjects.map((project) => String(project.id)));
       const allSectionTasks = tasks.filter((task) => projectIds.has(String(task.project_id)) || (!task.project_id && String(task.section_id) === String(section.id)));
       const visibleSectionTasks = filteredTasks.filter((task) => projectIds.has(String(task.project_id)) || (!task.project_id && String(task.section_id) === String(section.id)));
@@ -882,9 +1135,10 @@ export default function App() {
         || sectionProjects.some((project) => `${project.name} ${project.description} ${project.customer}`.toLowerCase().includes(query))
         || allSectionTasks.some((task) => `${task.title} ${task.comment}`.toLowerCase().includes(query));
       const dateMatch = dateFilterMode === 'all' || visibleSectionTasks.length > 0 || visibleSectionProjects.length > 0;
-      return employeeMatch && searchMatch && dateMatch;
+      const sectionMatch = sectionFilter === 'all' || String(section.id) === String(sectionFilter);
+      return employeeMatch && searchMatch && dateMatch && sectionMatch;
     });
-  }, [sections, projects, tasks, filteredTasks, filteredProjects, search, selectedEmployee, dateFilterMode]);
+  }, [sections, activeProjects, tasks, filteredTasks, filteredProjects, search, selectedEmployee, dateFilterMode, sectionFilter]);
 
   const calendarTasks = useMemo(() => {
     const weekStart = getWeekStart(selectedDate);
@@ -914,29 +1168,71 @@ export default function App() {
   }, [transferFilter, currentWeekCarryovers, nextWeekCarryovers, reschedules]);
 
   const summary = useMemo(() => ({
-    projects: projects.filter((project) => project.status !== 'Готово').length,
+    projects: activeProjects.filter((project) => project.status !== 'Готово').length,
     tasks: tasks.length,
     active: tasks.filter((task) => !isTaskCompleted(task)).length,
     done: tasks.filter((task) => isTaskCompleted(task)).length,
     overdue: tasks.filter((task) => task.deadline < todayIso() && !isTaskCompleted(task)).length,
     carryovers: currentWeekCarryovers.length,
-  }), [projects, tasks, currentWeekCarryovers]);
+  }), [activeProjects, tasks, currentWeekCarryovers]);
 
-  const workload = useMemo(() => employees.map((employee) => {
+  const workload = useMemo(() => employees.filter((employee) => employee.is_active !== false).map((employee) => {
     const personTasks = tasks.filter((task) => task.owner === employee.name && !isTaskCompleted(task));
+    const capacity = Math.max(1, Number(employee.task_capacity || 10));
+    const active = personTasks.length;
+    const ratio = active / capacity;
     return {
       name: employee.name,
-      tasks: personTasks.length,
+      tasks: active,
+      capacity,
       overdue: personTasks.filter((task) => task.deadline < todayIso()).length,
-      color: employee.color,
+      overload: Math.max(0, active - capacity),
+      ratio,
+      color: ratio > 1.25 ? '#ef4444' : ratio > 1 ? '#f59e0b' : employee.color,
     };
   }), [employees, tasks]);
+
+  const overloadedEmployees = useMemo(() => workload.filter((item) => item.overload > 0).sort((a, b) => b.ratio - a.ratio), [workload]);
+
+  const taskStatusChart = useMemo(() => TASK_STATUSES
+    .map((status, index) => ({
+      name: status,
+      value: tasks.filter((task) => task.status === status && !isTaskCompleted(task)).length,
+      color: STATUS_CHART_COLORS[index % STATUS_CHART_COLORS.length],
+    }))
+    .filter((item) => item.value > 0), [tasks]);
+
+  const taskCountBySection = useMemo(() => {
+    const counts = new Map();
+    tasks.forEach((task) => {
+      const project = projectById.get(String(task.project_id));
+      const sectionId = String(project?.section_id || task.section_id || '');
+      if (sectionId) counts.set(sectionId, (counts.get(sectionId) || 0) + 1);
+    });
+    return counts;
+  }, [tasks, projectById]);
+
+  function showAllTasksForSection(nextSectionId) {
+    setSectionFilter(nextSectionId);
+    setSearch('');
+    setSelectedEmployee('Все');
+    setTaskFilter('all');
+    setStatusFilter('all');
+    setPriorityFilter('all');
+    setCustomerFilter('all');
+    setDateFilterMode('all');
+    setDateFilterDate(todayIso());
+    setSelectedTaskIds([]);
+  }
 
   function resetAllFilters() {
     setSearch('');
     setSelectedEmployee('Все');
     setTaskFilter('all');
     setStatusFilter('all');
+    setSectionFilter('all');
+    setPriorityFilter('all');
+    setCustomerFilter('all');
     setDateFilterMode('all');
     setDateFilterDate(todayIso());
     setSectionStatusFilters({});
@@ -1065,7 +1361,7 @@ export default function App() {
         setProjects((previous) => [project, ...previous]);
         setExpandedProjects((previous) => ({ ...previous, [project.id]: true }));
       }
-      setMessage(`Проект сохранён локально. Для иерархии разделов выполните supabase_hierarchy_sections_update.sql. ${error.message}`);
+      setMessage(`Проект сохранён локально. Для иерархии разделов выполните supabase_v5_workspace_update.sql. ${error.message}`);
       setIsProjectModalOpen(false);
     }
   }
@@ -1109,7 +1405,14 @@ export default function App() {
     }
   }
 
+  function requireSectionAdmin() {
+    if (isAdmin) return true;
+    setMessage('Создавать, редактировать и удалять разделы может только Аня под своей учётной записью.');
+    return false;
+  }
+
   function openSectionModal(section = null) {
+    if (!requireSectionAdmin()) return;
     if (section) {
       setEditingSectionId(section.id);
       setSectionForm({ name: section.name, description: section.description, owner: section.owner, color: section.color });
@@ -1118,7 +1421,7 @@ export default function App() {
       setSectionForm({
         name: '',
         description: '',
-        owner: selectedEmployee !== 'Все' ? selectedEmployee : employeeNames[0] || 'Саша',
+        owner: currentUser?.employee_name || employeeNames[0] || 'Аня',
         color: SECTION_COLORS[sections.length % SECTION_COLORS.length],
       });
     }
@@ -1126,45 +1429,41 @@ export default function App() {
   }
 
   async function saveSection() {
+    if (!requireSectionAdmin()) return;
     if (!sectionForm.name.trim()) {
       setMessage('Укажите название раздела.');
       return;
     }
     const payload = {
-      ...sectionForm,
       name: sectionForm.name.trim(),
       description: sectionForm.description.trim(),
+      owner: sectionForm.owner,
+      color: sectionForm.color,
     };
-
     try {
-      if (editingSectionId) {
-        const normalized = normalizeSection({ ...sectionById.get(String(editingSectionId)), ...payload, id: editingSectionId });
-        setSections((previous) => previous.map((section) => String(section.id) === String(editingSectionId) ? normalized : section));
-        if (supabase && isRemoteId(editingSectionId)) {
-          const { error } = await supabase.from('task_sections').update(payload).eq('id', editingSectionId);
-          if (error) throw error;
-        }
-        setMessage('Раздел обновлён.');
-      } else if (supabase) {
-        const { data, error } = await supabase.from('task_sections').insert(payload).select().single();
+      if (supabase) {
+        const query = editingSectionId
+          ? supabase.from('task_sections').update(payload).eq('id', editingSectionId).select().single()
+          : supabase.from('task_sections').insert(payload).select().single();
+        const { data, error } = await query;
         if (error) throw error;
-        setSections((previous) => [...previous, normalizeSection(data, previous.length)]);
-        setMessage('Раздел создан в общей базе.');
+        const saved = normalizeSection(data, sections.length);
+        if (editingSectionId) setSections((previous) => previous.map((section) => String(section.id) === String(editingSectionId) ? saved : section));
+        else setSections((previous) => [...previous, saved]);
+      } else if (editingSectionId) {
+        setSections((previous) => previous.map((section) => String(section.id) === String(editingSectionId) ? normalizeSection({ ...section, ...payload }) : section));
       } else {
         setSections((previous) => [...previous, normalizeSection({ ...payload, id: `local-section-${Date.now()}` }, previous.length)]);
-        setMessage('Раздел создан локально.');
       }
+      setMessage(editingSectionId ? 'Раздел обновлён.' : 'Раздел создан.');
       setIsSectionModalOpen(false);
     } catch (error) {
-      if (!editingSectionId) {
-        setSections((previous) => [...previous, normalizeSection({ ...payload, id: `local-section-${Date.now()}` }, previous.length)]);
-      }
-      setMessage(`Раздел сохранён локально. Выполните supabase_hierarchy_sections_update.sql. ${error.message}`);
-      setIsSectionModalOpen(false);
+      setMessage(`Не удалось сохранить раздел. ${error.message}`);
     }
   }
 
   async function deleteSection(section) {
+    if (!requireSectionAdmin()) return;
     const linkedProjects = projects.filter((project) => String(project.section_id) === String(section.id));
     const linkedTasks = tasks.filter((task) => !task.project_id && String(task.section_id) === String(section.id));
     if (linkedProjects.length || linkedTasks.length) {
@@ -1444,56 +1743,192 @@ export default function App() {
   }
 
   async function deleteEmployee(employee) {
-    const linkedTasks = tasks.filter((task) => task.owner === employee.name).length;
-    const linkedProjects = projects.filter((project) => project.owner === employee.name).length;
-    const linkedStages = stages.filter((stage) => stage.owner === employee.name).length;
-    const linkedSections = sections.filter((section) => section.owner === employee.name).length;
-    if (linkedTasks || linkedProjects || linkedStages || linkedSections) {
-      setMessage(`Нельзя удалить ${employee.name}: сотрудник указан в ${linkedProjects} проектах, ${linkedStages} этапах, ${linkedSections} разделах и ${linkedTasks} задачах. Сначала переназначьте ответственность.`);
-      return;
-    }
-    const previous = employees;
-    setEmployees((items) => items.filter((item) => String(item.id) !== String(employee.id)));
+    if (!isAdmin) return setMessage('Отключать сотрудников может только Аня.');
     try {
-      if (supabase && isRemoteId(employee.id)) {
-        const { error } = await supabase.from('employees').delete().eq('id', employee.id);
-        if (error) throw error;
-      }
-      setMessage(`Сотрудник ${employee.name} удалён.`);
+      const { data, error } = await supabase.functions.invoke('admin-manage-user', {
+        body: { action: 'deactivate', employee_id: employee.id },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      await loadData();
+      setMessage(`Доступ сотрудника ${employee.name} отключён. Его задачи и история сохранены.`);
     } catch (error) {
-      setEmployees(previous);
-      setMessage(`Не удалось удалить сотрудника: ${error.message}`);
+      setMessage(`Не удалось отключить сотрудника: ${error.message}`);
     }
   }
 
-  async function addEmployee() {
-    const name = normalizeOwner(employeeForm.name);
-    if (!name) {
-      setMessage('Укажите имя сотрудника.');
+  function openEmployeeModal(employee = null) {
+    if (!isAdmin) {
+      setMessage('Добавлять и редактировать сотрудников может только Аня.');
       return;
     }
-    if (employeeNames.some((item) => item.toLowerCase() === name.toLowerCase())) {
-      setMessage('Сотрудник с таким именем уже существует.');
-      return;
+    if (employee) {
+      setEditingEmployeeId(employee.id);
+      setEmployeeForm({ name: employee.name, role: employee.role, login: employee.login || employee.name, password: '', task_capacity: employee.task_capacity || 10, color: employee.color, is_active: employee.is_active !== false });
+    } else {
+      setEditingEmployeeId(null);
+      setEmployeeForm({ name: '', role: '', login: '', password: '', task_capacity: 10, color: EMPLOYEE_COLORS[employees.length % EMPLOYEE_COLORS.length], is_active: true });
     }
-    const payload = { name, role: employeeForm.role.trim() || 'Сотрудник', color: employeeForm.color };
+    setIsEmployeeModalOpen(true);
+  }
+
+  async function saveEmployee() {
+    if (!isAdmin) return setMessage('Добавлять и редактировать сотрудников может только Аня.');
+    const name = String(employeeForm.name || '').trim();
+    const login = String(employeeForm.login || name).trim();
+    const password = String(employeeForm.password || '');
+    if (!name) return setMessage('Укажите имя сотрудника.');
+    if (!login) return setMessage('Укажите логин сотрудника.');
+    if (!editingEmployeeId && password.length < 8) return setMessage('Для нового сотрудника задайте пароль минимум из 8 символов.');
+    const duplicate = employees.some((item) => String(item.id) !== String(editingEmployeeId) && item.name.toLowerCase() === name.toLowerCase());
+    if (duplicate) return setMessage('Сотрудник с таким именем уже существует.');
+
+    if (!supabase) return setMessage('Регистрация сотрудников доступна только при подключённом Supabase.');
+    try {
+      const action = editingEmployeeId ? 'update' : 'create';
+      const { data, error } = await supabase.functions.invoke('admin-manage-user', {
+        body: {
+          action,
+          employee_id: editingEmployeeId || null,
+          name,
+          role: employeeForm.role.trim() || 'Сотрудник',
+          login,
+          password: password || undefined,
+          task_capacity: Math.max(1, Number(employeeForm.task_capacity || 10)),
+          color: employeeForm.color,
+          is_active: employeeForm.is_active !== false,
+        },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      await loadData();
+      setIsEmployeeModalOpen(false);
+      setEditingEmployeeId(null);
+      setMessage(editingEmployeeId ? `Сотрудник ${name} обновлён.` : `Сотрудник ${name} зарегистрирован. Логин: ${login}.`);
+    } catch (error) {
+      setMessage(`Не удалось сохранить сотрудника. ${error.message}`);
+    }
+  }
+
+  async function setProjectArchived(project, archived) {
+    const previous = projects;
+    const updated = { ...project, archived, archived_at: archived ? new Date().toISOString() : '' };
+    setProjects((items) => items.map((item) => String(item.id) === String(project.id) ? updated : item));
+    try {
+      if (supabase && isRemoteId(project.id)) {
+        const { error } = await supabase.from('projects').update({ archived, archived_at: archived ? updated.archived_at : null }).eq('id', project.id);
+        if (error) throw error;
+      }
+      setMessage(archived ? `Проект «${project.name}» перемещён в архив.` : `Проект «${project.name}» восстановлен из архива.`);
+    } catch (error) { setProjects(previous); setMessage(`Не удалось изменить архив: ${error.message}`); }
+  }
+
+  async function archiveFinishedProjects() {
+    const candidates = activeProjects.filter((project) => {
+      const projectTasks = tasks.filter((task) => String(task.project_id) === String(project.id));
+      return project.status === 'Готово' || (projectTasks.length > 0 && projectTasks.every(isTaskCompleted));
+    });
+    if (!candidates.length) return setMessage('Нет завершённых проектов для архивации.');
+    const ids = candidates.map((project) => String(project.id));
+    const archivedAt = new Date().toISOString();
+    const previous = projects;
+    setProjects((items) => items.map((project) => ids.includes(String(project.id)) ? { ...project, archived: true, archived_at: archivedAt } : project));
     try {
       if (supabase) {
-        const { data, error } = await supabase.from('employees').insert(payload).select().single();
-        if (error) throw error;
-        setEmployees((previous) => [...previous, normalizeEmployee(data, previous.length)]);
-        setMessage('Сотрудник добавлен в общую базу.');
-      } else {
-        setEmployees((previous) => [...previous, normalizeEmployee({ ...payload, id: `local-employee-${Date.now()}` }, previous.length)]);
-        setMessage('Сотрудник добавлен локально.');
+        const remoteIds = candidates.map((project) => project.id).filter(isRemoteId);
+        if (remoteIds.length) { const { error } = await supabase.from('projects').update({ archived: true, archived_at: archivedAt }).in('id', remoteIds); if (error) throw error; }
       }
-      setEmployeeForm({ name: '', role: '', color: EMPLOYEE_COLORS[(employees.length + 1) % EMPLOYEE_COLORS.length] });
-      setIsEmployeeModalOpen(false);
-    } catch (error) {
-      setEmployees((previous) => [...previous, normalizeEmployee({ ...payload, id: `local-employee-${Date.now()}` }, previous.length)]);
-      setMessage(`Сотрудник добавлен локально. ${error.message}`);
-      setIsEmployeeModalOpen(false);
-    }
+      setMessage(`В архив перемещено проектов: ${candidates.length}.`);
+    } catch (error) { setProjects(previous); setMessage(`Архивация отменена: ${error.message}`); }
+  }
+
+  async function createTemplateFromProject(project) {
+    const projectStages = stages.filter((stage) => String(stage.project_id) === String(project.id)).sort((a, b) => a.sort_order - b.sort_order);
+    const projectTasks = tasks.filter((task) => String(task.project_id) === String(project.id));
+    const dates = [project.deadline, ...projectStages.map((stage) => stage.deadline), ...projectTasks.map((task) => task.deadline)].filter(Boolean).sort();
+    const anchorDate = dates[0] || todayIso();
+    const stageKeyById = new Map(projectStages.map((stage, index) => [String(stage.id), `stage-${index + 1}`]));
+    const payload = {
+      name: `${project.name} — шаблон`, description: project.description, owner: project.owner, customer: project.customer || '',
+      section_id: isRemoteId(project.section_id) ? project.section_id : null, color: project.color,
+      template_data: {
+        project_deadline_offset: dateDiffDays(anchorDate, project.deadline) ?? 14,
+        stages: projectStages.map((stage, index) => ({ key: `stage-${index + 1}`, title: stage.title, description: stage.description, owner: stage.owner, offset: dateDiffDays(anchorDate, stage.deadline) })),
+        tasks: projectTasks.map((task) => ({ stage_key: stageKeyById.get(String(task.stage_id)) || '', title: task.title, owner: task.owner, status: isTaskCompleted(task) ? 'Ожидает' : task.status, priority: task.priority, offset: dateDiffDays(anchorDate, task.deadline), result: task.result, comment: task.comment, resource_url: task.resource_url })),
+      },
+    };
+    try {
+      if (supabase) {
+        const { data, error } = await supabase.from('project_templates').insert(payload).select().single();
+        if (error) throw error;
+        setTemplates((items) => [normalizeTemplate(data), ...items]);
+      } else setTemplates((items) => [normalizeTemplate({ ...payload, id: `local-template-${Date.now()}` }), ...items]);
+      setMessage(`Шаблон проекта «${project.name}» создан.`); setActiveTab('templates');
+    } catch (error) { setMessage(`Не удалось создать шаблон. Выполните миграцию v5. ${error.message}`); }
+  }
+
+  function openTemplateLaunch(template) {
+    setSelectedTemplate(template);
+    setTemplateLaunchForm({ name: template.name.replace(/ — шаблон$/, ''), section_id: template.section_id || '', owner: template.owner || employeeNames[0] || 'Саша', customer: template.customer || '', start_date: todayIso() });
+    setIsTemplateLaunchOpen(true);
+  }
+
+  async function launchTemplate() {
+    if (!selectedTemplate || !templateLaunchForm.name.trim()) return;
+    const data = selectedTemplate.template_data || { stages: [], tasks: [] };
+    try {
+      let project;
+      const projectPayload = { name: templateLaunchForm.name.trim(), description: selectedTemplate.description, owner: templateLaunchForm.owner, customer: templateLaunchForm.customer.trim(), section_id: templateLaunchForm.section_id || null, deadline: addDays(templateLaunchForm.start_date, Number(data.project_deadline_offset || 14)), status: 'В работе', color: selectedTemplate.color, archived: false };
+      if (supabase) {
+        const dbPayload = { ...projectPayload, section_id: isRemoteId(projectPayload.section_id) ? projectPayload.section_id : null };
+        const { data: projectData, error } = await supabase.from('projects').insert(dbPayload).select().single();
+        if (error) throw error;
+        project = normalizeProject(projectData);
+        const stageMap = new Map();
+        for (let index = 0; index < data.stages.length; index += 1) {
+          const stageTemplate = data.stages[index];
+          const { data: stageData, error: stageError } = await supabase.from('project_stages').insert({ project_id: project.id, title: stageTemplate.title, description: stageTemplate.description || '', owner: employeeNames.includes(stageTemplate.owner) ? stageTemplate.owner : project.owner, deadline: stageTemplate.offset == null ? null : addDays(templateLaunchForm.start_date, Number(stageTemplate.offset)), sort_order: index + 1 }).select().single();
+          if (stageError) throw stageError;
+          const stage = normalizeStage(stageData, index); stageMap.set(stageTemplate.key, stage); setStages((items) => [...items, stage]);
+        }
+        const taskPayloads = data.tasks.map((taskTemplate) => ({ title: taskTemplate.title, owner: employeeNames.includes(taskTemplate.owner) ? taskTemplate.owner : project.owner, deadline: addDays(templateLaunchForm.start_date, Number(taskTemplate.offset ?? 0)), period: 'day', status: taskTemplate.status || 'Ожидает', priority: taskTemplate.priority || 'Средний', hours: 1, start_time: null, end_time: null, block: '', result: taskTemplate.result || '', comment: taskTemplate.comment || '', resource_url: taskTemplate.resource_url || '', project_id: project.id, stage_id: stageMap.get(taskTemplate.stage_key)?.id || null, section_id: null }));
+        if (taskPayloads.length) { const { data: taskData, error: taskError } = await supabase.from('tasks').insert(taskPayloads).select(); if (taskError) throw taskError; setTasks((items) => [...(taskData || []).map(normalizeTask), ...items]); }
+      } else {
+        project = normalizeProject({ ...projectPayload, id: `local-project-${Date.now()}` });
+        const stageMap = new Map(); const createdStages = data.stages.map((stageTemplate, index) => { const stage = normalizeStage({ id: `local-stage-${Date.now()}-${index}`, project_id: project.id, title: stageTemplate.title, description: stageTemplate.description || '', owner: employeeNames.includes(stageTemplate.owner) ? stageTemplate.owner : project.owner, deadline: stageTemplate.offset == null ? '' : addDays(templateLaunchForm.start_date, Number(stageTemplate.offset)), sort_order: index + 1 }); stageMap.set(stageTemplate.key, stage); return stage; });
+        const createdTasks = data.tasks.map((taskTemplate, index) => normalizeTask({ id: `local-task-${Date.now()}-${index}`, title: taskTemplate.title, owner: employeeNames.includes(taskTemplate.owner) ? taskTemplate.owner : project.owner, deadline: addDays(templateLaunchForm.start_date, Number(taskTemplate.offset ?? 0)), status: taskTemplate.status || 'Ожидает', priority: taskTemplate.priority || 'Средний', project_id: project.id, stage_id: stageMap.get(taskTemplate.stage_key)?.id || null, result: taskTemplate.result || '', comment: taskTemplate.comment || '', resource_url: taskTemplate.resource_url || '' }));
+        setStages((items) => [...items, ...createdStages]); setTasks((items) => [...createdTasks, ...items]);
+      }
+      setProjects((items) => [project, ...items]); setExpandedProjects((items) => ({ ...items, [project.id]: true })); setIsTemplateLaunchOpen(false); setActiveTab('sections'); setMessage(`Проект «${project.name}» создан по шаблону.`);
+    } catch (error) { setMessage(`Не удалось создать проект по шаблону. ${error.message}`); }
+  }
+
+  async function deleteTemplate(template) {
+    if (template.is_builtin) return;
+    try { if (supabase && isRemoteId(template.id)) { const { error } = await supabase.from('project_templates').delete().eq('id', template.id); if (error) throw error; } setTemplates((items) => items.filter((item) => String(item.id) !== String(template.id))); setMessage('Шаблон удалён.'); }
+    catch (error) { setMessage(`Не удалось удалить шаблон: ${error.message}`); }
+  }
+
+  async function applyBulkChanges() {
+    if (!selectedTaskIds.length) return setMessage('Выберите задачи.');
+    const payload = Object.fromEntries(Object.entries(bulkForm).filter(([, value]) => value));
+    if (!Object.keys(payload).length) return setMessage('Выберите хотя бы одно массовое изменение.');
+    const previous = tasks;
+    setTasks((items) => items.map((task) => selectedTaskIds.includes(String(task.id)) ? { ...task, ...payload } : task));
+    try {
+      if (supabase) {
+        const remoteIds = selectedTaskIds.filter(isRemoteId);
+        if (remoteIds.length) { const { error } = await supabase.from('tasks').update(payload).in('id', remoteIds); if (error) throw error; }
+      }
+      if (payload.deadline) {
+        const movedTasks = previous.filter((task) => selectedTaskIds.includes(String(task.id)) && task.deadline !== payload.deadline);
+        for (const oldTask of movedTasks) {
+          await createRescheduleRecord(oldTask, { ...oldTask, ...payload }, { changed_by: selectedEmployee !== 'Все' ? selectedEmployee : oldTask.owner, reason: 'Массовое изменение дедлайна' });
+        }
+      }
+      const changedCount = selectedTaskIds.length;
+      setSelectedTaskIds([]); setBulkForm({ owner: '', status: '', priority: '', deadline: '' }); setMessage(`Обновлено задач: ${changedCount}.`);
+    } catch (error) { setTasks(previous); setMessage(`Массовое изменение отменено: ${error.message}`); }
   }
 
   async function importProjectTable(event) {
@@ -1562,6 +1997,7 @@ export default function App() {
       .filter((task) => matchesLocalTaskStatus(task, localStatusMode));
     const projectProgress = calculateProgress(allProjectTasks);
     const projectStatus = deriveStatus(allProjectTasks, project.status);
+    const health = projectHealth(project, allProjectTasks);
     const expanded = expandedProjects[project.id] !== false;
     const tasksWithoutStage = visibleProjectTasks.filter((task) => !task.stage_id);
 
@@ -1571,9 +2007,9 @@ export default function App() {
         <div className="p-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
             <button type="button" onClick={() => setExpandedProjects((previous) => ({ ...previous, [project.id]: !expanded }))} className="flex min-w-0 flex-1 items-start gap-3 text-left">
-              <span className="rounded-xl p-2 text-white" style={{ backgroundColor: project.color }}><FolderKanban className="h-4 w-4" /></span>
+              <span className="rounded-xl p-2" style={{ backgroundColor: project.color, color: contrastTextColor(project.color) }}><FolderKanban className="h-4 w-4" /></span>
               <span className="min-w-0 flex-1">
-                <span className="flex flex-wrap items-center gap-2"><b className="text-base">{project.name}</b><span className={`rounded-full px-2.5 py-1 text-xs ${statusStyle(projectStatus)}`}>{projectStatus}</span></span>
+                <span className="flex flex-wrap items-center gap-2"><b className="text-base">{project.name}</b><span className={`rounded-full px-2.5 py-1 text-xs ${statusStyle(projectStatus)}`}>{projectStatus}</span><HealthBadge health={health} /></span>
                 <span className="mt-1 block text-sm text-slate-500">{project.description || 'Описание проекта не заполнено'}</span>
                 <span className="mt-2 block max-w-xl"><ProgressBar value={projectProgress} color={project.color} /></span>
               </span>
@@ -1586,6 +2022,8 @@ export default function App() {
               <select value={project.section_id || ''} onChange={(event) => moveProjectToSection(project, event.target.value)} className="rounded-lg border border-cyan-200 bg-cyan-50 px-2.5 py-1.5 font-medium text-cyan-800"><option value="">Без раздела</option>{sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select>
               <button type="button" onClick={() => openStageModal(project.id)} className="inline-flex items-center rounded-lg bg-sky-50 px-2.5 py-1.5 font-medium text-sky-700"><Layers3 className="mr-1 h-3.5 w-3.5" />Этап</button>
               <button type="button" onClick={() => openTaskModal(null, project.id)} className="inline-flex items-center rounded-lg bg-violet-600 px-2.5 py-1.5 font-medium text-white"><Plus className="mr-1 h-3.5 w-3.5" />Задача</button>
+              <button type="button" onClick={() => createTemplateFromProject(project)} className="rounded-lg border border-indigo-100 bg-indigo-50 p-1.5 text-indigo-700" title="Сохранить как шаблон"><ClipboardCopy className="h-3.5 w-3.5" /></button>
+              <button type="button" onClick={() => setProjectArchived(project, true)} className="rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-slate-700" title="В архив"><Archive className="h-3.5 w-3.5" /></button>
               <button type="button" onClick={() => openProjectModal(project)} className="rounded-lg border p-1.5 text-slate-600"><Edit3 className="h-3.5 w-3.5" /></button>
             </div>
           </div>
@@ -1642,6 +2080,22 @@ export default function App() {
     );
   }
 
+  if (authLoading) {
+    return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white"><div className="text-center"><RefreshCw className="mx-auto h-8 w-8 animate-spin text-violet-300" /><p className="mt-3 text-sm text-slate-300">Проверяем учётную запись…</p></div></div>;
+  }
+
+  if (supabase && !currentUser) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,_rgba(124,58,237,0.35),_transparent_35%),radial-gradient(circle_at_bottom_right,_rgba(14,165,233,0.25),_transparent_35%),#0f172a] p-4">
+        <form onSubmit={signIn} className="w-full max-w-md rounded-[2rem] bg-white p-7 shadow-2xl">
+          <div className="mb-6 flex items-center gap-3"><span className="rounded-2xl bg-violet-100 p-3 text-violet-700"><ShieldCheck className="h-6 w-6" /></span><div><h1 className="text-2xl font-bold">MAVIS Task Tracker</h1><p className="text-sm text-slate-500">Вход сотрудника</p></div></div>
+          <div className="space-y-4"><Field label="Логин"><div className="relative"><UserRound className="absolute left-3 top-3 h-4 w-4 text-slate-400" /><input autoFocus value={loginForm.login} onChange={(event) => setLoginForm({ ...loginForm, login: event.target.value })} placeholder="Например: Аня" className="w-full rounded-2xl border px-3 py-3 pl-10" /></div></Field><Field label="Пароль"><div className="relative"><KeyRound className="absolute left-3 top-3 h-4 w-4 text-slate-400" /><input type="password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} className="w-full rounded-2xl border px-3 py-3 pl-10" /></div></Field>{loginError && <div className="rounded-xl bg-rose-50 p-3 text-sm text-rose-700">{loginError}</div>}<button type="submit" className="inline-flex w-full items-center justify-center rounded-2xl bg-violet-600 px-4 py-3 font-medium text-white hover:bg-violet-500"><LogIn className="mr-2 h-5 w-5" />Войти</button></div>
+          <p className="mt-5 text-center text-xs leading-5 text-slate-400">Учётную запись создаёт Аня во вкладке «Команда». После входа приложение понимает сотрудника по его профилю в Supabase.</p>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(124,58,237,0.18),_transparent_32%),radial-gradient(circle_at_top_right,_rgba(14,165,233,0.16),_transparent_28%),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_45%,_#f8fafc_100%)] p-4 text-slate-900 md:p-8">
       <div className="mx-auto max-w-[1500px] space-y-6">
@@ -1649,40 +2103,39 @@ export default function App() {
           <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
             <div className="max-w-3xl">
               <div className="mb-3 inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-violet-100 ring-1 ring-white/10">
-                <Sparkles className="mr-2 h-3.5 w-3.5" /> MAVIS GROUP · центр проектов
+                <Sparkles className="mr-2 h-3.5 w-3.5" /> MAVIS GROUP · центр проектов · версия 6.0
               </div>
               <h1 className="text-3xl font-bold tracking-tight md:text-4xl">Разделы → проекты → этапы → задачи</h1>
               <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300 md:text-base">Собирайте проекты по направлениям, управляйте стадиями и показывайте только нужные статусы задач без потери общей истории.</p>
               <div className="mt-5 flex flex-wrap gap-2 text-xs text-slate-200">
-                <span className="rounded-full bg-cyan-500/20 px-3 py-1.5 ring-1 ring-cyan-400/20">{sections.length} разделов</span><span className="rounded-full bg-violet-500/20 px-3 py-1.5 ring-1 ring-violet-400/20">{projects.length} проектов</span>
+                <span className="rounded-full bg-cyan-500/20 px-3 py-1.5 ring-1 ring-cyan-400/20">{sections.length} разделов</span><span className="rounded-full bg-violet-500/20 px-3 py-1.5 ring-1 ring-violet-400/20">{activeProjects.length} активных проектов</span>
                 <span className="rounded-full bg-sky-500/20 px-3 py-1.5 ring-1 ring-sky-400/20">{tasks.length} задач</span>
                 <span className="rounded-full bg-rose-500/20 px-3 py-1.5 ring-1 ring-rose-400/20">{currentWeekCarryovers.length} переносов с недели</span>
               </div>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[900px] xl:grid-cols-6">
+            <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[1040px] xl:grid-cols-7">
               <button type="button" onClick={downloadBackup} className="inline-flex items-center justify-center rounded-2xl bg-white/10 px-4 py-3 text-sm font-medium ring-1 ring-white/15 hover:bg-white/15" title="Скачать резервную копию всех текущих данных">
                 <Download className="mr-2 h-5 w-5" /> Резервная копия
               </button>
               <button type="button" onClick={loadData} disabled={loading} className="inline-flex items-center justify-center rounded-2xl bg-white/10 px-4 py-3 text-sm font-medium ring-1 ring-white/15 hover:bg-white/15">
                 <RefreshCw className={`mr-2 h-5 w-5 ${loading ? 'animate-spin' : ''}`} /> Обновить
               </button>
-              <button type="button" onClick={() => setIsEmployeeModalOpen(true)} className="inline-flex items-center justify-center rounded-2xl bg-sky-500 px-4 py-3 text-sm font-medium hover:bg-sky-400">
-                <UserPlus className="mr-2 h-5 w-5" /> Сотрудник
-              </button>
+              {isAdmin ? <button type="button" onClick={() => openEmployeeModal()} className="inline-flex items-center justify-center rounded-2xl bg-sky-500 px-4 py-3 text-sm font-medium hover:bg-sky-400"><UserPlus className="mr-2 h-5 w-5" /> Сотрудник</button> : <div className="inline-flex items-center justify-center rounded-2xl bg-white/10 px-4 py-3 text-sm text-slate-300 ring-1 ring-white/10"><UserRound className="mr-2 h-5 w-5" />{currentUser?.employee_name}</div>}
               <button type="button" onClick={() => openProjectModal()} className="inline-flex items-center justify-center rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-medium hover:bg-emerald-400">
                 <FolderPlus className="mr-2 h-5 w-5" /> Проект
               </button>
-              <button type="button" onClick={() => openSectionModal()} className="inline-flex items-center justify-center rounded-2xl bg-cyan-500 px-4 py-3 text-sm font-medium hover:bg-cyan-400">
-                <Layers3 className="mr-2 h-5 w-5" /> Раздел
-              </button>
+              {isAdmin ? <button type="button" onClick={() => openSectionModal()} className="inline-flex items-center justify-center rounded-2xl bg-cyan-500 px-4 py-3 text-sm font-medium hover:bg-cyan-400"><ShieldCheck className="mr-2 h-5 w-5" /> Новый раздел</button> : <div className="inline-flex items-center justify-center rounded-2xl bg-white/10 px-4 py-3 text-sm text-slate-300 ring-1 ring-white/10"><ShieldCheck className="mr-2 h-5 w-5" />Разделы: только Аня</div>}
               <button type="button" onClick={() => openTaskModal()} className="inline-flex items-center justify-center rounded-2xl bg-violet-500 px-4 py-3 text-sm font-medium hover:bg-violet-400">
                 <Plus className="mr-2 h-5 w-5" /> Задача
               </button>
+              <button type="button" onClick={signOut} className="inline-flex items-center justify-center rounded-2xl bg-rose-500/90 px-4 py-3 text-sm font-medium hover:bg-rose-400"><LogOut className="mr-2 h-5 w-5" /> Выйти</button>
             </div>
           </div>
         </motion.header>
 
         {message && <div className="flex items-start rounded-2xl border border-indigo-100 bg-indigo-50/95 p-4 text-sm text-indigo-900 shadow-sm"><Database className="mr-2 mt-0.5 h-4 w-4 shrink-0" />{message}</div>}
+
+        {overloadedEmployees.length > 0 && <button type="button" onClick={() => setActiveTab('team')} className="flex w-full items-center justify-between rounded-2xl border border-rose-300 bg-gradient-to-r from-rose-50 to-amber-50 p-4 text-left shadow-sm"><span className="flex items-start gap-3"><span className="rounded-xl bg-rose-100 p-2 text-rose-600"><Gauge className="h-5 w-5" /></span><span><b>Перегруз команды: {overloadedEmployees.length} сотрудник(а)</b><span className="mt-1 block text-sm text-slate-600">{overloadedEmployees.map((item) => `${item.name}: ${item.tasks}/${item.capacity}`).join(' · ')}</span></span></span><ArrowRight className="h-5 w-5 text-rose-500" /></button>}
 
         {currentWeekCarryovers.length > 0 && activeTab !== 'transfers' && (
           <button type="button" onClick={() => setActiveTab('transfers')} className="flex w-full items-center justify-between rounded-2xl border border-rose-200 bg-gradient-to-r from-rose-50 to-orange-50 p-4 text-left shadow-sm hover:border-rose-300">
@@ -1699,10 +2152,12 @@ export default function App() {
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div className="flex flex-wrap gap-2 rounded-2xl bg-slate-100 p-1">
                 {[
-                  ['sections', 'Структура', Layers3],
-                  ['projects', 'Все проекты', FolderKanban],
+                  ['sections', 'Разделы', Layers3],
+                  ['projects', 'Проекты', FolderKanban],
                   ['calendar', 'Календарь', CalendarDays],
-                  ['tasks', 'Все задачи', ListChecks],
+                  ['tasks', 'Задачи', ListChecks],
+                  ['templates', 'Шаблоны', LayoutTemplate],
+                  ['archive', 'Архив', Archive],
                   ['transfers', 'Переносы', History],
                   ['team', 'Команда', Users],
                 ].map(([key, label, Icon]) => (
@@ -1724,7 +2179,7 @@ export default function App() {
               </div>
             </div>
 
-            {['projects', 'sections', 'tasks', 'calendar'].includes(activeTab) && (
+            {['projects', 'sections', 'tasks', 'calendar', 'archive'].includes(activeTab) && (
               <div className="mt-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex flex-wrap gap-2">
                   {[
@@ -1737,11 +2192,15 @@ export default function App() {
                   ))}
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"><option value="all">Все разделы</option>{sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select>
+                  <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"><option value="all">Все приоритеты</option>{PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select>
+                  <select value={customerFilter} onChange={(event) => setCustomerFilter(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"><option value="all">Все заказчики</option>{customers.map((customer) => <option key={customer}>{customer}</option>)}</select>
                   <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
                     <option value="all">Все статусы</option>
                     <option value="active">Только активные</option>
                     <option value="completed">Только готовые</option>
                     {TASK_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+                    {PROJECT_STATUSES.filter((status) => !TASK_STATUSES.includes(status)).map((status) => <option key={`project-${status}`} value={status}>{status}</option>)}
                   </select>
                   <select value={dateFilterMode} onChange={(event) => setDateFilterMode(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
                     <option value="all">Все даты</option>
@@ -1780,6 +2239,7 @@ export default function App() {
               <div><h2 className="text-2xl font-bold">Проекты</h2><p className="text-sm text-slate-500">Плоский список всех проектов. Раздел можно изменить прямо в карточке проекта.</p></div>
               <div className="flex flex-wrap gap-2">
                 <label className="inline-flex cursor-pointer items-center rounded-2xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm font-medium text-sky-700 hover:bg-sky-100"><FileUp className="mr-2 h-4 w-4" />Импорт таблицы<input type="file" accept=".xlsx,.xls" className="hidden" onChange={importProjectTable} /></label>
+                <button type="button" onClick={archiveFinishedProjects} className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"><Archive className="mr-2 h-4 w-4" />Архивировать готовые</button>
                 <button type="button" onClick={() => openProjectModal()} className="inline-flex items-center rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-500"><FolderPlus className="mr-2 h-4 w-4" />Новый проект</button>
               </div>
             </div>
@@ -1790,6 +2250,7 @@ export default function App() {
               const allProjectTasks = tasks.filter((task) => String(task.project_id) === String(project.id));
               const progress = calculateProgress(allProjectTasks);
               const derivedStatus = deriveStatus(allProjectTasks, project.status);
+              const health = projectHealth(project, allProjectTasks);
               const expanded = expandedProjects[project.id] !== false;
               return (
                 <Card key={project.id} className="overflow-hidden">
@@ -1797,9 +2258,9 @@ export default function App() {
                   <div className="p-5 md:p-6">
                     <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                       <button type="button" onClick={() => setExpandedProjects((previous) => ({ ...previous, [project.id]: !expanded }))} className="flex flex-1 items-start gap-3 text-left">
-                        <span className="mt-1 rounded-2xl p-2.5 text-white" style={{ backgroundColor: project.color }}><FolderKanban className="h-5 w-5" /></span>
+                        <span className="mt-1 rounded-2xl p-2.5" style={{ backgroundColor: project.color, color: contrastTextColor(project.color) }}><FolderKanban className="h-5 w-5" /></span>
                         <span className="min-w-0 flex-1">
-                          <span className="flex flex-wrap items-center gap-2"><span className="text-xl font-bold">{project.name}</span><span className={`rounded-full px-3 py-1 text-xs ${statusStyle(derivedStatus)}`}>{derivedStatus}</span></span>
+                          <span className="flex flex-wrap items-center gap-2"><span className="text-xl font-bold">{project.name}</span><span className={`rounded-full px-3 py-1 text-xs ${statusStyle(derivedStatus)}`}>{derivedStatus}</span><HealthBadge health={health} /></span>
                           <span className="mt-1 block text-sm text-slate-500">{project.description || 'Описание проекта не заполнено'}</span>
                           <span className="mt-3 block max-w-xl"><ProgressBar value={progress} color={project.color} /></span>
                         </span>
@@ -1811,7 +2272,7 @@ export default function App() {
                         <button type="button" onClick={() => openStageModal(project.id)} className="inline-flex items-center rounded-xl bg-sky-50 px-3 py-2 font-medium text-sky-700 hover:bg-sky-100"><Layers3 className="mr-1.5 h-4 w-4" />Этап</button>
                         <button type="button" onClick={() => openTaskModal(null, project.id)} className="inline-flex items-center rounded-xl bg-violet-50 px-3 py-2 font-medium text-violet-700 hover:bg-violet-100"><Plus className="mr-1.5 h-4 w-4" />Задача</button>
                         <button type="button" onClick={() => openProjectModal(project)} className="rounded-xl border px-3 py-2 text-slate-600 hover:bg-slate-50"><Edit3 className="h-4 w-4" /></button>
-                        <button type="button" onClick={() => deleteProject(project)} className="rounded-xl border border-rose-100 px-3 py-2 text-rose-600 hover:bg-rose-50"><Trash2 className="h-4 w-4" /></button>
+                        <button type="button" onClick={() => createTemplateFromProject(project)} className="rounded-xl border border-indigo-100 px-3 py-2 text-indigo-700 hover:bg-indigo-50" title="Создать шаблон"><ClipboardCopy className="h-4 w-4" /></button><button type="button" onClick={() => setProjectArchived(project, true)} className="rounded-xl border border-slate-200 px-3 py-2 text-slate-700 hover:bg-slate-50" title="В архив"><Archive className="h-4 w-4" /></button><button type="button" onClick={() => deleteProject(project)} className="rounded-xl border border-rose-100 px-3 py-2 text-rose-600 hover:bg-rose-50"><Trash2 className="h-4 w-4" /></button>
                       </div>
                     </div>
 
@@ -1887,12 +2348,16 @@ export default function App() {
           <div className="space-y-5">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div><h2 className="text-2xl font-bold">Структура работы</h2><p className="text-sm text-slate-500">Иерархия: раздел → проекты → этапы → задачи. В каждом разделе можно отдельно выбрать, какие статусы задач показывать.</p></div>
-              <div className="flex flex-wrap gap-2"><button type="button" onClick={() => openSectionModal()} className="inline-flex items-center justify-center rounded-2xl bg-cyan-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-cyan-500"><Layers3 className="mr-2 h-4 w-4" />Новый раздел</button><button type="button" onClick={() => openProjectModal()} className="inline-flex items-center justify-center rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-500"><FolderPlus className="mr-2 h-4 w-4" />Новый проект</button></div>
+              <div className="flex flex-wrap gap-2">
+                {isAdmin ? <span className="inline-flex items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700"><ShieldCheck className="mr-2 h-4 w-4" />Администратор: Аня</span> : <span className="inline-flex items-center justify-center rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-800"><ShieldCheck className="mr-2 h-4 w-4" />Редактирование доступно только Ане</span>}
+                <button type="button" onClick={() => openSectionModal()} className="inline-flex items-center justify-center rounded-2xl bg-cyan-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-cyan-500"><Layers3 className="mr-2 h-4 w-4" />Новый раздел</button>
+                <button type="button" onClick={() => openProjectModal()} className="inline-flex items-center justify-center rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-500"><FolderPlus className="mr-2 h-4 w-4" />Новый проект</button>
+              </div>
             </div>
 
             {filteredSections.map((section) => {
               const sectionProjects = filteredProjects.filter((project) => String(project.section_id) === String(section.id));
-              const allSectionProjects = projects.filter((project) => String(project.section_id) === String(section.id));
+              const allSectionProjects = activeProjects.filter((project) => String(project.section_id) === String(section.id));
               const projectIds = new Set(allSectionProjects.map((project) => String(project.id)));
               const allSectionTasks = tasks.filter((task) => projectIds.has(String(task.project_id)) || (!task.project_id && String(task.section_id) === String(section.id)));
               const directSectionTasks = filteredTasks.filter((task) => !task.project_id && String(task.section_id) === String(section.id));
@@ -1915,8 +2380,7 @@ export default function App() {
                         <span className="rounded-xl bg-slate-100 px-3 py-2">{allSectionTasks.filter((task) => !isTaskCompleted(task)).length} активных · {allSectionTasks.length} всего</span>
                         <select value={localStatusMode} onChange={(event) => setSectionStatusFilters((previous) => ({ ...previous, [section.id]: event.target.value }))} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-800"><option value="active">Активные задачи</option><option value="all">Все задачи</option><option value="completed">Только готовые</option>{TASK_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
                         <button type="button" onClick={() => openProjectModal(null, section.id)} className="inline-flex items-center rounded-xl bg-emerald-50 px-3 py-2 font-medium text-emerald-700"><FolderPlus className="mr-1.5 h-4 w-4" />Проект</button>
-                        <button type="button" onClick={() => openSectionModal(section)} className="rounded-xl border p-2 text-slate-600"><Edit3 className="h-4 w-4" /></button>
-                        <button type="button" onClick={() => deleteSection(section)} className="rounded-xl border border-rose-100 p-2 text-rose-600"><Trash2 className="h-4 w-4" /></button>
+                        {isAdmin ? <><button type="button" onClick={() => openSectionModal(section)} className="rounded-xl border p-2 text-slate-600" title="Редактировать раздел"><Edit3 className="h-4 w-4" /></button><button type="button" onClick={() => deleteSection(section)} className="rounded-xl border border-rose-100 p-2 text-rose-600" title="Удалить раздел"><Trash2 className="h-4 w-4" /></button></> : <span className="inline-flex items-center rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800"><ShieldCheck className="mr-1.5 h-4 w-4" />Только Аня</span>}
                       </div>
                     </div>
 
@@ -1962,14 +2426,41 @@ export default function App() {
         {activeTab === 'tasks' && (
           <Card>
             <div className="p-5">
-              <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><h2 className="text-xl font-semibold">Все задачи</h2><p className="text-sm text-slate-500">Общий список с проектом, этапом, сроком и последним комментарием.</p></div><button type="button" onClick={() => openTaskModal()} className="inline-flex items-center justify-center rounded-2xl bg-violet-600 px-5 py-3 text-sm font-medium text-white"><Plus className="mr-2 h-4 w-4" />Новая задача</button></div>
+              <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><h2 className="text-xl font-semibold">Все задачи</h2><p className="text-sm text-slate-500">Выделяйте задачи чекбоксами и меняйте ответственного, статус, приоритет или дедлайн одним действием.</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setSelectedTaskIds(selectedTaskIds.length === filteredTasks.length ? [] : filteredTasks.map((task) => String(task.id)))} className="inline-flex items-center rounded-2xl border px-4 py-3 text-sm font-medium"><CheckSquare2 className="mr-2 h-4 w-4" />{selectedTaskIds.length === filteredTasks.length && filteredTasks.length ? 'Снять выбор' : 'Выбрать все'}</button><button type="button" onClick={() => openTaskModal()} className="inline-flex items-center justify-center rounded-2xl bg-violet-600 px-5 py-3 text-sm font-medium text-white"><Plus className="mr-2 h-4 w-4" />Новая задача</button></div></div>
+              <div className="mb-5 rounded-2xl border border-cyan-200 bg-gradient-to-r from-cyan-50 to-violet-50 p-4">
+                <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between"><div><b className="text-slate-800">Фильтр списка задач</b><p className="text-xs text-slate-500">Выбор раздела сразу показывает все его задачи списком и очищает остальные ограничения.</p></div><span className="rounded-full bg-white px-3 py-1.5 text-sm font-bold text-violet-700">Показано: {filteredTasks.length}</span></div>
+                <div className="grid gap-2 md:grid-cols-5">
+                  <select value={sectionFilter} onChange={(event) => showAllTasksForSection(event.target.value)} className="rounded-xl border border-cyan-200 bg-white px-3 py-2.5 text-sm font-medium"><option value="all">Все разделы · {tasks.length}</option>{sections.map((section) => <option key={section.id} value={section.id}>{section.name} · {taskCountBySection.get(String(section.id)) || 0}</option>)}</select>
+                  <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)} className="rounded-xl border bg-white px-3 py-2.5 text-sm"><option value="all">Все приоритеты</option>{PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select>
+                  <select value={customerFilter} onChange={(event) => setCustomerFilter(event.target.value)} className="rounded-xl border bg-white px-3 py-2.5 text-sm"><option value="all">Все заказчики</option>{customers.map((customer) => <option key={customer}>{customer}</option>)}</select>
+                  <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded-xl border bg-white px-3 py-2.5 text-sm"><option value="all">Все статусы</option><option value="active">Только активные</option><option value="completed">Только готовые</option>{TASK_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
+                  <button type="button" onClick={resetAllFilters} className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm font-medium text-rose-700">Сбросить фильтры</button>
+                </div>
+                {sectionFilter !== 'all' && <p className="mt-3 text-sm text-cyan-900">Раздел: <b>{sectionById.get(String(sectionFilter))?.name || '—'}</b>. Ниже показаны задачи проектов этого раздела и отдельные задачи раздела.</p>}
+              </div>
+              {selectedTaskIds.length > 0 && <div className="mb-5 rounded-2xl border border-violet-200 bg-violet-50 p-4"><div className="mb-3 flex items-center justify-between"><b>Выбрано задач: {selectedTaskIds.length}</b><button type="button" onClick={() => setSelectedTaskIds([])} className="text-sm text-violet-700">Снять выделение</button></div><div className="grid gap-2 md:grid-cols-5"><select value={bulkForm.owner} onChange={(event) => setBulkForm({ ...bulkForm, owner: event.target.value })} className="rounded-xl border bg-white px-3 py-2 text-sm"><option value="">Ответственный — без изменения</option>{employeeNames.map((name) => <option key={name}>{name}</option>)}</select><select value={bulkForm.status} onChange={(event) => setBulkForm({ ...bulkForm, status: event.target.value })} className="rounded-xl border bg-white px-3 py-2 text-sm"><option value="">Статус — без изменения</option>{TASK_STATUSES.map((status) => <option key={status}>{status}</option>)}</select><select value={bulkForm.priority} onChange={(event) => setBulkForm({ ...bulkForm, priority: event.target.value })} className="rounded-xl border bg-white px-3 py-2 text-sm"><option value="">Приоритет — без изменения</option>{PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select><input type="date" value={bulkForm.deadline} onChange={(event) => setBulkForm({ ...bulkForm, deadline: event.target.value })} className="rounded-xl border bg-white px-3 py-2 text-sm" /><button type="button" onClick={applyBulkChanges} className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-medium text-white">Применить</button></div></div>}
               <div className="space-y-3">{filteredTasks.map((task) => {
                 const project = projectById.get(String(task.project_id));
                 const stage = stageById.get(String(task.stage_id));
-                return <div key={task.id} className="rounded-2xl border bg-white p-4 hover:border-violet-200 hover:shadow-sm"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="space-y-2"><div className="flex flex-wrap gap-2"><span className={`rounded-full px-3 py-1 text-xs ${statusStyle(task.status)}`}>{task.status}</span><span className={`rounded-full px-3 py-1 text-xs ${priorityStyle(task.priority)}`}>{task.priority}</span>{project && <span className="rounded-full bg-violet-50 px-3 py-1 text-xs text-violet-700">{project.name}</span>}{stage && <span className="rounded-full bg-sky-50 px-3 py-1 text-xs text-sky-700">{stage.title}</span>}{sectionById.get(String(project?.section_id || task.section_id)) && <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs text-cyan-700">{sectionById.get(String(project?.section_id || task.section_id)).name}</span>}</div><h3 className="text-lg font-semibold">{task.title}</h3><p className="text-sm text-slate-600"><b>Комментарий:</b> {task.comment || '—'}</p>{task.resource_url && <TaskResourceLink url={task.resource_url} />}<p className="text-sm text-slate-500">{task.owner} · {formatDate(task.deadline)} · {formatTime(task.start_time)}{task.end_time ? `–${formatTime(task.end_time)}` : ''} · {task.hours} ч</p></div><div className="flex flex-wrap gap-2"><select value={task.status} onChange={(event) => updateTaskStatus(task.id, event.target.value)} className={`rounded-xl border-0 px-3 py-2 text-sm ${statusStyle(task.status)}`}>{TASK_STATUSES.map((status) => <option key={status}>{status}</option>)}</select><button type="button" onClick={() => openTaskModal(task)} className="inline-flex items-center rounded-xl bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700"><Edit3 className="mr-2 h-4 w-4" />Изменить</button><button type="button" onClick={() => deleteTask(task)} className="rounded-xl border border-rose-100 px-3 py-2 text-rose-600"><Trash2 className="h-4 w-4" /></button></div></div></div>;
+                return <div key={task.id} className={`rounded-2xl border bg-white p-4 hover:border-violet-200 hover:shadow-sm ${selectedTaskIds.includes(String(task.id)) ? 'ring-2 ring-violet-300' : ''}`}><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="flex min-w-0 gap-3"><input type="checkbox" checked={selectedTaskIds.includes(String(task.id))} onChange={(event) => setSelectedTaskIds((items) => event.target.checked ? [...new Set([...items, String(task.id)])] : items.filter((id) => id !== String(task.id)))} className="mt-1 h-4 w-4 accent-violet-600" /><div className="space-y-2"><div className="flex flex-wrap gap-2"><span className={`rounded-full px-3 py-1 text-xs ${statusStyle(task.status)}`}>{task.status}</span><span className={`rounded-full px-3 py-1 text-xs ${priorityStyle(task.priority)}`}>{task.priority}</span>{project && <span className="rounded-full bg-violet-50 px-3 py-1 text-xs text-violet-700">{project.name}</span>}{stage && <span className="rounded-full bg-sky-50 px-3 py-1 text-xs text-sky-700">{stage.title}</span>}{sectionById.get(String(project?.section_id || task.section_id)) && <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs text-cyan-700">{sectionById.get(String(project?.section_id || task.section_id)).name}</span>}</div><h3 className="text-lg font-semibold">{task.title}</h3><p className="text-sm text-slate-600"><b>Комментарий:</b> {task.comment || '—'}</p>{task.resource_url && <TaskResourceLink url={task.resource_url} />}<p className="text-sm text-slate-500">{task.owner} · {formatDate(task.deadline)} · {formatTime(task.start_time)}{task.end_time ? `–${formatTime(task.end_time)}` : ''} · {task.hours} ч</p></div></div><div className="flex flex-wrap gap-2"><select value={task.status} onChange={(event) => updateTaskStatus(task.id, event.target.value)} className={`rounded-xl border-0 px-3 py-2 text-sm ${statusStyle(task.status)}`}>{TASK_STATUSES.map((status) => <option key={status}>{status}</option>)}</select><button type="button" onClick={() => openTaskModal(task)} className="inline-flex items-center rounded-xl bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700"><Edit3 className="mr-2 h-4 w-4" />Изменить</button><button type="button" onClick={() => deleteTask(task)} className="rounded-xl border border-rose-100 px-3 py-2 text-rose-600"><Trash2 className="h-4 w-4" /></button></div></div></div>;
               })}{filteredTasks.length === 0 && <div className="rounded-2xl border border-dashed p-8 text-center text-slate-500">По выбранным фильтрам задач нет.</div>}</div>
             </div>
           </Card>
+        )}
+
+        {activeTab === 'templates' && (
+          <div className="space-y-5">
+            <div><h2 className="text-2xl font-bold">Шаблоны проектов</h2><p className="text-sm text-slate-500">Создавайте типовой проект со стадиями и задачами за несколько секунд. Любой действующий проект можно сохранить как собственный шаблон.</p></div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{templates.map((template) => <Card key={template.id} className="overflow-hidden"><div className="h-2" style={{ backgroundColor: template.color }} /><div className="p-5"><div className="flex items-start justify-between gap-3"><span className="rounded-2xl p-2" style={{ backgroundColor: template.color, color: contrastTextColor(template.color) }}><LayoutTemplate className="h-5 w-5" /></span>{template.is_builtin ? <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs text-indigo-700">Системный</span> : <button type="button" onClick={() => deleteTemplate(template)} className="rounded-lg p-2 text-rose-500 hover:bg-rose-50"><Trash2 className="h-4 w-4" /></button>}</div><h3 className="mt-4 text-lg font-bold">{template.name}</h3><p className="mt-1 text-sm text-slate-500">{template.description || 'Описание не заполнено'}</p><div className="mt-4 flex flex-wrap gap-2 text-xs"><span className="rounded-lg bg-slate-100 px-2 py-1">{template.template_data.stages.length} этапов</span><span className="rounded-lg bg-slate-100 px-2 py-1">{template.template_data.tasks.length} задач</span><span className="rounded-lg bg-slate-100 px-2 py-1">≈ {template.template_data.project_deadline_offset} дней</span></div><button type="button" onClick={() => openTemplateLaunch(template)} className="mt-5 w-full rounded-2xl bg-violet-600 px-4 py-3 text-sm font-medium text-white">Создать проект по шаблону</button></div></Card>)}</div>
+          </div>
+        )}
+
+        {activeTab === 'archive' && (
+          <div className="space-y-5">
+            <div><h2 className="text-2xl font-bold">Архив завершённых проектов</h2><p className="text-sm text-slate-500">Архивные проекты не мешают рабочей структуре, но все этапы, задачи, комментарии и история сохраняются.</p></div>
+            {filteredArchivedProjects.map((project) => { const projectTasks = tasks.filter((task) => String(task.project_id) === String(project.id)); const health = projectHealth(project, projectTasks); return <Card key={project.id} className="overflow-hidden"><div className="h-2" style={{ backgroundColor: project.color }} /><div className="p-5"><div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div className="flex flex-wrap items-center gap-2"><h3 className="text-xl font-bold">{project.name}</h3><HealthBadge health={health} /></div><p className="mt-1 text-sm text-slate-500">{project.description || 'Описание не заполнено'}</p><p className="mt-3 text-sm text-slate-600">Ответственный: <b>{project.owner}</b>{project.customer ? ` · Заказчик: ${project.customer}` : ''} · {projectTasks.length} задач</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setProjectArchived(project, false)} className="inline-flex items-center rounded-xl bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700"><Undo2 className="mr-2 h-4 w-4" />Восстановить</button><button type="button" onClick={() => createTemplateFromProject(project)} className="inline-flex items-center rounded-xl bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700"><ClipboardCopy className="mr-2 h-4 w-4" />В шаблоны</button></div></div></div></Card>; })}
+            {filteredArchivedProjects.length === 0 && <Card><div className="p-10 text-center text-slate-500"><Archive className="mx-auto h-10 w-10" /><p className="mt-3">В архиве пока нет проектов по выбранным фильтрам.</p></div></Card>}
+          </div>
         )}
 
         {activeTab === 'transfers' && (
@@ -2000,8 +2491,9 @@ export default function App() {
 
         {activeTab === 'team' && (
           <div className="grid gap-5 xl:grid-cols-[1.1fr_1fr]">
-            <Card><div className="p-5"><div className="mb-5 flex items-center justify-between"><div><h2 className="text-xl font-semibold">Команда</h2><p className="text-sm text-slate-500">Главный показатель — количество активных задач у сотрудника.</p></div><button type="button" onClick={() => setIsEmployeeModalOpen(true)} className="inline-flex items-center rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white"><UserPlus className="mr-2 h-4 w-4" />Добавить</button></div><div className="grid gap-3 sm:grid-cols-2">{employees.map((employee) => { const allPersonTasks = tasks.filter((task) => task.owner === employee.name); const activePersonTasks = allPersonTasks.filter((task) => !isTaskCompleted(task)); const overduePersonTasks = activePersonTasks.filter((task) => task.deadline < todayIso()); return <div key={employee.id} className="rounded-2xl border p-4"><div className="flex items-start justify-between gap-3"><div className="flex items-center gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-bold text-white" style={{ backgroundColor: employee.color }}>{employeeInitials(employee.name)}</span><div><b>{employee.name}</b><p className="text-sm text-slate-500">{employee.role}</p></div></div><button type="button" onClick={() => deleteEmployee(employee)} className="rounded-lg p-2 text-rose-500 hover:bg-rose-50" title="Удалить сотрудника"><Trash2 className="h-4 w-4" /></button></div><div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs"><span className="rounded-lg bg-violet-50 px-2 py-2 text-violet-800"><b className="block text-lg">{activePersonTasks.length}</b>активных</span><span className="rounded-lg bg-rose-50 px-2 py-2 text-rose-700"><b className="block text-lg">{overduePersonTasks.length}</b>просрочено</span><span className="rounded-lg bg-slate-100 px-2 py-2 text-slate-700"><b className="block text-lg">{allPersonTasks.length}</b>всего</span></div></div>; })}</div></div></Card>
-            <Card><div className="p-5"><h2 className="flex items-center text-xl font-semibold"><BarChart3 className="mr-2 h-5 w-5" />Загрузка по количеству задач</h2><p className="mb-4 text-sm text-slate-500">Количество незавершённых задач у каждого сотрудника. Часы в расчёте не используются.</p><div className="h-[360px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={workload} layout="vertical" margin={{ left: 15, right: 25 }}><XAxis type="number" allowDecimals={false} /><YAxis dataKey="name" type="category" width={90} /><Tooltip formatter={(value, name, props) => [`${value} активных · ${props.payload.overdue} просрочено`, 'Загрузка']} /><Bar dataKey="tasks" radius={[0, 10, 10, 0]}>{workload.map((entry) => <Cell key={entry.name} fill={entry.color} />)}</Bar></BarChart></ResponsiveContainer></div></div></Card>
+            <Card><div className="p-5"><div className="mb-5 flex items-center justify-between"><div><h2 className="text-xl font-semibold">Команда</h2><p className="text-sm text-slate-500">Карточка подсвечивается, когда активных задач больше установленной нормы.</p></div>{isAdmin && <button type="button" onClick={() => openEmployeeModal()} className="inline-flex items-center rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white"><UserPlus className="mr-2 h-4 w-4" />Добавить</button>}</div><div className="grid gap-3 sm:grid-cols-2">{employees.map((employee) => { const allPersonTasks = tasks.filter((task) => task.owner === employee.name); const activePersonTasks = allPersonTasks.filter((task) => !isTaskCompleted(task)); const overduePersonTasks = activePersonTasks.filter((task) => task.deadline < todayIso()); const capacity = Math.max(1, Number(employee.task_capacity || 10)); const overload = Math.max(0, activePersonTasks.length - capacity); const critical = activePersonTasks.length > capacity * 1.25; return <div key={employee.id} className={`rounded-2xl border p-4 transition ${overload ? (critical ? 'border-rose-400 bg-rose-50 shadow-[0_0_0_3px_rgba(244,63,94,0.08)]' : 'border-amber-300 bg-amber-50') : 'border-slate-200 bg-white'}`}><div className="flex items-start justify-between gap-3"><div className="flex items-center gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-bold" style={{ backgroundColor: employee.color, color: contrastTextColor(employee.color) }}>{employeeInitials(employee.name)}</span><div><div className="flex flex-wrap items-center gap-2"><b>{employee.name}</b>{overload > 0 && <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${critical ? 'bg-rose-600 text-white' : 'bg-amber-200 text-amber-900'}`}>Перегруз +{overload}</span>}{employee.is_active === false && <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[11px]">доступ отключён</span>}</div><p className="text-sm text-slate-500">{employee.role}</p><p className="mt-1 text-xs text-slate-400">Норма: {capacity} активных · логин: {employee.login || 'не создан'}</p></div></div>{isAdmin && <div className="flex gap-1"><button type="button" onClick={() => openEmployeeModal(employee)} className="rounded-lg p-2 text-violet-600 hover:bg-violet-50" title="Редактировать сотрудника и доступ"><Edit3 className="h-4 w-4" /></button><button type="button" onClick={() => deleteEmployee(employee)} className="rounded-lg p-2 text-rose-500 hover:bg-rose-50" title="Отключить доступ"><Trash2 className="h-4 w-4" /></button></div>}</div><div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs"><span className="rounded-lg bg-violet-50 px-2 py-2 text-violet-800"><b className="block text-lg">{activePersonTasks.length}</b>активных</span><span className="rounded-lg bg-rose-100 px-2 py-2 text-rose-700"><b className="block text-lg">{overduePersonTasks.length}</b>просрочено</span><span className="rounded-lg bg-slate-100 px-2 py-2 text-slate-700"><b className="block text-lg">{capacity}</b>норма</span></div></div>; })}</div></div></Card>
+            <Card><div className="p-5"><h2 className="flex items-center text-xl font-semibold"><Gauge className="mr-2 h-5 w-5" />Активные задачи против нормы</h2><p className="mb-4 text-sm text-slate-500">Красный — критический перегруз, жёлтый — превышение нормы. Серый столбец показывает индивидуальную норму сотрудника.</p><div className="h-[360px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={workload} layout="vertical" margin={{ left: 15, right: 25 }}><XAxis type="number" allowDecimals={false} /><YAxis dataKey="name" type="category" width={90} /><Tooltip formatter={(value, name, props) => [value, name === 'tasks' ? `Активные · ${props.payload.overdue} просрочено` : 'Норма']} /><Legend /><Bar dataKey="capacity" name="Норма" fill="#cbd5e1" radius={[0, 8, 8, 0]} /><Bar dataKey="tasks" name="Активные" radius={[0, 10, 10, 0]}>{workload.map((entry) => <Cell key={entry.name} fill={entry.color} />)}</Bar></BarChart></ResponsiveContainer></div></div></Card>
+            <Card className="xl:col-span-2"><div className="p-5"><h2 className="flex items-center text-xl font-semibold"><BarChart3 className="mr-2 h-5 w-5" />Структура активных задач по статусам</h2><p className="mb-3 text-sm text-slate-500">Круговая диаграмма показывает, где сейчас сосредоточена работа команды и сколько задач находится в блокерах.</p><div className="h-[340px]">{taskStatusChart.length ? <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={taskStatusChart} dataKey="value" nameKey="name" cx="50%" cy="48%" innerRadius={72} outerRadius={118} paddingAngle={3} label={({ name, value }) => `${name}: ${value}`}>{taskStatusChart.map((entry) => <Cell key={entry.name} fill={entry.color} />)}</Pie><Tooltip formatter={(value) => [`${value} задач`, 'Количество']} /><Legend verticalAlign="bottom" height={36} /></PieChart></ResponsiveContainer> : <div className="flex h-full items-center justify-center text-slate-500">Активных задач пока нет.</div>}</div></div></Card>
           </div>
         )}
       </div>
@@ -2015,7 +2507,7 @@ export default function App() {
             <Field label="Заказчик проекта"><input value={projectForm.customer} onChange={(event) => setProjectForm({ ...projectForm, customer: event.target.value })} placeholder="Например: Виктория, отдел продаж или внешний клиент" className="w-full rounded-2xl border px-3 py-2.5" /></Field>
             <Field label="Общий дедлайн"><input type="date" value={projectForm.deadline} onChange={(event) => setProjectForm({ ...projectForm, deadline: event.target.value })} className="w-full rounded-2xl border px-3 py-2.5" /></Field>
             <Field label="Статус"><select value={projectForm.status} onChange={(event) => setProjectForm({ ...projectForm, status: event.target.value })} className="w-full rounded-2xl border bg-white px-3 py-2.5">{PROJECT_STATUSES.map((status) => <option key={status}>{status}</option>)}</select></Field>
-            <Field label="Цвет проекта"><div className="flex flex-wrap gap-2">{PROJECT_COLORS.map((color) => <button key={color} type="button" onClick={() => setProjectForm({ ...projectForm, color })} className={`h-9 w-9 rounded-full ${projectForm.color === color ? 'ring-2 ring-slate-900 ring-offset-2' : ''}`} style={{ backgroundColor: color }} />)}</div></Field>
+            <Field label="Цвет проекта" className="md:col-span-2"><div className="grid grid-cols-9 gap-2 sm:grid-cols-12">{PROJECT_COLORS.map((color) => <button key={color} type="button" onClick={() => setProjectForm({ ...projectForm, color })} className={`h-9 w-9 rounded-xl border border-white shadow-sm transition hover:scale-110 ${projectForm.color === color ? 'ring-2 ring-slate-900 ring-offset-2' : ''}`} style={{ backgroundColor: color }} title={color} />)}<input type="color" value={projectForm.color} onChange={(event) => setProjectForm({ ...projectForm, color: event.target.value })} className="h-9 w-9 cursor-pointer rounded-xl border bg-white p-1" title="Свой цвет" /></div><div className="mt-3 rounded-xl px-3 py-2 text-sm font-semibold" style={{ backgroundColor: projectForm.color, color: contrastTextColor(projectForm.color) }}>Предпросмотр цвета проекта</div></Field>
             <Field label="Описание" className="md:col-span-2"><textarea value={projectForm.description} onChange={(event) => setProjectForm({ ...projectForm, description: event.target.value })} rows="4" placeholder="Цель проекта, ожидаемый результат, важные ограничения" className="w-full rounded-2xl border px-3 py-2.5" /></Field>
           </div>
           <ModalActions onCancel={() => setIsProjectModalOpen(false)} onSave={saveProject} saveLabel={editingProjectId ? 'Сохранить проект' : 'Создать проект'} />
@@ -2025,7 +2517,7 @@ export default function App() {
       {isStageModalOpen && (
         <Modal title={editingStageId ? 'Редактирование этапа' : 'Новый этап'} subtitle="Крупный блок работ внутри проекта." onClose={() => setIsStageModalOpen(false)} maxWidth="max-w-2xl">
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Проект" className="md:col-span-2"><select value={stageForm.project_id} onChange={(event) => setStageForm({ ...stageForm, project_id: event.target.value })} className="w-full rounded-2xl border bg-white px-3 py-2.5">{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field>
+            <Field label="Проект" className="md:col-span-2"><select value={stageForm.project_id} onChange={(event) => setStageForm({ ...stageForm, project_id: event.target.value })} className="w-full rounded-2xl border bg-white px-3 py-2.5">{activeProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field>
             <Field label="Название этапа" className="md:col-span-2"><input value={stageForm.title} onChange={(event) => setStageForm({ ...stageForm, title: event.target.value })} placeholder="Например: Финальная настройка" className="w-full rounded-2xl border px-3 py-2.5" /></Field>
             <Field label="Ответственный"><select value={stageForm.owner} onChange={(event) => setStageForm({ ...stageForm, owner: event.target.value })} className="w-full rounded-2xl border bg-white px-3 py-2.5">{employeeNames.map((name) => <option key={name}>{name}</option>)}</select></Field>
             <Field label="Дедлайн этапа"><input type="date" value={stageForm.deadline} onChange={(event) => setStageForm({ ...stageForm, deadline: event.target.value })} className="w-full rounded-2xl border px-3 py-2.5" /></Field>
@@ -2037,11 +2529,11 @@ export default function App() {
       )}
 
       {isSectionModalOpen && (
-        <Modal title={editingSectionId ? 'Редактирование раздела' : 'Новый раздел'} subtitle="Раздел объединяет проекты одного направления." onClose={() => setIsSectionModalOpen(false)} maxWidth="max-w-2xl">
+        <Modal title={editingSectionId ? 'Редактирование раздела' : 'Новый раздел'} subtitle="Раздел объединяет проекты одного направления. Создавать и редактировать разделы может только Аня." onClose={() => setIsSectionModalOpen(false)} maxWidth="max-w-2xl">
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Название раздела" className="md:col-span-2"><input value={sectionForm.name} onChange={(event) => setSectionForm({ ...sectionForm, name: event.target.value })} placeholder="Например: Продажи, Производство, Маркетинг или Автоматизация" className="w-full rounded-2xl border px-3 py-2.5" /></Field>
             <Field label="Ответственный за раздел"><select value={sectionForm.owner} onChange={(event) => setSectionForm({ ...sectionForm, owner: event.target.value })} className="w-full rounded-2xl border bg-white px-3 py-2.5">{employeeNames.map((name) => <option key={name}>{name}</option>)}</select></Field>
-            <Field label="Цвет раздела"><div className="flex flex-wrap gap-2">{SECTION_COLORS.map((color) => <button key={color} type="button" onClick={() => setSectionForm({ ...sectionForm, color })} className={`h-9 w-9 rounded-full ${sectionForm.color === color ? 'ring-2 ring-slate-900 ring-offset-2' : ''}`} style={{ backgroundColor: color }} />)}</div></Field>
+            <Field label="Цвет раздела" className="md:col-span-2"><div className="grid grid-cols-9 gap-2 sm:grid-cols-12">{SECTION_COLORS.map((color) => <button key={color} type="button" onClick={() => setSectionForm({ ...sectionForm, color })} className={`h-9 w-9 rounded-xl border border-white shadow-sm transition hover:scale-110 ${sectionForm.color === color ? 'ring-2 ring-slate-900 ring-offset-2' : ''}`} style={{ backgroundColor: color }} title={color} />)}<input type="color" value={sectionForm.color} onChange={(event) => setSectionForm({ ...sectionForm, color: event.target.value })} className="h-9 w-9 cursor-pointer rounded-xl border bg-white p-1" /></div><div className="mt-3 rounded-xl px-3 py-2 text-sm font-semibold" style={{ backgroundColor: sectionForm.color, color: contrastTextColor(sectionForm.color) }}>Предпросмотр цвета раздела</div></Field>
             <Field label="Описание" className="md:col-span-2"><textarea value={sectionForm.description} onChange={(event) => setSectionForm({ ...sectionForm, description: event.target.value })} rows="3" placeholder="Какие проекты и процессы относятся к этому разделу" className="w-full rounded-2xl border px-3 py-2.5" /></Field>
           </div>
           <ModalActions onCancel={() => setIsSectionModalOpen(false)} onSave={saveSection} saveLabel={editingSectionId ? 'Сохранить раздел' : 'Создать раздел'} />
@@ -2052,7 +2544,7 @@ export default function App() {
         <Modal title={editingTaskId ? 'Редактирование задачи' : 'Новая задача'} subtitle="Основная структура: раздел → проект → этап → задача. Для старых операционных задач сохранена прямая привязка к разделу." onClose={() => setIsTaskModalOpen(false)} maxWidth="max-w-3xl">
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Задача" className="md:col-span-2"><input value={taskForm.title} onChange={(event) => setTaskForm({ ...taskForm, title: event.target.value })} placeholder="Конкретное действие и ожидаемый результат" className="w-full rounded-2xl border px-3 py-2.5" /></Field>
-            <Field label="Проект"><select value={taskForm.project_id} onChange={(event) => setTaskForm({ ...taskForm, project_id: event.target.value, stage_id: '', section_id: event.target.value ? '' : taskForm.section_id })} className="w-full rounded-2xl border bg-white px-3 py-2.5"><option value="">Без проекта</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field>
+            <Field label="Проект"><select value={taskForm.project_id} onChange={(event) => setTaskForm({ ...taskForm, project_id: event.target.value, stage_id: '', section_id: event.target.value ? '' : taskForm.section_id })} className="w-full rounded-2xl border bg-white px-3 py-2.5"><option value="">Без проекта</option>{activeProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field>
             <Field label="Этап"><select value={taskForm.stage_id} onChange={(event) => setTaskForm({ ...taskForm, stage_id: event.target.value })} disabled={!taskForm.project_id} className="w-full rounded-2xl border bg-white px-3 py-2.5 disabled:bg-slate-100"><option value="">Без этапа</option>{selectedProjectStages.map((stage) => <option key={stage.id} value={stage.id}>{stage.sort_order}. {stage.title}</option>)}</select></Field>
             {!taskForm.project_id && <Field label="Раздел для задачи без проекта" className="md:col-span-2"><select value={taskForm.section_id} onChange={(event) => setTaskForm({ ...taskForm, section_id: event.target.value, project_id: event.target.value ? '' : taskForm.project_id, stage_id: event.target.value ? '' : taskForm.stage_id })} className="w-full rounded-2xl border bg-white px-3 py-2.5"><option value="">Без раздела</option>{sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select><span className="mt-1 block text-xs text-slate-500">Используйте только для отдельной задачи без проекта. Для обычной работы сначала выберите проект — его раздел определится автоматически.</span></Field>}
             <Field label="Ответственный"><select value={taskForm.owner} onChange={(event) => setTaskForm({ ...taskForm, owner: event.target.value })} className="w-full rounded-2xl border bg-white px-3 py-2.5">{employeeNames.map((name) => <option key={name}>{name}</option>)}</select></Field>
@@ -2081,15 +2573,27 @@ export default function App() {
         </Modal>
       )}
 
+      {isTemplateLaunchOpen && selectedTemplate && (
+        <Modal title="Создать проект по шаблону" subtitle={`Шаблон: ${selectedTemplate.name}`} onClose={() => setIsTemplateLaunchOpen(false)} maxWidth="max-w-2xl">
+          <div className="grid gap-4 md:grid-cols-2"><Field label="Название проекта" className="md:col-span-2"><input value={templateLaunchForm.name} onChange={(event) => setTemplateLaunchForm({ ...templateLaunchForm, name: event.target.value })} className="w-full rounded-2xl border px-3 py-2.5" /></Field><Field label="Раздел"><select value={templateLaunchForm.section_id} onChange={(event) => setTemplateLaunchForm({ ...templateLaunchForm, section_id: event.target.value })} className="w-full rounded-2xl border bg-white px-3 py-2.5"><option value="">Без раздела</option>{sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select></Field><Field label="Ответственный"><select value={templateLaunchForm.owner} onChange={(event) => setTemplateLaunchForm({ ...templateLaunchForm, owner: event.target.value })} className="w-full rounded-2xl border bg-white px-3 py-2.5">{employeeNames.map((name) => <option key={name}>{name}</option>)}</select></Field><Field label="Заказчик"><input value={templateLaunchForm.customer} onChange={(event) => setTemplateLaunchForm({ ...templateLaunchForm, customer: event.target.value })} className="w-full rounded-2xl border px-3 py-2.5" /></Field><Field label="Дата старта"><input type="date" value={templateLaunchForm.start_date} onChange={(event) => setTemplateLaunchForm({ ...templateLaunchForm, start_date: event.target.value })} className="w-full rounded-2xl border px-3 py-2.5" /></Field></div>
+          <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">Будет создано: <b>{selectedTemplate.template_data.stages.length} этапов</b> и <b>{selectedTemplate.template_data.tasks.length} задач</b>. Сроки рассчитаются от даты старта.</div>
+          <ModalActions onCancel={() => setIsTemplateLaunchOpen(false)} onSave={launchTemplate} saveLabel="Создать проект" />
+        </Modal>
+      )}
+
+
+
       {isEmployeeModalOpen && (
-        <Modal title="Добавить сотрудника" subtitle="Новый сотрудник сразу появится во всех списках ответственных." onClose={() => setIsEmployeeModalOpen(false)} maxWidth="max-w-lg">
+        <Modal title={editingEmployeeId ? 'Редактирование сотрудника' : 'Добавить сотрудника'} subtitle="Аня создаёт сотруднику учётную запись: логин, пароль, должность, цвет и норму активных задач." onClose={() => setIsEmployeeModalOpen(false)} maxWidth="max-w-lg">
           <div className="space-y-4">
             <Field label="Имя сотрудника"><div className="relative"><UserRound className="absolute left-3 top-3 h-4 w-4 text-slate-400" /><input value={employeeForm.name} onChange={(event) => setEmployeeForm({ ...employeeForm, name: event.target.value })} placeholder="Например: Мария" className="w-full rounded-2xl border px-3 py-2.5 pl-10" /></div></Field>
             <Field label="Должность или роль"><div className="relative"><Briefcase className="absolute left-3 top-3 h-4 w-4 text-slate-400" /><input value={employeeForm.role} onChange={(event) => setEmployeeForm({ ...employeeForm, role: event.target.value })} placeholder="Например: Менеджер проекта" className="w-full rounded-2xl border px-3 py-2.5 pl-10" /></div></Field>
-            <Field label="Цвет"><div className="flex flex-wrap gap-2">{EMPLOYEE_COLORS.map((color) => <button key={color} type="button" onClick={() => setEmployeeForm({ ...employeeForm, color })} className={`h-9 w-9 rounded-full ${employeeForm.color === color ? 'ring-2 ring-slate-900 ring-offset-2' : ''}`} style={{ backgroundColor: color }} />)}</div></Field>
-            <div className="rounded-2xl bg-slate-50 p-4"><div className="flex items-center gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-bold text-white" style={{ backgroundColor: employeeForm.color }}>{employeeInitials(employeeForm.name || 'Новый')}</span><div><b>{employeeForm.name || 'Новый сотрудник'}</b><p className="text-sm text-slate-500">{employeeForm.role || 'Сотрудник'}</p></div></div></div>
+            <div className="grid gap-4 sm:grid-cols-2"><Field label="Логин"><div className="relative"><LogIn className="absolute left-3 top-3 h-4 w-4 text-slate-400" /><input value={employeeForm.login} onChange={(event) => setEmployeeForm({ ...employeeForm, login: event.target.value })} placeholder="Обычно имя сотрудника" className="w-full rounded-2xl border px-3 py-2.5 pl-10" /></div></Field><Field label={editingEmployeeId ? 'Новый пароль — необязательно' : 'Пароль'}><div className="relative"><KeyRound className="absolute left-3 top-3 h-4 w-4 text-slate-400" /><input type="password" value={employeeForm.password} onChange={(event) => setEmployeeForm({ ...employeeForm, password: event.target.value })} placeholder="Минимум 8 символов" className="w-full rounded-2xl border px-3 py-2.5 pl-10" /></div></Field></div>
+            <div className="grid gap-4 sm:grid-cols-2"><Field label="Норма активных задач"><div className="relative"><Gauge className="absolute left-3 top-3 h-4 w-4 text-slate-400" /><input type="number" min="1" value={employeeForm.task_capacity} onChange={(event) => setEmployeeForm({ ...employeeForm, task_capacity: event.target.value })} className="w-full rounded-2xl border px-3 py-2.5 pl-10" /></div></Field><Field label="Доступ"><select value={employeeForm.is_active ? 'active' : 'inactive'} onChange={(event) => setEmployeeForm({ ...employeeForm, is_active: event.target.value === 'active' })} className="w-full rounded-2xl border bg-white px-3 py-2.5"><option value="active">Активен</option><option value="inactive">Отключён</option></select></Field></div>
+            <Field label="Цвет"><div className="grid grid-cols-9 gap-2 sm:grid-cols-12">{EMPLOYEE_COLORS.map((color) => <button key={color} type="button" onClick={() => setEmployeeForm({ ...employeeForm, color })} className={`h-9 w-9 rounded-xl border border-white shadow-sm transition hover:scale-110 ${employeeForm.color === color ? 'ring-2 ring-slate-900 ring-offset-2' : ''}`} style={{ backgroundColor: color }} title={color} />)}<input type="color" value={employeeForm.color} onChange={(event) => setEmployeeForm({ ...employeeForm, color: event.target.value })} className="h-9 w-9 cursor-pointer rounded-xl border bg-white p-1" /></div></Field>
+            <div className="rounded-2xl bg-slate-50 p-4"><div className="flex items-center gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-2xl text-sm font-bold" style={{ backgroundColor: employeeForm.color, color: contrastTextColor(employeeForm.color) }}>{employeeInitials(employeeForm.name || 'Новый')}</span><div><b>{employeeForm.name || 'Новый сотрудник'}</b><p className="text-sm text-slate-500">{employeeForm.role || 'Сотрудник'}</p></div></div></div>
           </div>
-          <ModalActions onCancel={() => setIsEmployeeModalOpen(false)} onSave={addEmployee} saveLabel="Добавить сотрудника" />
+          <ModalActions onCancel={() => setIsEmployeeModalOpen(false)} onSave={saveEmployee} saveLabel={editingEmployeeId ? 'Сохранить изменения' : 'Добавить сотрудника'} />
         </Modal>
       )}
     </div>

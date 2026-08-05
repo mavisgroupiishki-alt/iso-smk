@@ -1,0 +1,14 @@
+MAVIS Центр проектов 5.0 — загрузка в GitHub
+
+1. Сначала выполните в Supabase файл supabase_v5_workspace_update.sql.
+2. Проверьте, что before = after и archive_ready/templates_ready = true.
+3. Распакуйте ZIP.
+4. В GitHub загрузите СОДЕРЖИМОЕ распакованной папки прямо в корень репозитория.
+5. В корне GitHub должны быть package.json, index.html, render.yaml и папка src.
+6. Подтвердите Commit changes.
+7. Render → Deploys → Manual Deploy → Deploy latest commit.
+8. После Live нажмите Cmd + Shift + R.
+9. В шапке должна быть версия 5.0.
+
+Не загружайте ZIP одним файлом и не создавайте вложенную папку проекта.
+Текущие задачи остаются в Supabase и при замене кода не удаляются.
