@@ -246,6 +246,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
     keys = sorted(k for k in _MANIFEST if _category_of(k) in wanted_categories)
 
     docs = []
+    warnings = []
     total = len(keys) or 1
     for i, key in enumerate(keys, 1):
         friendly = _MANIFEST[key]
@@ -258,6 +259,8 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             data = render_generic(key, _OLD_COMPANY, company_new, people_map)
             docs.append({'name': out_name, 'bytes': data})
         except Exception as e:
-            print(f"  ❌ Ошибка генерации {key} ({friendly}): {e}")
+            message = f"Не сформирован документ «{friendly}» ({key}): {type(e).__name__}: {e}"
+            warnings.append(message)
+            print(f"  ❌ {message}")
 
-    return {'docs': docs, 'warnings': []}
+    return {'docs': docs, 'warnings': warnings}

@@ -1,0 +1,4035 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ИИгорь Оформитель</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Fira+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F7EFE4;--surface:#FFF;--border:#E8DCC8;
+  --navy:#9C5B6E;--navyL:#B97389;
+  --gold:#C97B84;--goldL:#F7DDE1;
+  --teal:#A56B75;--tealL:#F3E3E6;
+  --orange:#C97A5F;--orangeL:#FBEAE0;
+  --green:#7D8F6E;--greenL:#E9EFE0;
+  --red:#B5544A;--text:#4A3639;--muted:#A6837D;
+  --r:6px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Fira Sans',sans-serif;background:var(--bg);color:var(--text);display:flex;width:100%;min-width:900px;height:100vh;overflow:hidden}
+
+/* ── SIDEBAR ── */
+#sidebar{
+  width:220px;flex-shrink:0;background:var(--navy);
+  display:flex;flex-direction:column;height:100vh;overflow-y:auto;
+}
+.sb-logo{
+  padding:18px 16px 14px;border-bottom:1px solid rgba(255,255,255,.1);
+  display:flex;align-items:center;gap:10px;
+}
+.sb-logo .mark{
+  width:36px;height:36px;background:var(--gold);
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Playfair Display',serif;font-size:14px;font-weight:700;color:#fff;
+  border-radius:4px;flex-shrink:0;
+}
+.sb-logo h1{font-family:'Playfair Display',serif;font-size:13px;color:#fff;font-weight:500;line-height:1.3}
+.sb-logo p{font-size:9.5px;color:rgba(255,255,255,.5);margin-top:1px}
+
+.sb-section{padding:14px 12px 4px;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.4)}
+.sb-item{
+  display:flex;align-items:center;gap:9px;
+  padding:9px 12px;margin:1px 8px;border-radius:5px;
+  font-size:12px;color:rgba(255,255,255,.75);cursor:pointer;
+  transition:background .14s,color .14s;
+}
+.sb-item:hover{background:rgba(255,255,255,.08);color:#fff}
+.sb-item.active{background:rgba(255,255,255,.12);color:#fff;font-weight:600}
+.sb-item .icon{font-size:14px;width:18px;text-align:center;flex-shrink:0}
+
+.sb-divider{height:1px;background:rgba(255,255,255,.08);margin:8px 12px}
+
+/* ── MAIN ── */
+#main{flex:1;overflow-y:auto;display:flex;flex-direction:column}
+
+/* ── TOP BAR ── */
+#topbar{
+  background:var(--surface);border-bottom:1px solid var(--border);
+  padding:0 28px;height:52px;display:flex;align-items:center;gap:12px;
+  flex-shrink:0;
+}
+#topbar h2{font-family:'Playfair Display',serif;font-size:17px;color:var(--navy);flex:1}
+.tb-btn{
+  height:32px;padding:0 14px;border-radius:var(--r);border:none;cursor:pointer;
+  font-family:'Fira Sans',sans-serif;font-size:11.5px;font-weight:600;
+  display:flex;align-items:center;gap:6px;transition:opacity .15s;
+}
+.tb-btn:hover{opacity:.85}
+.tb-btn.navy{background:var(--navy);color:#fff}
+.tb-btn.gold{background:var(--gold);color:#fff}
+.tb-btn.out{background:transparent;border:1.5px solid var(--border);color:var(--text)}
+.tb-btn.red{background:var(--red);color:#fff}
+
+/* ── CONTENT AREA ── */
+#content{flex:1;padding:24px 28px}
+
+/* ── CARDS ── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:16px;overflow:hidden}
+.card-head{padding:13px 20px;border-bottom:1px solid var(--border);background:#FAF6F0;display:flex;align-items:center;gap:10px}
+.card-head .chi{width:26px;height:26px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
+.card-head h3{font-family:'Playfair Display',serif;font-size:14px;color:var(--navy);font-weight:600}
+.card-body{padding:20px}
+
+/* ── GRID FORMS ── */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.full{grid-column:1/-1}
+.fg{display:flex;flex-direction:column;gap:4px}
+label{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+label .req{color:var(--gold)}
+input,select,textarea{
+  padding:8px 11px;border:1.5px solid var(--border);border-radius:var(--r);
+  font-family:'Fira Sans',sans-serif;font-size:13px;color:var(--text);background:#fff;width:100%;
+  transition:border-color .14s,box-shadow .14s;
+}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--navyL);box-shadow:0 0 0 3px rgba(43,81,128,.1)}
+input::placeholder{color:#CDB8AA}
+.hint{font-size:10px;color:var(--muted)}
+.divider{height:1px;background:var(--border);margin:16px 0}
+.sec-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.sec-lbl::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ── COMPANY LIST ── */
+.co-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.co-card{
+  background:var(--surface);border:1.5px solid var(--border);border-radius:var(--r);
+  padding:14px;cursor:pointer;transition:border-color .14s,box-shadow .14s;
+  display:flex;flex-direction:column;gap:6px;
+}
+.co-card:hover{border-color:var(--navyL);box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.co-card.selected{border-color:var(--gold);background:var(--goldL)}
+.co-name{font-size:14px;font-weight:700;color:var(--navy)}
+.co-meta{font-size:11px;color:var(--muted)}
+.co-actions{display:flex;gap:6px;margin-top:4px}
+.co-btn{
+  height:26px;padding:0 10px;border-radius:4px;border:none;cursor:pointer;
+  font-family:'Fira Sans',sans-serif;font-size:10.5px;font-weight:600;
+  transition:opacity .12s;
+}
+.co-btn:hover{opacity:.85}
+.co-btn.edit{background:var(--tealL);color:var(--teal)}
+.co-btn.del{background:#FCE5E3;color:var(--red)}
+.co-btn.gen{background:var(--navy);color:#fff}
+
+/* ── TABS ── */
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px}
+.tab{
+  padding:10px 18px;font-size:12.5px;font-weight:600;cursor:pointer;
+  border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);
+  transition:color .14s,border-color .14s;
+}
+.tab.active{color:var(--navy);border-bottom-color:var(--gold)}
+.tab:hover:not(.active){color:var(--text)}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* ── SUBTABS ── */
+.subtabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px}
+.subtab{
+  padding:6px 14px;border-radius:20px;font-size:11.5px;font-weight:600;cursor:pointer;
+  border:1.5px solid var(--border);color:var(--muted);background:var(--surface);
+  transition:all .14s;
+}
+.subtab.active{background:var(--navy);color:#fff;border-color:var(--navy)}
+.subtab:hover:not(.active){border-color:var(--navyL);color:var(--navy)}
+
+/* ── GENERATE BUTTON ── */
+.gen-btn{
+  width:100%;padding:14px;background:var(--navy);color:#fff;border:none;
+  border-radius:var(--r);font-family:'Fira Sans',sans-serif;font-size:14px;font-weight:700;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;
+  transition:background .15s;margin-top:6px;
+}
+.gen-btn:hover{background:#6B3846}
+.gen-btn:disabled{background:#C299A8;cursor:not-allowed}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .65s linear infinite;display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── ALERTS ── */
+.alert{padding:12px 16px;border-radius:var(--r);font-size:12.5px;margin-top:12px;display:none}
+.alert.err{background:#FCE9E7;border:1px solid #E8B4B0;color:var(--red)}
+.alert.ok{background:#F3F3E9;border:1px solid #B8C9A8;color:var(--green)}
+
+/* ── JOURNAL ── */
+.jn-item{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  padding:14px 18px;display:flex;align-items:center;gap:14px;margin-bottom:8px;
+}
+.jn-icon{font-size:22px}
+.jn-info{flex:1}
+.jn-name{font-size:13px;font-weight:700;color:var(--navy)}
+.jn-meta{font-size:11px;color:var(--muted);margin-top:2px}
+.jn-actions{display:flex;gap:6px}
+
+/* ── MODAL ── */
+#modal-bg{
+  position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;
+  display:none;align-items:center;justify-content:center;padding:20px;
+}
+#modal-bg.open{display:flex}
+#modal{
+  background:#fff;border-radius:10px;width:100%;max-width:680px;
+  max-height:90vh;overflow-y:auto;
+  box-shadow:0 20px 60px rgba(0,0,0,.25);
+}
+.modal-head{
+  padding:18px 22px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;background:#fff;z-index:1;
+}
+.modal-head h3{font-family:'Playfair Display',serif;font-size:16px;color:var(--navy)}
+.modal-close{width:28px;height:28px;border:none;background:none;cursor:pointer;font-size:18px;color:var(--muted)}
+.modal-body{padding:22px}
+.modal-foot{padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px}
+
+/* ── RESULT BOX ── */
+#result-box{display:none;margin-top:16px;background:#F3F3E9;border:1px solid #B8C9A8;border-radius:var(--r);padding:18px}
+#result-box h3{font-size:14px;font-weight:700;color:var(--green);margin-bottom:10px}
+.dl-btn{
+  display:flex;align-items:center;gap:8px;padding:10px 14px;
+  background:#fff;border:1px solid #B8C9A8;border-radius:var(--r);
+  font-size:12.5px;font-weight:600;color:var(--green);cursor:pointer;
+  text-decoration:none;transition:background .12s;width:fit-content;
+}
+.dl-btn:hover{background:#F3F3E9}
+
+/* ── EMPTY STATE ── */
+.empty{text-align:center;padding:50px 20px;color:var(--muted)}
+.empty .ei{font-size:40px;margin-bottom:12px}
+.empty p{font-size:13px}
+
+
+/* ── AI INPUT ACTIONS / EDITABLE WORKERS ── */
+.ai-input-actions{padding:4px 8px;border-top:.5px solid #EDE1D6;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ai-file-action{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:24px;padding:2px 8px;border-radius:5px;border:.5px solid #D4C4B8;background:transparent;font-size:10.5px;color:#A6837D;cursor:pointer;font-family:inherit;user-select:none;white-space:nowrap;flex:0 0 auto}
+.ai-file-action.raw{border-color:#C97B84;background:#F7DDE1;color:#8B4A5C}
+.ai-input-help{font-size:10px;color:#B49E93;line-height:1.25;flex:1 1 180px}
+.ai-worker-row{display:flex;align-items:center;gap:5px;padding:4px 0;border-bottom:1px solid #F1E8DF}
+.ai-worker-row:last-child{border-bottom:none}
+.ai-worker-main{flex:1;min-width:0;color:#5E6F51;font-weight:600}
+.ai-worker-note{display:block;font-size:9px;color:#A8938A;font-weight:400;margin-top:1px}
+.ai-mini-btn{border:1px solid #D9C8BC;background:#fff;color:#8B4A5C;border-radius:4px;padding:2px 5px;font-size:9px;cursor:pointer;flex:0 0 auto}
+.ai-worker-add{width:100%;margin-top:6px;border:1px dashed #C9B4A7;background:#FFFDFC;color:#8B4A5C;border-radius:5px;padding:5px;font-size:10px;cursor:pointer}
+.ai-missing-box{margin-top:7px;padding:7px 8px;border-radius:6px;background:#FFF4E8;border:1px solid #E8C5A8;color:#9A5C35;font-size:10px;line-height:1.4}
+
+
+/* ── KNOWLEDGE + EXPERIENCE ── */
+.igor-page-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.75fr);gap:16px;align-items:start}
+.igor-panel{background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 2px 8px rgba(80,50,40,.05);overflow:hidden}
+.igor-panel-head{padding:13px 16px;border-bottom:1px solid var(--border);background:#FAF6F0;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.igor-panel-body{padding:15px}
+.igor-field{display:flex;flex-direction:column;gap:5px;margin-bottom:11px}
+.igor-field label{font-size:10.5px;font-weight:700;color:#8B4A5C;text-transform:uppercase;letter-spacing:.04em}
+.igor-field input,.igor-field select,.igor-field textarea{border:1px solid #D9C8BC;border-radius:7px;padding:8px 10px;font-family:inherit;font-size:12px;background:#fff;outline:none}
+.igor-field textarea{resize:vertical;min-height:92px}
+.igor-btn{border:none;border-radius:7px;padding:8px 13px;font-family:inherit;font-size:11.5px;font-weight:700;cursor:pointer}
+.igor-btn.primary{background:#8B4A5C;color:#fff}.igor-btn.soft{background:#F3E3E6;color:#8B4A5C;border:1px solid #D9BCC3}.igor-btn.danger{background:#FFF0ED;color:#B24F42;border:1px solid #EAB8B1}.igor-btn.green{background:#E9EFE0;color:#607A52;border:1px solid #B8C9A8}
+.knowledge-rule{border:1px solid #E5D7CC;border-radius:9px;padding:11px 12px;margin-bottom:8px;background:#fff}
+.knowledge-rule.inactive{opacity:.72;background:#FBF9F7}.knowledge-rule.draft{border-style:dashed;background:#FFF8E8}
+.knowledge-pill{display:inline-flex;padding:2px 7px;border-radius:10px;background:#F1E4E7;color:#8B4A5C;font-size:9.5px;font-weight:700;margin-right:4px}
+.stage-table-wrap{overflow:auto;border:1px solid #E4D7CC;border-radius:8px}
+.stage-table{width:100%;border-collapse:collapse;min-width:900px;font-size:11px}
+.stage-table th{background:#FAF6F0;color:#8B4A5C;padding:8px;border-bottom:1px solid #E4D7CC;text-align:left;white-space:nowrap}
+.stage-table td{padding:5px;border-bottom:1px solid #F0E8E1;vertical-align:middle}.stage-table tr:last-child td{border-bottom:none}
+.stage-table input[type="text"],.stage-table input[type="date"]{width:100%;min-width:120px;border:1px solid #DED0C5;border-radius:5px;padding:5px;font-family:inherit;font-size:10.5px}
+.stage-row-warning{background:#FFF5BF!important}
+.stage-result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+.stage-result{border-radius:9px;padding:12px;background:#F7F2EC;border:1px solid #E4D7CC}.stage-result b{display:block;font-size:16px;color:#8B4A5C;margin-top:4px}
+@media(max-width:1000px){.igor-page-grid{grid-template-columns:1fr}.stage-result-grid{grid-template-columns:1fr}}
+
+@media(max-width:700px){
+  #sidebar{display:none}
+  .g2,.g3,.g4{grid-template-columns:1fr}
+  #content{padding:16px}
+}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div id="sidebar">
+  <div class="sb-logo">
+    <div class="mark">🤖</div>
+    <div>
+      <h1>ИИгорь</h1>
+      <p>Оформитель</p>
+    </div>
+  </div>
+
+  <div class="sb-section">Навигация</div>
+  <div class="sb-item" data-page="companies" onclick="nav('companies',this)">
+    <span class="icon">🏢</span> Компании
+  </div>
+  <div class="sb-item" data-page="experience" onclick="nav('experience',this)">
+    <span class="icon">🧮</span> Расчёт стажа
+  </div>
+  <div class="sb-item" data-page="knowledge" onclick="nav('knowledge',this)">
+    <span class="icon">🧠</span> Знания ИИгоря
+  </div>
+  <div class="sb-item" data-page="journal" onclick="nav('journal',this)">
+    <span class="icon">📋</span> Журнал
+  </div>
+
+  <div class="sb-divider"></div>
+  <div class="sb-item active" data-page="ai" onclick="nav('ai',this)" style="background:rgba(184,137,26,.15);border:1px solid rgba(184,137,26,.3);margin:4px 8px;border-radius:5px">
+    <span class="icon">🤖</span> ИИгорь Оформитель
+  </div>
+  <div class="sb-divider"></div>
+  <div class="sb-section">Система</div>
+  <div class="sb-item" onclick="openAddTemplate()">
+    <span class="icon">➕</span> Свой шаблон
+  </div>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+  <div id="topbar">
+    <h2 id="page-title">ИИгорь Оформитель</h2>
+    <button class="tb-btn gold" onclick="openGenModal()" id="btn-gen-top" style="display:none">
+      ⚡ Сформировать пакет
+    </button>
+  </div>
+
+  <div id="content">
+
+    <!-- PAGE: DOCS -->
+    <div id="page-docs" class="page-content">
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('iso',this)">🏅 ИСО / СМК</div>
+        <div class="tab" onclick="switchTab('suot',this)">🦺 СУОТ <span style="font-size:9px;background:#EDE1D6;padding:1px 6px;border-radius:8px;margin-left:4px">скоро</span></div>
+      </div>
+
+      <!-- ISO TAB -->
+      <div id="tab-iso" class="tab-content active">
+        <div class="subtabs">
+          <div class="subtab active" onclick="switchSub('journals',this)">📚 Журналы</div>
+          <div class="subtab" onclick="switchSub('instructions',this)">📝 Инструкции</div>
+          <div class="subtab" onclick="switchSub('smk',this)">🏗 СМК и приказы</div>
+          <div class="subtab" onclick="switchSub('cards',this)">🃏 Карточки</div>
+        </div>
+
+        <!-- JOURNALS -->
+        <div id="sub-journals" class="subtab-content active">
+          <div class="card">
+            <div class="card-head">
+              <div class="chi" style="background:#F2E3E9">📚</div>
+              <h3>Журналы СМК</h3>
+            </div>
+            <div class="card-body">
+              <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">Все 12 журналов формируются автоматически на основе данных компании. Даты, название организации и подписи подставляются из карточки компании.</p>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <div id="journal-list"></div>
+              </div>
+              <div style="margin-top:14px;padding:12px;background:var(--goldL);border-radius:var(--r);font-size:11.5px;color:#8B5A5F">
+                💡 Для формирования документов выберите компанию в разделе «Компании» и нажмите «Сформировать пакет»
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- INSTRUCTIONS -->
+        <div id="sub-instructions" class="subtab-content">
+          <div class="card">
+            <div class="card-head">
+              <div class="chi" style="background:var(--tealL)">📝</div>
+              <h3>Должностные инструкции ИТР</h3>
+            </div>
+            <div class="card-body">
+              <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">Должностные инструкции формируются по каждой должности ИТР. Шаблоны уже загружены.</p>
+              <div id="di-list" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px"></div>
+              <div style="margin-top:14px;padding:12px;background:var(--tealL);border-radius:var(--r);font-size:11.5px;color:var(--teal)">
+                💡 Инструкции включены в общий пакет при формировании документов
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SMK -->
+        <div id="sub-smk" class="subtab-content">
+          <div class="card">
+            <div class="card-head">
+              <div class="chi" style="background:var(--orangeL)">🏗</div>
+              <h3>СМК — приказы, протоколы, программы</h3>
+            </div>
+            <div class="card-body">
+              <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">Все документы СМК формируются автоматически согласно промту оформления ИСО.</p>
+              <div id="smk-list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CARDS -->
+        <div id="sub-cards" class="subtab-content">
+          <div class="card">
+            <div class="card-head">
+              <div class="chi" style="background:var(--greenL)">🃏</div>
+              <h3>Карточки и отчёты</h3>
+            </div>
+            <div class="card-body">
+              <div id="cards-list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /tab-iso -->
+
+      <!-- SUOT TAB -->
+      <div id="tab-suot" class="tab-content">
+        <div class="card">
+          <div class="card-body" style="text-align:center;padding:50px">
+            <div style="font-size:48px;margin-bottom:16px">🦺</div>
+            <div style="font-size:16px;font-weight:600;color:var(--navy);margin-bottom:8px">СУОТ — в разработке</div>
+            <p style="font-size:13px;color:var(--muted)">Раздел СУОТ будет добавлен в следующей версии</p>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /page-docs -->
+
+    <!-- PAGE: COMPANIES -->
+    <div id="page-companies" class="page-content" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <div style="font-size:13px;color:var(--muted)" id="co-count">Загрузка...</div>
+        <button class="tb-btn navy" onclick="startCompanyFromRegistry()">+ Добавить компанию</button>
+      </div>
+      <div id="co-list" class="co-grid"></div>
+    </div>
+
+    <!-- PAGE: JOURNAL -->
+    <div id="page-journal" class="page-content" style="display:none">
+      <div id="journal-entries"></div>
+    </div>
+
+    <!-- PAGE: AI ОФОРМИТЕЛЬ -->
+    <div id="page-ai" class="page-content" style="display:none;height:calc(100vh - 52px);margin:-24px -28px;flex-direction:column">
+
+      <!-- KEY — задаётся через VIBE_API_KEY на сервере, не нужно вводить вручную -->
+      <div style="background:#E9EFE0;border-bottom:1px solid #B8C9A8;padding:5px 20px;display:flex;align-items:center;gap:8px;flex-shrink:0">
+        <span style="font-size:11px;color:#7D8F6E">✅ ИИгорь · BitrixGPT 5.5 Thinking · Vision · Бесплатно</span>
+      </div>
+
+      <!-- CHAT + CARD LAYOUT -->
+      <div style="flex:1;display:flex;overflow:hidden;min-height:0">
+
+        <!-- LEFT: DATA CARD -->
+        <div style="width:280px;flex-shrink:0;background:#fff;border-right:1px solid #EDE1D6;display:flex;flex-direction:column;overflow:hidden">
+          <div style="padding:12px 14px 8px;border-bottom:1px solid #EDE1D6;background:#FAF6F0">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+              <div style="font-size:12px;font-weight:700;color:#8B4A5C">Карточка компании</div>
+              <button onclick="aiOpenCompanySwitcher()" title="Сохранённые компании"
+                style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;color:#A6837D">📂</button>
+            </div>
+            <div id="ai-card-status" style="font-size:10px;color:#A8938A;margin-top:2px">Данных нет</div>
+          </div>
+          <div id="ai-card-body" style="flex:1;overflow-y:auto;padding:10px;font-size:11px">
+            <div style="color:#B49E93;text-align:center;padding:20px 10px">Передайте данные в чате →</div>
+          </div>
+          <div style="padding:10px;border-top:1px solid #EDE1D6;display:flex;flex-direction:column;gap:6px">
+            <button onclick="aiStartNewCompany()"
+              style="width:100%;height:28px;background:#fff;color:#A6837D;border:1px solid #E3D5C7;border-radius:6px;font-size:11px;cursor:pointer">
+              ➕ Новая компания
+            </button>
+            <button id="ai-gen-btn" onclick="aiGenerate()" disabled
+              style="width:100%;height:36px;background:#C299A8;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:not-allowed;transition:background .15s">
+              📦 Сформировать пакет
+            </button>
+          </div>
+        </div>
+
+        <!-- CHAT -->
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+          <div id="ai-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;gap:8px;align-items:flex-start;max-width:680px">
+              <div style="width:28px;height:28px;border-radius:50%;background:#8B4A5C;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0">ИГ</div>
+              <div style="padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:0.5px solid #EDE1D6;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+                Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.<br><br>💡 Если людей больше 3-4 или архив большой (много фото) — присылайте по одному человеку за раз (2-3 фото), так меньше риск ошибок при распознавании.
+              </div>
+            </div>
+          </div>
+
+          <!-- QUICK REPLIES -->
+          <div id="ai-quick" style="padding:0 14px 6px;display:flex;gap:5px;flex-wrap:wrap">
+            <button onclick="aiQuick('Исправь директора на: ')" class="ai-qr">✏️ Директора</button>
+            <button onclick="aiQuick('Дата выезда эксперта органа: ')" class="ai-qr">📅 Дата выезда</button>
+            <button onclick="aiQuick('Добавь объект: ')" class="ai-qr">🏗 Объект</button>
+            <button onclick="aiQuick('Поставщики: ')" class="ai-qr">📦 Поставщики</button>
+            <button onclick="aiQuick('Удостоверения ОТ сотрудников: ')" class="ai-qr">🛡 ОТ</button>
+            <button onclick="aiQuick('Обучись: ')" class="ai-qr">🧠 Обучить</button>
+          </div>
+
+          <!-- INPUT -->
+          <div style="padding:10px 14px;border-top:1px solid #EDE1D6;background:#fff">
+            <div id="ai-file-list" style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px"></div>
+            <div style="display:flex;gap:7px;align-items:flex-end">
+              <div style="flex:1;border:1px solid #D4C4B8;border-radius:12px;overflow:hidden;transition:border-color .15s">
+                <textarea id="ai-input" rows="2" placeholder="Вставьте текст от эксперта или напишите правку..."
+                  onkeydown="aiHandleKey(event)" oninput="aiResize(this)"
+                  style="width:100%;padding:8px 11px;border:none;outline:none;resize:none;font-family:inherit;font-size:12.5px;line-height:1.5;max-height:100px;min-height:38px;background:transparent"></textarea>
+                <div class="ai-input-actions">
+                  <label class="ai-file-action">
+                    📎 Прикрепить файл
+                    <input type="file" multiple
+                      accept=".txt,.docx,.pdf,.xlsx,.xls,.csv,.doc,.zip,.rar,.png,.jpg,.jpeg"
+                      style="display:none"
+                      id="ai-file-input">
+                  </label>
+                  <label class="ai-file-action raw"
+                    title="Показывает распознанный текст архива без участия ИИгоря — удобно для сверки исходных данных">
+                    🔍 Проверить исходный архив
+                    <input type="file" accept=".zip,.rar" style="display:none" id="ai-raw-check-input"
+                      onchange="aiRawCheckArchive(this.files[0])">
+                  </label>
+                  <span class="ai-input-help">PDF/PNG/JPG читает ИИ · DOCX/XLSX/ZIP поддерживаются · Enter — отправить</span>
+                </div>
+              </div>
+              <button id="ai-send-btn" onclick="aiSend()"
+                style="width:36px;height:36px;border-radius:8px;background:#8B4A5C;border:none;cursor:pointer;color:#fff;font-size:15px;flex-shrink:0;transition:background .15s">➤</button>
+            </div>
+            <!-- file input moved to body -->
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- PAGE: EXPERIENCE CALCULATOR -->
+    <div id="page-experience" class="page-content" style="display:none">
+      <div class="igor-panel" style="margin-bottom:14px">
+        <div class="igor-panel-head">
+          <div><b style="color:#8B4A5C">🧮 Расчёт трудового стажа</b><div style="font-size:10px;color:#A8938A;margin-top:2px">Периоды из трудовой книжки, ручной ввод и сохранение результата в карточку сотрудника</div></div>
+          <button class="igor-btn soft" onclick="stageReloadCompanies()">↻ Обновить компании</button>
+        </div>
+        <div class="igor-panel-body">
+          <div style="display:grid;grid-template-columns:1.2fr 1.2fr .7fr;gap:10px">
+            <div class="igor-field"><label>Компания</label><select id="stage-company" onchange="stageSelectCompany()"><option value="">Выберите компанию</option></select></div>
+            <div class="igor-field"><label>Сотрудник</label><select id="stage-person" onchange="stageSelectPerson()"><option value="">Выберите сотрудника</option></select></div>
+            <div class="igor-field"><label>Дата расчёта</label><input type="date" id="stage-calc-date" onchange="stageCalculate()"></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+            <button class="igor-btn primary" onclick="stageAddRow()">+ Добавить период</button>
+            <label class="igor-btn soft" style="display:inline-flex;align-items:center;gap:5px">📎 Распознать трудовую<input id="stage-labour-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.docx" style="display:none" onchange="stageReadLabourFile(this.files[0])"></label>
+            <label style="font-size:11px;color:#6E625C"><input type="checkbox" id="stage-merge-overlaps" checked onchange="stageCalculate()"> объединять пересекающиеся периоды</label>
+            <label style="font-size:11px;color:#6E625C"><input type="checkbox" id="stage-inclusive" checked onchange="stageCalculate()"> учитывать день увольнения</label>
+          </div>
+          <div class="stage-table-wrap">
+            <table class="stage-table">
+              <thead><tr><th>Начало</th><th>Окончание</th><th>Организация</th><th>Должность</th><th>По виду деятельности</th><th>Текущая компания</th><th>Уверенность</th><th></th></tr></thead>
+              <tbody id="stage-periods-body"></tbody>
+            </table>
+          </div>
+          <div id="stage-warnings" style="font-size:11px;color:#A6503D;margin-top:8px"></div>
+          <div class="stage-result-grid">
+            <div class="stage-result"><span style="font-size:10px;color:#8B7E76">Общий календарный стаж</span><b id="stage-total-result">0 лет 0 мес. 0 дн.</b></div>
+            <div class="stage-result"><span style="font-size:10px;color:#8B7E76">По заявляемому виду</span><b id="stage-relevant-result">0 лет 0 мес. 0 дн.</b></div>
+            <div class="stage-result"><span style="font-size:10px;color:#8B7E76">В текущей организации</span><b id="stage-current-result">0 лет 0 мес. 0 дн.</b></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button class="igor-btn green" onclick="stageSaveToPerson()">💾 Сохранить сотруднику</button>
+            <button class="igor-btn soft" onclick="stageClearRows()">Очистить периоды</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="igor-panel">
+        <div class="igor-panel-head"><b style="color:#8B4A5C">Расчёт на дату по уже известному стажу</b></div>
+        <div class="igor-panel-body">
+          <div style="display:grid;grid-template-columns:1fr repeat(3,.6fr) 1fr;gap:10px;align-items:end">
+            <div class="igor-field"><label>Дата начала отсчёта</label><input type="date" id="stage-base-start"></div>
+            <div class="igor-field"><label>Лет</label><input type="number" min="0" value="0" id="stage-base-years"></div>
+            <div class="igor-field"><label>Месяцев</label><input type="number" min="0" value="0" id="stage-base-months"></div>
+            <div class="igor-field"><label>Дней</label><input type="number" min="0" value="0" id="stage-base-days"></div>
+            <div class="igor-field"><label>Дата расчёта</label><input type="date" id="stage-base-end"></div>
+          </div>
+          <button class="igor-btn primary" onclick="stageCalculateFromBase()">Рассчитать</button>
+          <div id="stage-base-result" style="font-size:16px;font-weight:700;color:#8B4A5C;margin-top:10px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: KNOWLEDGE -->
+    <div id="page-knowledge" class="page-content" style="display:none">
+      <div class="igor-page-grid">
+        <div class="igor-panel">
+          <div class="igor-panel-head"><div><b style="color:#8B4A5C">🧠 Обучить ИИгоря</b><div style="font-size:10px;color:#A8938A;margin-top:2px">Обучать могут все эксперты и оформители. Каждое правило сохраняет автора и историю изменений.</div></div></div>
+          <div class="igor-panel-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div class="igor-field"><label>Кто обучает</label><input id="knowledge-author" placeholder="ФИО или имя"></div>
+              <div class="igor-field"><label>Область действия</label><select id="knowledge-scope"><option value="all">Все продукты</option><option value="iso">ISO 9001</option><option value="suot">СУОТ</option><option value="iso_suot">ISO + СУОТ</option><option value="spk">Все СПК</option><option value="spk_stroy">СПК Стройкомплекс</option><option value="spk_bisp">СПК БИСП</option><option value="company_att">Аттестация компании</option><option value="att">Аттестация специалиста</option></select></div>
+            </div>
+            <div class="igor-field"><label>Что ИИгорь должен запомнить</label><textarea id="knowledge-instruction" placeholder="Например: при виде работ 7.8.4 в Форму №2 добавлять ..."></textarea></div>
+            <div class="igor-field"><label>Регламент или правильный пример</label><input type="file" id="knowledge-file" accept=".txt,.doc,.docx,.pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg" onchange="knowledgeReadSelectedFile(this.files[0])"><div id="knowledge-file-status" style="font-size:10px;color:#A8938A"></div></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="igor-btn primary" onclick="knowledgePreviewRule()">Показать, что понял ИИгорь</button><button class="igor-btn soft" onclick="knowledgeClearForm()">Очистить</button></div>
+            <div id="knowledge-preview" style="margin-top:12px"></div>
+          </div>
+        </div>
+        <div class="igor-panel">
+          <div class="igor-panel-head"><b style="color:#8B4A5C">Активные правила и черновики</b><button class="igor-btn soft" onclick="knowledgeLoadRules()">↻</button></div>
+          <div class="igor-panel-body"><div class="igor-field"><input id="knowledge-search" placeholder="Поиск по правилам" oninput="knowledgeRenderRules()"></div><div id="knowledge-rules-list"><div style="color:#A8938A;font-size:11px">Загрузка...</div></div></div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+
+<!-- MODAL: Company form -->
+<div id="modal-bg">
+  <div id="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">Новая компания</h3>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="sec-lbl">Организация</div>
+      <div class="g2" style="margin-bottom:14px">
+        <div class="fg">
+          <label>Форма собственности <span class="req">*</span></label>
+          <select id="f-orgForm">
+            <option value="ООО">ООО</option>
+            <option value="ОАО">ОАО</option>
+            <option value="ЗАО">ЗАО</option>
+            <option value="УП">УП</option>
+            <option value="ИП">ИП</option>
+            <option value="РУП">РУП</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label>Название организации <span class="req">*</span></label>
+          <input id="f-orgName" placeholder="ЭнергоМагистраль" />
+        </div>
+        <div class="fg">
+          <label>Город <span class="req">*</span></label>
+          <input id="f-city" placeholder="Минск" value="Минск"/>
+        </div>
+        <div class="fg">
+          <label>Область СМК <span class="req">*</span></label>
+          <select id="f-scope">
+            <option value="выполнения функций генерального подрядчика, производства строительно-монтажных работ">Ген.подрядчик + СМР</option>
+            <option value="производства строительно-монтажных работ">Только СМР</option>
+            <option value="выполнения функций генерального подрядчика">Только ген.подрядчик</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Даты</div>
+      <div class="g3" style="margin-bottom:14px">
+        <div class="fg">
+          <label>Дата начала разработки <span class="req">*</span></label>
+          <input id="f-startDate" type="date"/>
+          <div class="hint">Журналы, начало</div>
+        </div>
+        <div class="fg">
+          <label>Дата внедрения <span class="req">*</span></label>
+          <input id="f-implDate" type="date"/>
+          <div class="hint">Основная дата приказов</div>
+        </div>
+        <div class="fg">
+          <label>Дата окончания системы <span class="req">*</span></label>
+          <input id="f-endDate" type="date"/>
+          <div class="hint">Протокол КС, отчёты</div>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Директор</div>
+      <div class="g3" style="margin-bottom:14px">
+        <div class="fg">
+          <label>Фамилия директора <span class="req">*</span></label>
+          <input id="f-dirSurname" placeholder="Шакуро"/>
+        </div>
+        <div class="fg">
+          <label>Инициалы директора <span class="req">*</span></label>
+          <input id="f-dirInitials" placeholder="А.А."/>
+        </div>
+        <div class="fg">
+          <label>Число ИТР <span class="req">*</span></label>
+          <input id="f-itrCount" type="number" placeholder="5" min="1"/>
+          <div class="hint">Для исходной инф. СМК</div>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Аудиторы (3 человека с удостоверениями ОТ)</div>
+      <div style="margin-bottom:14px">
+        <!-- Auditor 1 = Director -->
+        <div style="background:var(--goldL);padding:10px 12px;border-radius:var(--r);margin-bottom:10px">
+          <div style="font-size:10px;font-weight:700;color:var(--gold);margin-bottom:6px;letter-spacing:.06em">АУДИТОР 1 (обычно директор)</div>
+          <div class="g3">
+            <div class="fg">
+              <label>Должность <span class="req">*</span></label>
+              <input id="f-aud1Post" placeholder="директор" value="директор"/>
+            </div>
+            <div class="fg">
+              <label>Фамилия <span class="req">*</span></label>
+              <input id="f-aud1Surname" placeholder="Шакуро"/>
+            </div>
+            <div class="fg">
+              <label>Инициалы <span class="req">*</span></label>
+              <input id="f-aud1Initials" placeholder="А.А."/>
+            </div>
+          </div>
+        </div>
+        <!-- Auditor 2 -->
+        <div style="background:var(--tealL);padding:10px 12px;border-radius:var(--r);margin-bottom:10px">
+          <div style="font-size:10px;font-weight:700;color:var(--teal);margin-bottom:6px;letter-spacing:.06em">АУДИТОР 2</div>
+          <div class="g3">
+            <div class="fg">
+              <label>Должность <span class="req">*</span></label>
+              <input id="f-aud2Post" placeholder="главный инженер"/>
+            </div>
+            <div class="fg">
+              <label>Фамилия <span class="req">*</span></label>
+              <input id="f-aud2Surname" placeholder="Семенчуков"/>
+            </div>
+            <div class="fg">
+              <label>Инициалы <span class="req">*</span></label>
+              <input id="f-aud2Initials" placeholder="В.В."/>
+            </div>
+          </div>
+        </div>
+        <!-- Auditor 3 -->
+        <div style="background:var(--orangeL);padding:10px 12px;border-radius:var(--r)">
+          <div style="font-size:10px;font-weight:700;color:var(--orange);margin-bottom:6px;letter-spacing:.06em">АУДИТОР 3</div>
+          <div class="g3">
+            <div class="fg">
+              <label>Должность</label>
+              <input id="f-aud3Post" placeholder="производитель работ"/>
+            </div>
+            <div class="fg">
+              <label>Фамилия</label>
+              <input id="f-aud3Surname" placeholder="Нестерёнок"/>
+            </div>
+            <div class="fg">
+              <label>Инициалы</label>
+              <input id="f-aud3Initials" placeholder="С.Д."/>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Ответственный за ФНПА (2-й, не директор)</div>
+      <div class="g3" style="margin-bottom:14px">
+        <div class="fg">
+          <label>Должность</label>
+          <input id="f-secPost" placeholder="главный инженер"/>
+        </div>
+        <div class="fg">
+          <label>Фамилия</label>
+          <input id="f-secSurname" placeholder="Семенчуков"/>
+        </div>
+        <div class="fg">
+          <label>Инициалы</label>
+          <input id="f-secInitials" placeholder="В.В."/>
+        </div>
+      </div>
+
+      <div class="sec-lbl">Строительный объект (для отчёта)</div>
+      <div class="fg full" style="margin-bottom:14px">
+        <label>Наименование объекта</label>
+        <input id="f-object" placeholder="Жилой дом по ул. Ленина, г. Минск"/>
+      </div>
+
+      <div class="sec-lbl">Список ИТР <span style="color:var(--gold)">*</span></div>
+      <div class="fg full" style="margin-bottom:14px">
+        <label>ФИО сотрудников ИТР (каждый с новой строки) <span class="req">*</span></label>
+        <textarea id="f-itrList" rows="8" placeholder="Иванов Иван Иванович&#10;Петрова Мария Сергеевна&#10;Сидоров Александр Петрович" style="padding:9px 11px;border:1.5px solid var(--border);border-radius:var(--r);font-family:Fira Sans,sans-serif;font-size:13px;resize:vertical;width:100%"></textarea>
+        <div class="hint">Только ИТР должности (директор, инженеры, бухгалтеры, прорабы, мастера и т.д.) — берётся из штатного расписания. Используется в листе ознакомления с целями.</div>
+      </div>
+
+      <div id="modal-alert" class="alert err"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="tb-btn out" onclick="closeModal()">Отмена</button>
+      <button class="tb-btn navy" onclick="saveCompany()">💾 Сохранить компанию</button>
+    </div>
+  </div>
+</div>
+
+<!-- GENERATE MODAL -->
+<div id="gen-modal-bg" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:none;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:10px;width:100%;max-width:500px;box-shadow:0 20px 60px rgba(0,0,0,.25)">
+    <div class="modal-head">
+      <h3>⚡ Сформировать пакет документов</h3>
+      <button class="modal-close" onclick="closeGenModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="gen-co-info" style="background:var(--goldL);padding:12px;border-radius:var(--r);margin-bottom:14px;font-size:13px"></div>
+      <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">Будут сформированы все документы ИСО: журналы, инструкции, приказы, протоколы, программы. Итоговый пакет — ZIP-архив.</p>
+
+      <button class="gen-btn" id="gen-btn" onclick="doGenerate()">
+        <div class="spin" id="gen-spin"></div>
+        <span id="gen-btn-text">⚡ Сформировать все документы</span>
+      </button>
+
+      <div id="gen-error" class="alert err"></div>
+      <div id="gen-result" style="display:none;margin-top:14px;background:#F3F3E9;border:1px solid #B8C9A8;border-radius:var(--r);padding:16px">
+        <div style="font-size:13px;font-weight:700;color:var(--green);margin-bottom:8px">✅ Документы готовы!</div>
+        <div id="gen-result-info" style="font-size:12px;color:var(--green);margin-bottom:12px"></div>
+        <a id="gen-dl-link" class="dl-btn" href="#" onclick="downloadZip(event)">
+          ⬇ Скачать ZIP-архив
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── STATE ─────────────────────────────────────────────────
+let currentPage = 'ai';
+let companies = [];
+let selectedCompanyId = null;
+let currentGenZip = null;
+let editingCompanyId = null;
+
+// ── NAVIGATION ────────────────────────────────────────────
+function nav(page, el) {
+  document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.page-content').forEach(p => p.style.display = 'none');
+  // AI страница должна показываться как flex, остальные как block
+  document.getElementById('page-' + page).style.display = page === 'ai' ? 'flex' : 'block';
+  currentPage = page;
+
+  const titles = { docs: 'Документы ИСО', companies: 'Компании', experience:'Расчёт стажа', knowledge:'Знания ИИгоря', journal: 'Журнал генераций', ai:'ИИгорь Оформитель'};
+  document.getElementById('page-title').textContent = titles[page] || page;
+  document.getElementById('btn-gen-top').style.display = page === 'docs' ? 'flex' : 'none';
+
+  if (page === 'companies') loadCompanies();
+  if (page === 'journal') loadJournal();
+  if (page === 'experience') stageReloadCompanies();
+  if (page === 'knowledge') knowledgeInitPage();
+}
+
+function switchTab(name, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+function switchSub(name, el) {
+  document.querySelectorAll('.subtab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.subtab-content').forEach(t => t.classList.remove('active'));
+  document.getElementById('sub-' + name).classList.add('active');
+}
+
+// ── DOCUMENT LISTS ────────────────────────────────────────
+const JOURNALS = [
+  'Журнал учёта документов СМК',
+  'Журнал учёта должностных инструкций',
+  'Журнал учёта СИ',
+  'Журнал учёта тех. документации',
+  'Журнал рег. входящей документации',
+  'Журнал рег. исходящей корреспонденции',
+  'Журнал рег. приказов',
+  'Журнал рег. договоров с заказчиками',
+  'Журнал рег. договоров с поставщиками',
+  'Журнал рег. проектно-сметной документации',
+  'Журнал входного контроля СТБ 1306',
+  'Журнал учёта претензий',
+];
+
+const DI_LIST = [
+  'ДИ Директор', 'ДИ Главный инженер', 'ДИ Главный бухгалтер',
+  'ДИ Производитель работ', 'ДИ Мастер', 'ДИ Мастер эл/монтажных работ',
+  'ДИ Инженер по сметной работе', 'ДИ Специалист по организ. закупок',
+  'ДИ Агент по снабжению', 'ДИ Юрисконсульт',
+];
+
+const SMK_LIST = [
+  '1. Политика в области качества',
+  '2.1 Цели в области качества',
+  '2.2 Лист ознакомления с целями',
+  '3. Номенклатура дел',
+  '3.1 Приказ о начале разработки СМК',
+  '3.2 Приказ о введении в действие СМК',
+  '3.3 Приказ о назначении аудиторов',
+  '3.4 Приказ о внесении изменений в ДИ',
+  '3.5 Приказ о назначении отв. за риски',
+  '3.6 Приказ о назначении рук. процесса',
+  '3.7 Приказ об отв. за ФНПА и фонд СМК',
+  '3.8.1 Приказ о создании КС',
+  '3.8.2 Протокол КС',
+  '3.9.1 Приказ о внутреннем обучении',
+  '3.9.2 Протокол обучения',
+  '3.9.3 Программа обучения СМК',
+  '4.1 Программа внутренних аудитов',
+  'Реестр рисков',
+  'План-отчёт мероприятий по рискам',
+  'Анкета-вопросник СМК',
+  'Исходная информация СМК',
+  'Отчёт по процессу строительства',
+  'Перечень продукции вх. контроля',
+  'План по возможностям',
+  'План повышения квалификации',
+  'Приказ о вх. контроле',
+  'Приказ о ТО СИ',
+  'РК СМК', 'СТП СМК 02', 'СТП СМК 03', 'СТП СМК 04',
+  'Сводный отчёт по СМК',
+];
+
+const CARDS_LIST = [
+  'Отчёт по оценке удовлетв. заказчиков',
+  'Карточка оценки поставщиков 1',
+  'Карточка оценки поставщиков 2',
+  'Карточка оценки поставщиков 3',
+];
+
+function renderDocLists() {
+  const renderList = (items, containerId, color) => {
+    const c = document.getElementById(containerId);
+    if (!c) return;
+    c.innerHTML = items.map(i => `
+      <div style="background:${color};padding:8px 10px;border-radius:4px;font-size:11.5px;display:flex;align-items:center;gap:6px">
+        <span>📄</span> ${i}
+      </div>`).join('');
+  };
+  
+  const jl = document.getElementById('journal-list');
+  if (jl) jl.outerHTML = `<div id="journal-list" style="display:contents">${JOURNALS.map(i => `
+    <div style="background:#F5E8ED;padding:8px 10px;border-radius:4px;font-size:11.5px;display:flex;align-items:center;gap:6px">
+      <span>📓</span> ${i}
+    </div>`).join('')}</div>`;
+  
+  renderList(DI_LIST, 'di-list', '#F5EAE8');
+  renderList(SMK_LIST, 'smk-list', '#FFF8F0');
+  renderList(CARDS_LIST, 'cards-list', '#F3F3E9');
+}
+
+// ── COMPANIES ─────────────────────────────────────────────
+async function loadCompanies() {
+  // Единый реестр ИИгоря: здесь отображается полная сохранённая карточка,
+  // а не старый сокращённый набор полей из /api/companies.
+  companies = await aiListSavedCompanies();
+  renderCompanies();
+}
+
+function _companyArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function _companyDisplayName(item) {
+  const data = item?.data || {};
+  const c = data.company || {};
+  const form = c.form || 'Организация';
+  const name = c.name || 'Черновик без названия';
+  return `${form} «${name}»`;
+}
+
+function _companyDetailLines(item) {
+  const data = item?.data || {};
+  const c = data.company || {};
+  const ca = data.company_attestation || {};
+  const spk = data.spk || {};
+  const staff = _companyArray(data.staff).length || _companyArray(ca.itr).length;
+  const workers = _companyArray(data.workers).length || _companyArray(ca.workers).length;
+  const objects = _companyArray(data.objects).length || _companyArray(ca.experience_objects).length || _companyArray(spk.objects).length;
+  const suppliers = _companyArray(data.suppliers).length || _companyArray(spk.suppliers).length;
+  const measurementTools = _companyArray(spk.measurement_tools).length;
+  const ttk = _companyArray(spk.ttk).length;
+  const product = data.certification?.standard || 'не выбран';
+  const requisites = [c.unp && `УНП ${c.unp}`, c.city || c.legal_address || c.address].filter(Boolean).join(' · ');
+  const counts = [`ИТР: ${staff}`, `рабочих: ${workers}`, `объектов: ${objects}`, `поставщиков: ${suppliers}`, `СИ: ${measurementTools}`, `ТТК: ${ttk}`].join(' · ');
+  return { requisites, counts, product, director: c.director_fio || 'не указан' };
+}
+
+function renderCompanies() {
+  const c = document.getElementById('co-list');
+  if(!c) return;
+  document.getElementById('co-count').textContent = `${companies.length} ${pluralize(companies.length, 'компания', 'компании', 'компаний')}`;
+
+  if (!companies.length) {
+    c.innerHTML = `<div class="empty"><div class="ei">🏢</div><p>Нет сохранённых карточек. Добавьте первую компанию в ИИгоре.</p></div>`;
+    return;
+  }
+
+  c.innerHTML = companies.map(item => {
+    const d = _companyDetailLines(item);
+    const dateStr = item.savedAt ? new Date(item.savedAt).toLocaleString('ru-RU') : '—';
+    const key = encodeURIComponent(item.key || '');
+    return `
+      <div class="co-card${aiCurrentCompanyKey === item.key ? ' selected' : ''}">
+        <div class="co-name">${aiEscapeHtml(_companyDisplayName(item))}</div>
+        <div class="co-meta">📌 Продукт: ${aiEscapeHtml(d.product)} &nbsp;·&nbsp; 👤 ${aiEscapeHtml(d.director)}</div>
+        <div class="co-meta">${aiEscapeHtml(d.requisites || 'Реквизиты пока не заполнены')}</div>
+        <div class="co-meta">${aiEscapeHtml(d.counts)}</div>
+        <div class="co-meta">💾 ${aiEscapeHtml(dateStr)}</div>
+        <div class="co-actions">
+          <button class="co-btn edit" onclick="showSavedCompanyDetails(decodeURIComponent('${key}'))">Все данные</button>
+          <button class="co-btn gen" onclick="openSavedCompanyFromRegistry(decodeURIComponent('${key}'))">Открыть в ИИгоре</button>
+          <button class="co-btn del" onclick="deleteSavedCompanyFromRegistry(decodeURIComponent('${key}'))">🗑</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function startCompanyFromRegistry() {
+  await aiStartNewCompany();
+  const aiItem = document.querySelector('.sb-item[data-page="ai"]');
+  if(aiItem) nav('ai', aiItem);
+}
+
+async function openSavedCompanyFromRegistry(key) {
+  const ok = await aiLoadCompany(key);
+  if(!ok) { alert('Не удалось загрузить карточку компании'); return; }
+  aiRestoreChatUI();
+  aiRenderCardFromCurrent();
+  const aiItem = document.querySelector('.sb-item[data-page="ai"]');
+  if(aiItem) nav('ai', aiItem);
+}
+
+async function deleteSavedCompanyFromRegistry(key) {
+  if(!confirm('Удалить сохранённую карточку компании?')) return;
+  await aiDeleteSavedCompany(key);
+  if(aiCurrentCompanyKey === key) {
+    aiCurrentCompanyKey = null;
+    aiCurrentData = {};
+    aiHistory = [];
+  }
+  await loadCompanies();
+}
+
+async function showSavedCompanyDetails(key) {
+  const item = companies.find(row => row.key === key);
+  if(!item) return;
+  const data = item.data || {};
+  const company = data.company || {};
+  const ca = data.company_attestation || {};
+  const spk = data.spk || {};
+  const people = _companyArray(data.staff).length ? _companyArray(data.staff) : _companyArray(ca.itr);
+  const workers = _companyArray(data.workers).length ? _companyArray(data.workers) : _companyArray(ca.workers);
+  const objects = _companyArray(data.objects).length ? _companyArray(data.objects) : (_companyArray(ca.experience_objects).length ? _companyArray(ca.experience_objects) : _companyArray(spk.objects));
+  const suppliers = _companyArray(data.suppliers).length ? _companyArray(data.suppliers) : _companyArray(spk.suppliers);
+
+  const value = v => aiEscapeHtml(v || '—');
+  const personLine = p => value(p.fio || p.name || p.full_name || p.profession || p.position || JSON.stringify(p));
+  const listBlock = (title, rows, formatter) => `
+    <div style="margin-top:14px"><b>${aiEscapeHtml(title)} (${rows.length})</b>
+      <div style="margin-top:5px;color:#5f5350">${rows.length ? rows.map((r,i)=>`${i+1}. ${formatter(r)}`).join('<br>') : '—'}</div>
+    </div>`;
+
+  let modal = document.getElementById('company-details-modal');
+  if(!modal) {
+    modal = document.createElement('div');
+    modal.id = 'company-details-modal';
+    document.body.appendChild(modal);
+  }
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(20,20,20,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.onclick = e => { if(e.target === modal) modal.style.display='none'; };
+  modal.innerHTML = `<div style="background:#fff;border-radius:12px;width:min(760px,96vw);max-height:86vh;overflow:auto;padding:20px;box-shadow:0 16px 50px rgba(0,0,0,.25)">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+      <h3 style="margin:0;color:#8B4A5C">${aiEscapeHtml(_companyDisplayName(item))}</h3>
+      <button onclick="document.getElementById('company-details-modal').style.display='none'" style="border:none;background:none;font-size:20px;cursor:pointer">×</button>
+    </div>
+    <div style="font-size:12px;line-height:1.6;margin-top:12px">
+      <b>УНП:</b> ${value(company.unp)}<br>
+      <b>Юридический адрес:</b> ${value(company.legal_address || company.address)}<br>
+      <b>Почтовый адрес:</b> ${value(company.postal_address)}<br>
+      <b>Банк / счёт / БИК:</b> ${value(company.bank_name)} / ${value(company.account)} / ${value(company.bik)}<br>
+      <b>Телефон / e-mail:</b> ${value(company.phone)} / ${value(company.email)}<br>
+      <b>Руководитель:</b> ${value(company.director_position)} ${value(company.director_fio)}<br>
+      <b>Продукт:</b> ${value(data.certification?.standard)}
+      ${listBlock('ИТР и сотрудники', people, personLine)}
+      ${listBlock('Рабочие', workers, personLine)}
+      ${listBlock('Объекты', objects, o => value(o.name || o.object_name || o.address || (typeof o === 'string' ? o : JSON.stringify(o))))}
+      ${listBlock('Поставщики', suppliers, o => value(o.name || o.supplier || (typeof o === 'string' ? o : JSON.stringify(o))))}
+      ${listBlock('Виды работ', _companyArray(data.work_types).length ? _companyArray(data.work_types) : _companyArray(ca.work_items), o => value(typeof o === 'string' ? o : (o.name || o.title || o.code || JSON.stringify(o))))}
+      ${listBlock('Средства измерений', _companyArray(spk.measurement_tools), o => value(o.name || o.model || JSON.stringify(o)))}
+      ${listBlock('Документы поверки', _companyArray(spk.verification_documents), o => value(o.number || o.tool || JSON.stringify(o)))}
+      ${listBlock('ТТК', _companyArray(spk.ttk), o => value(o.code || o.name || JSON.stringify(o)))}
+      ${listBlock('Машины и оборудование', _companyArray(spk.machinery), o => value(o.name || o.model || JSON.stringify(o)))}
+      ${listBlock('Помещения', _companyArray(spk.premises), o => value(o.address || o.document || JSON.stringify(o)))}
+      ${listBlock('Исходные документы', _companyArray(data.source_documents), o => value(o.filename || o.path || JSON.stringify(o)))}
+    </div>
+  </div>`;
+}
+
+// Оставляем старые имена функций для совместимости с уже открытыми страницами.
+function selectCompany(id) { selectedCompanyId = id; }
+function selectAndGen(id) { selectedCompanyId = id; openSavedCompanyFromRegistry(id); }
+function editCompany(id) { openSavedCompanyFromRegistry(id); }
+async function deleteCompany(id) { return deleteSavedCompanyFromRegistry(id); }
+
+// ── COMPANY MODAL ─────────────────────────────────────────
+function openCoModal(data) {
+  editingCompanyId = data?.id || null;
+  document.getElementById('modal-title').textContent = data ? 'Редактировать компанию' : 'Новая компания';
+  
+  const fields = ['orgForm','orgName','city','scope','startDate','implDate','endDate',
+    'dirSurname','dirInitials','itrCount',
+    'aud1Post','aud1Surname','aud1Initials',
+    'aud2Post','aud2Surname','aud2Initials',
+    'aud3Post','aud3Surname','aud3Initials',
+    'secPost','secSurname','secInitials','object','itrList'];
+  
+  if (data) {
+    fields.forEach(f => {
+      const el = document.getElementById('f-' + f);
+      if (el) el.value = data[f] || '';
+    });
+  } else {
+    fields.forEach(f => {
+      const el = document.getElementById('f-' + f);
+      if (el && !['orgForm','city','f-aud1Post'].includes(f)) el.value = '';
+    });
+  }
+  
+  document.getElementById('modal-alert').style.display = 'none';
+  document.getElementById('modal-bg').classList.add('open');
+}
+
+function editCompany(id) {
+  const co = companies.find(c => c.id === id);
+  if (co) openCoModal(co);
+}
+
+function closeModal() {
+  document.getElementById('modal-bg').classList.remove('open');
+}
+
+async function saveCompany() {
+  const required = ['orgName','dirSurname','dirInitials','implDate','aud1Surname','aud2Surname'];
+  for (const f of required) {
+    if (!document.getElementById('f-' + f)?.value.trim()) {
+      const alert = document.getElementById('modal-alert');
+      alert.textContent = `⚠️ Заполните обязательные поля`;
+      alert.style.display = 'block';
+      return;
+    }
+  }
+  
+  const data = {};
+  ['orgForm','orgName','city','scope','startDate','implDate','endDate',
+   'dirSurname','dirInitials','itrCount',
+   'aud1Post','aud1Surname','aud1Initials',
+   'aud2Post','aud2Surname','aud2Initials',
+   'aud3Post','aud3Surname','aud3Initials',
+   'secPost','secSurname','secInitials','object','itrList'].forEach(f => {
+    data[f] = document.getElementById('f-' + f)?.value.trim() || '';
+  });
+  
+  if (editingCompanyId) data.id = editingCompanyId;
+  
+  await fetch('/api/companies/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  closeModal();
+  loadCompanies();
+}
+
+// ── GENERATE ──────────────────────────────────────────────
+function openGenModal() {
+  const co = companies.find(c => c.id === selectedCompanyId);
+  if (!co && currentPage === 'docs') {
+    alert('Сначала выберите компанию в разделе «Компании»');
+    return;
+  }
+  
+  const info = document.getElementById('gen-co-info');
+  if (co) {
+    info.innerHTML = `<strong>${co.orgForm} «${co.orgName}»</strong><br>Директор: ${co.dirSurname} ${co.dirInitials} · Дата внедрения: ${co.implDate}`;
+  } else {
+    info.innerHTML = '<span style="color:var(--red)">⚠️ Компания не выбрана</span>';
+  }
+  
+  document.getElementById('gen-result').style.display = 'none';
+  document.getElementById('gen-error').style.display = 'none';
+  document.getElementById('gen-modal-bg').style.display = 'flex';
+}
+
+function closeGenModal() {
+  document.getElementById('gen-modal-bg').style.display = 'none';
+}
+
+async function doGenerate() {
+  const co = companies.find(c => c.id === selectedCompanyId);
+  if (!co) {
+    document.getElementById('gen-error').textContent = '⚠️ Выберите компанию';
+    document.getElementById('gen-error').style.display = 'block';
+    return;
+  }
+  
+  const btn = document.getElementById('gen-btn');
+  const spin = document.getElementById('gen-spin');
+  const btnText = document.getElementById('gen-btn-text');
+  
+  btn.disabled = true;
+  spin.style.display = 'block';
+  btnText.textContent = 'Формирование...';
+  document.getElementById('gen-error').style.display = 'none';
+  
+  try {
+    const resp = await fetch('/api/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(co)
+    });
+    const result = await resp.json();
+    
+    if (!result.success) throw new Error(result.error || 'Ошибка генерации');
+    
+    currentGenZip = result.zip;
+    document.getElementById('gen-result-info').textContent = `Сформировано ${result.fileCount} документов`;
+    document.getElementById('gen-result').style.display = 'block';
+    loadJournal();
+    
+  } catch(e) {
+    document.getElementById('gen-error').textContent = '⚠️ ' + e.message;
+    document.getElementById('gen-error').style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    spin.style.display = 'none';
+    btnText.textContent = '⚡ Сформировать все документы';
+  }
+}
+
+function downloadZip(e) {
+  e.preventDefault();
+  if (!currentGenZip) return;
+  const co = companies.find(c => c.id === selectedCompanyId);
+  const name = co ? `ISO_${co.orgName}.zip` : 'ISO_docs.zip';
+  const blob = b64Blob(currentGenZip);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+}
+
+function b64Blob(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i=0; i<bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], {type: 'application/zip'});
+}
+
+// ── JOURNAL ───────────────────────────────────────────────
+async function loadJournal() {
+  const c = document.getElementById('journal-entries');
+  c.innerHTML = `<div class="empty"><div class="ei">⏳</div><p>Загрузка...</p></div>`;
+
+  const entries = await aiListPersistentJournal();
+
+  if (!entries.length) {
+    c.innerHTML = `<div class="empty"><div class="ei">📋</div><p>Журнал пуст. Сформируйте документы для компании.</p></div>`;
+    return;
+  }
+
+  c.innerHTML = entries.map(e => {
+    const dateStr = e.created ? new Date(e.created).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+    return `
+    <div class="jn-item">
+      <div class="jn-icon">📦</div>
+      <div class="jn-info">
+        <div class="jn-name">${e.orgName}</div>
+        <div class="jn-meta">📅 ${dateStr} · 📄 ${e.fileCount} файлов · Внедрение: ${e.implDate || '—'}</div>
+      </div>
+      <div class="jn-actions">
+        <button class="co-btn gen" onclick="aiDownloadFromJournal('${e.key}','${(e.orgName||'').replace(/'/g,"\\'")}')">⬇ Скачать</button>
+        <button class="co-btn del" onclick="aiDeleteFromJournal('${e.key}')">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── CUSTOM TEMPLATE ───────────────────────────────────────
+function openAddTemplate() {
+  alert('Раздел «Свой шаблон» — в разработке.\n\nВы сможете загрузить свой .docx файл и программа автоматически определит поля для замены.');
+}
+
+// ── UTILS ─────────────────────────────────────────────────
+function pluralize(n, one, few, many) {
+  n = Math.abs(n) % 100;
+  const n1 = n % 10;
+  if (n > 10 && n < 20) return many;
+  if (n1 > 1 && n1 < 5) return few;
+  if (n1 === 1) return one;
+  return many;
+}
+
+// ── INIT ──────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  renderDocLists();
+  loadCompanies().catch(() => {});
+});
+</script>
+
+<style>
+.prod-btn{font-size:11px;padding:4px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);cursor:pointer;font-family:inherit;transition:all .12s}
+.prod-btn:hover{background:rgba(255,255,255,.18);color:#fff}
+.active-prod{background:var(--accent)!important;border-color:var(--accent)!important;color:#fff!important;font-weight:700}
+.ai-qr{font-size:11px;padding:4px 10px;border-radius:16px;border:1px solid #D4C4B8;background:#fff;color:#4A3639;cursor:pointer;font-family:inherit;transition:all .12s}
+.ai-qr:hover{border-color:#7A4552;color:#8B4A5C;background:#F3E4E8}
+.ai-msg-ai{display:flex;gap:8px;align-items:flex-start;max-width:680px;align-self:flex-start}
+.ai-msg-user{display:flex;gap:8px;align-items:flex-start;max-width:680px;align-self:flex-end;flex-direction:row-reverse}
+.ai-bubble-ai{padding:9px 12px;border-radius:10px;border-bottom-left-radius:3px;background:#fff;border:.5px solid #EDE1D6;font-size:12.5px;line-height:1.55;box-shadow:0 1px 3px rgba(0,0,0,.05);max-width:calc(100% - 40px)}
+.ai-bubble-user{padding:9px 12px;border-radius:10px;border-bottom-right-radius:3px;background:#8B4A5C;color:#fff;font-size:12.5px;line-height:1.55;max-width:calc(100% - 40px)}
+.ai-avatar{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;flex-shrink:0}
+.ai-q-block{margin-top:8px;padding:8px 10px;background:#FDF8EE;border:1px solid #F7DDE1;border-radius:8px}
+.ai-q-title{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#C97B84;margin-bottom:4px}
+.ai-q-item{display:flex;gap:5px;padding:3px 0;border-bottom:.5px solid #F7DDE1;font-size:11px}
+.ai-q-item:last-child{border-bottom:none}
+.ai-df{display:flex;justify-content:space-between;padding:4px 6px;border-bottom:.5px solid #EDE1D6;gap:6px}
+.ai-df:last-child{border-bottom:none}
+.ai-dl{font-size:9.5px;color:#A6837D;flex-shrink:0}
+.ai-dv{font-size:10.5px;font-weight:600;color:#7D8F6E;text-align:right;word-break:break-word}
+.ai-person{display:flex;align-items:center;gap:5px;padding:4px 7px;border-radius:6px;background:#F3E4E8;border:.5px solid #E0BFC7;margin-bottom:3px}
+.ai-pname{font-size:10.5px;font-weight:700;color:#8B4A5C}
+.ai-prole{font-size:9.5px;color:#A66678}
+.ai-person-detail{border-radius:8px;background:#FDF8EE;border:.5px solid #E8DCC8;margin-bottom:6px;overflow:hidden}
+.ai-person-detail summary{display:flex;align-items:center;gap:7px;padding:7px 9px;cursor:pointer;list-style:none}
+.ai-person-detail summary::-webkit-details-marker{display:none}
+.ai-person-detail summary:hover{background:#F7EFE4}
+.ai-person-detail[open] summary{border-bottom:.5px solid #E8DCC8}
+.ai-person-detail-body{padding:8px 10px 10px 41px;display:flex;flex-direction:column;gap:8px}
+.ai-field-row{display:flex;flex-direction:column;gap:1px}
+.ai-field-label{font-size:9px;color:#A6837D;text-transform:uppercase;letter-spacing:.02em}
+.ai-field-val{font-size:11px;font-weight:600;color:#4A3639;line-height:1.4;word-break:normal;overflow-wrap:break-word}
+.ai-flag-err{padding:5px 8px;border-radius:6px;background:#FCE9E7;border:.5px solid #E8B4B0;color:#B5544A;font-size:10.5px;margin-bottom:4px}
+.ai-flag-warn{padding:5px 8px;border-radius:6px;background:#FBEAE0;border:.5px solid #E8B8A0;color:#7A4235;font-size:10.5px;margin-bottom:4px}
+.ai-flag-ok{padding:5px 8px;border-radius:6px;background:#E9EFE0;border:.5px solid #B8C9A8;color:#7D8F6E;font-size:10.5px;margin-bottom:4px}
+.ai-sec{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#A8938A;margin:8px 0 4px;display:flex;align-items:center;gap:5px}
+.ai-sec::after{content:'';flex:1;height:.5px;background:#EDE1D6}
+.typing-dot{width:5px;height:5px;border-radius:50%;background:#A6837D;animation:tdot .8s infinite;display:inline-block;margin:0 2px}
+.typing-dot:nth-child(2){animation-delay:.15s}
+.typing-dot:nth-child(3){animation-delay:.3s}
+@keyframes tdot{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-4px)}}
+</style>
+
+<script>
+// ── ИИгорь Оформитель ────────────────────────────────────────────
+let aiKey = 'server'; // ключ хранится на сервере
+let aiHistory = [];
+let aiCurrentData = {};
+let aiPhotoThumbnails = {}; // filename -> base64 миниатюра, для проверки распознанных данных глазами
+
+function aiShowPhotoFull(filename) {
+  const b64 = aiPhotoThumbnails[filename];
+  if(!b64) return;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(74,54,57,.75);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:20px';
+  overlay.onclick = () => overlay.remove();
+  overlay.innerHTML = `
+    <div style="max-width:90vw;max-height:90vh;display:flex;flex-direction:column;align-items:center;gap:10px">
+      <img src="data:image/jpeg;base64,${b64}" style="max-width:100%;max-height:80vh;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.4)" />
+      <div style="color:#FFFBF6;font-size:13px;background:rgba(0,0,0,.3);padding:4px 12px;border-radius:6px">${filename} · нажмите чтобы закрыть</div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+let aiLoading = false;
+let aiCurrentCompanyKey = null; // стабильный ключ карточки, не меняется при исправлении названия/УНП
+const AI_LOCAL_PREFIX = 'igor:company:';
+const AI_LAST_COMPANY_KEY = 'igor:last-company-key';
+const AI_AUTOSAVE_INTERVAL_MS = 12000;
+let aiAutosaveTimer = null;
+
+function aiEscapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+}
+
+function aiMakeStableCompanyKey() {
+  if (globalThis.crypto?.randomUUID) return AI_LOCAL_PREFIX + globalThis.crypto.randomUUID();
+  return AI_LOCAL_PREFIX + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+}
+
+function aiEnsureCompanyKey() {
+  if (!aiCurrentCompanyKey) aiCurrentCompanyKey = aiMakeStableCompanyKey();
+  return aiCurrentCompanyKey;
+}
+
+function aiCompactHistory(history) {
+  // Сырые тексты архивов могут занимать мегабайты и переполнить localStorage.
+  // В карточке сохраняются все структурированные данные; в локальной истории — только
+  // последние сообщения в компактном виде для восстановления интерфейса.
+  const rows = Array.isArray(history) ? history.slice(-40) : [];
+  let total = 0;
+  const result = [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i] || {};
+    let content = String(row.content || '');
+    content = content
+      .replace(/===\s*📦?\s*СОСТАВ АРХИВА[\s\S]*?(?=\n===|\nЗАПРОС:|$)/gi, '[состав архива сохранён в структурированных данных]')
+      .replace(/===\s*📚?\s*ИСХОДНЫЕ ДОКУМЕНТЫ[\s\S]*?(?=\n===|\nЗАПРОС:|$)/gi, '[исходные документы обработаны]');
+    if(content.length > 16000) content = content.slice(0, 16000) + '\n[сообщение сокращено при сохранении]';
+    if(total + content.length > 450000) break;
+    total += content.length;
+    result.unshift({role: row.role, content});
+  }
+  return result;
+}
+
+function aiCloneForStorage(value) {
+  try { return JSON.parse(JSON.stringify(value ?? {})); }
+  catch (_) { return {}; }
+}
+
+function aiBuildCompanyPayload() {
+  return {
+    version: 14,
+    data: aiCloneForStorage(aiCurrentData),
+    history: aiCompactHistory(aiHistory),
+    savedAt: new Date().toISOString(),
+    label: `${aiCurrentData?.company?.form || 'Организация'} «${aiCurrentData?.company?.name || 'Черновик'}»`,
+  };
+}
+
+function aiLocalSetCompany(key, payload) {
+  try {
+    localStorage.setItem(key, JSON.stringify(payload));
+    localStorage.setItem(AI_LAST_COMPANY_KEY, key);
+    return true;
+  } catch (e) {
+    console.warn('Локальное сохранение не выполнено:', e);
+    return false;
+  }
+}
+
+function aiLocalGetCompany(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    console.warn('Повреждённая локальная карточка:', key, e);
+    return null;
+  }
+}
+
+function aiLocalListCompanies() {
+  const rows = [];
+  try {
+    for(let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if(!key || !key.startsWith(AI_LOCAL_PREFIX)) continue;
+      const payload = aiLocalGetCompany(key);
+      if(payload) rows.push({key, ...payload, source:'local'});
+    }
+  } catch (e) {
+    console.warn('Не удалось прочитать локальный реестр компаний:', e);
+  }
+  return rows;
+}
+
+function aiSaveCurrentCompanyLocal() {
+  if (!aiCurrentData || !Object.keys(aiCurrentData).length) return false;
+  const key = aiEnsureCompanyKey();
+  return aiLocalSetCompany(key, aiBuildCompanyPayload());
+}
+
+// ── Серверное KV-хранилище. Оно является синхронизацией/резервной копией.
+// Локальная копия создаётся синхронно и переживает закрытие вкладки даже тогда,
+// когда Render перезапускается или запрос не успевает завершиться.
+async function kvSet(key, value) {
+  const response = await fetch('/api/kv/set', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({key, value})
+  });
+  const result = await response.json().catch(() => ({}));
+  if(!response.ok || result.success === false) throw new Error(result.error || `HTTP ${response.status}`);
+  return result;
+}
+async function kvGet(key) {
+  const response = await fetch('/api/kv/get?key=' + encodeURIComponent(key));
+  if(!response.ok) throw new Error(`HTTP ${response.status}`);
+  const r = await response.json();
+  return (r && r.value != null) ? r : null;
+}
+async function kvList(prefix) {
+  const response = await fetch('/api/kv/list?prefix=' + encodeURIComponent(prefix || ''));
+  if(!response.ok) throw new Error(`HTTP ${response.status}`);
+  const r = await response.json();
+  return (r && r.keys) || [];
+}
+async function kvDelete(key) {
+  const response = await fetch('/api/kv/delete', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({key})
+  });
+  if(!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+
+function aiCompanyStorageKey() {
+  // Ключ намеренно не строится из названия/УНП: пользователь может исправить их,
+  // а карточка при этом не должна раздваиваться или исчезать.
+  return aiEnsureCompanyKey();
+}
+
+async function aiSaveCurrentCompany() {
+  if (!aiCurrentData || !Object.keys(aiCurrentData).length) return false;
+  const key = aiCompanyStorageKey();
+  const payload = aiBuildCompanyPayload();
+
+  // Сначала синхронная локальная запись — это главный фикс потери данных при закрытии.
+  aiLocalSetCompany(key, payload);
+
+  try {
+    await kvSet(key, JSON.stringify(payload));
+    return true;
+  } catch (e) {
+    // Не считаем потерей данных: локальная копия уже записана.
+    console.warn('Серверная синхронизация карточки не выполнена:', e);
+    return false;
+  }
+}
+
+async function aiListSavedCompanies() {
+  const merged = new Map();
+  aiLocalListCompanies().forEach(item => merged.set(item.key, item));
+
+  try {
+    const keys = await kvList(AI_LOCAL_PREFIX);
+    for (const key of keys) {
+      try {
+        const r = await kvGet(key);
+        if(!r) continue;
+        const serverItem = {key, ...JSON.parse(r.value), source:'server'};
+        const localItem = merged.get(key);
+        if(!localItem || String(serverItem.savedAt || '') > String(localItem.savedAt || '')) {
+          merged.set(key, serverItem);
+          // Восстанавливаем локальную копию после очистки браузера/на другом открытии.
+          aiLocalSetCompany(key, serverItem);
+        }
+      } catch (e) {
+        console.warn('Пропущена повреждённая серверная карточка:', key, e);
+      }
+    }
+  } catch (e) {
+    console.warn('Серверный список недоступен, используется локальный:', e);
+  }
+
+  const results = [...merged.values()];
+  results.sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
+  return results;
+}
+
+async function aiLoadCompany(key) {
+  try {
+    let payload = aiLocalGetCompany(key);
+    if(!payload) {
+      const r = await kvGet(key);
+      if(r) payload = JSON.parse(r.value);
+    }
+    if(!payload) return false;
+    aiCurrentData = payload.data || {};
+    aiHistory = Array.isArray(payload.history) ? payload.history : [];
+    aiCurrentCompanyKey = key;
+    aiLocalSetCompany(key, payload);
+    return true;
+  } catch (e) {
+    console.warn('aiLoadCompany error:', e);
+    return false;
+  }
+}
+
+async function aiDeleteSavedCompany(key) {
+  try { localStorage.removeItem(key); } catch (_) {}
+  try {
+    if(localStorage.getItem(AI_LAST_COMPANY_KEY) === key) localStorage.removeItem(AI_LAST_COMPANY_KEY);
+  } catch (_) {}
+  try { await kvDelete(key); } catch (e) { console.warn('Серверное удаление не выполнено:', e); }
+}
+
+function aiInstallAutosaveGuards() {
+  if(aiAutosaveTimer) clearInterval(aiAutosaveTimer);
+  aiAutosaveTimer = setInterval(() => {
+    if(aiCurrentData && Object.keys(aiCurrentData).length) aiSaveCurrentCompany().catch(()=>{});
+  }, AI_AUTOSAVE_INTERVAL_MS);
+
+  // В beforeunload асинхронный fetch ненадёжен; localStorage пишется синхронно.
+  window.addEventListener('beforeunload', aiSaveCurrentCompanyLocal);
+  window.addEventListener('pagehide', aiSaveCurrentCompanyLocal);
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'hidden') aiSaveCurrentCompanyLocal();
+  });
+}
+
+// ── Постоянный журнал генераций (свой сервер, переживает перезапуск Render) ──
+async function aiSaveToPersistentJournal(orgName, fileCount, dates, zipB64) {
+  if (!zipB64) return;
+  try {
+    const id = 'gen_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const entry = {
+      id, orgName: orgName || 'Без названия',
+      fileCount: fileCount || 0,
+      implDate: dates?.goals || '',
+      created: new Date().toISOString(),
+      zipB64,
+    };
+    const key = 'igor:journal:' + id;
+    await kvSet(key, JSON.stringify(entry));
+  } catch (e) {
+    console.warn('aiSaveToPersistentJournal error:', e);
+  }
+}
+
+async function aiListPersistentJournal() {
+  try {
+    const keys = await kvList('igor:journal:');
+    const results = [];
+    for (const key of keys) {
+      try {
+        const r = await kvGet(key);
+        if (r) {
+          const entry = JSON.parse(r.value);
+          // Не тащим тяжёлый base64 в список — только метаданные
+          results.push({ key, id: entry.id, orgName: entry.orgName, fileCount: entry.fileCount, implDate: entry.implDate, created: entry.created });
+        }
+      } catch (e) { /* пропускаем повреждённые записи */ }
+    }
+    results.sort((a, b) => (b.created || '').localeCompare(a.created || ''));
+    return results;
+  } catch (e) {
+    console.warn('aiListPersistentJournal error:', e);
+    return [];
+  }
+}
+
+function aiBase64ToBlob(base64, mime) {
+  const byteChars = atob(base64);
+  const byteNumbers = new Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+  return new Blob([new Uint8Array(byteNumbers)], { type: mime });
+}
+
+async function aiDownloadFromJournal(key, orgName) {
+  try {
+    const r = await kvGet(key);
+    if (!r) { alert('Файл не найден в хранилище'); return; }
+    const entry = JSON.parse(r.value);
+    const blob = aiBase64ToBlob(entry.zipB64, 'application/zip');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (orgName || entry.orgName || 'documents').replace(/[^\wа-яё\s-]/gi, '') + '.zip';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('Ошибка скачивания: ' + e.message);
+  }
+}
+
+async function aiDeleteFromJournal(key) {
+  if (!confirm('Удалить запись из журнала?')) return;
+  try {
+    await kvDelete(key);
+    loadJournal();
+  } catch (e) {
+    alert('Ошибка удаления: ' + e.message);
+  }
+}
+
+async function aiStartNewCompany() {
+  // Сохраняем текущую карточку до очистки. Раньше нажатие «Новая компания»
+  // могло стереть последние изменения, если серверный autosave ещё не завершился.
+  aiSaveCurrentCompanyLocal();
+  if(aiCurrentData && Object.keys(aiCurrentData).length) {
+    await aiSaveCurrentCompany().catch(()=>{});
+  }
+  aiCurrentData = {};
+  aiHistory = [];
+  aiCurrentCompanyKey = aiMakeStableCompanyKey();
+  try { localStorage.setItem(AI_LAST_COMPANY_KEY, aiCurrentCompanyKey); } catch (_) {}
+  aiRenderCard(null);
+  document.getElementById('ai-messages').innerHTML = '';
+  aiAddMsg('ai', 'Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.<br><br>💡 Если людей больше 3-4 или архив большой (много фото) — присылайте по одному человеку за раз (2-3 фото), так меньше риск ошибок при распознавании.');
+}
+
+async function aiOpenCompanySwitcher() {
+  let modal = document.getElementById('ai-switcher-modal');
+  if(!modal) {
+    modal = document.createElement('div');
+    modal.id = 'ai-switcher-modal';
+    modal.style = 'position:fixed;inset:0;background:rgba(20,20,20,.4);z-index:9999;display:flex;align-items:center;justify-content:center';
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `<div style="background:#fff;border-radius:12px;width:420px;max-height:70vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.2)">
+    <div style="padding:14px 18px;border-bottom:1px solid #EDE1D6;display:flex;justify-content:space-between;align-items:center">
+      <div style="font-weight:700;font-size:13px;color:#8B4A5C">📂 Сохранённые компании</div>
+      <button onclick="document.getElementById('ai-switcher-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:16px;color:#A8938A">✕</button>
+    </div>
+    <div id="ai-switcher-list" style="overflow-y:auto;padding:10px">
+      <div style="text-align:center;padding:20px;color:#B49E93;font-size:11px">Загрузка...</div>
+    </div>
+  </div>`;
+
+  const list = await aiListSavedCompanies();
+  const listEl = document.getElementById('ai-switcher-list');
+  if(!listEl) return; // модалка могла закрыться пока грузили
+
+  if(!list.length) {
+    listEl.innerHTML = '<div style="text-align:center;padding:20px;color:#B49E93;font-size:11px">Нет сохранённых компаний</div>';
+    return;
+  }
+
+  listEl.innerHTML = list.map(item => {
+    const dateStr = item.savedAt ? new Date(item.savedAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+    const isCurrent = item.key === aiCurrentCompanyKey;
+    return `<div onclick="aiSwitchToCompany('${item.key}')"
+      style="padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:4px;border:1px solid ${isCurrent ? '#C97B84' : '#EDE1D6'};background:${isCurrent ? '#FAF1E3' : '#fff'}"
+      onmouseover="this.style.background='#F7EFE4'" onmouseout="this.style.background='${isCurrent ? '#FAF1E3' : '#fff'}'">
+      <div style="font-size:12px;font-weight:700;color:#8B4A5C">${item.label || 'Без названия'}${isCurrent ? ' · текущая' : ''}</div>
+      <div style="font-size:10px;color:#A8938A;margin-top:2px">Сохранено: ${dateStr}</div>
+    </div>`;
+  }).join('');
+}
+
+async function aiSwitchToCompany(key) {
+  const ok = await aiLoadCompany(key);
+  const modal = document.getElementById('ai-switcher-modal');
+  if(modal) modal.remove();
+  if(!ok) { alert('Не удалось загрузить компанию'); return; }
+  aiRestoreChatUI();
+  aiRenderCardFromCurrent();
+}
+
+// Перерисовывает сообщения чата в UI из aiHistory (формат role/content, как используется в API)
+function aiRestoreChatUI() {
+  document.getElementById('ai-messages').innerHTML = '';
+  if(!aiHistory.length) {
+    aiAddMsg('ai', `Данные компании «${aiCurrentData.company?.name || ''}» загружены из сохранённых.`);
+    return;
+  }
+  aiHistory.forEach(m => {
+    if(m.role === 'user') {
+      // user-сообщения в истории содержат служебный префикс — показываем только полезную часть
+      const text = (m.content || '').split('ЗАПРОС:').pop().split('ТЕКУЩИЕ ДАННЫЕ')[0].trim() || '(данные обновлены)';
+      aiAddMsg('user', text);
+    } else if(m.role === 'assistant') {
+      try {
+        const parsed = aiParseResponse(m.content);
+        aiAddMsg('ai', parsed.message || m.content, parsed.questions);
+      } catch(e) {
+        aiAddMsg('ai', m.content);
+      }
+    }
+  });
+}
+
+// Перерисовывает карточку из уже загруженного aiCurrentData (без мержа новых данных)
+function aiRenderCardFromCurrent() {
+  const snapshot = aiCurrentData;
+  aiCurrentData = {}; // временно обнуляем чтобы aiRenderCard замержил всё заново как новые данные
+  aiRenderCard(snapshot);
+}
+
+// Перехватываем nav для страницы ai
+const _origNav = typeof nav === 'function' ? nav : null;
+function nav(page, el) {
+  document.querySelectorAll('.page-content').forEach(p => {
+    p.style.display = 'none';
+  });
+  document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
+  const titles = {docs:'Документы ИСО', companies:'Компании', experience:'Расчёт стажа', knowledge:'Знания ИИгоря', journal:'Журнал генераций', ai:'ИИгорь Оформитель'};
+  document.getElementById('page-title').textContent = titles[page] || page;
+  if(el) el.classList.add('active');
+
+  const pg = document.getElementById('page-'+page);
+  if(pg){
+    if(page === 'ai') {
+      pg.style.display = 'flex';
+    } else {
+      pg.style.display = 'block';
+    }
+  }
+
+  const btnTop = document.getElementById('btn-gen-top');
+  if(btnTop) btnTop.style.display = (page==='docs') ? 'flex' : 'none';
+
+  if(page==='companies') loadCompanies && loadCompanies();
+  if(page==='journal') loadJournal && loadJournal();
+  if(page==='experience') stageReloadCompanies();
+  if(page==='knowledge') knowledgeInitPage();
+  if(page==='docs') loadDocs && loadDocs();
+}
+
+// Ключ задаётся через VIBE_API_KEY на сервере
+
+function aiAddMsg(role, text, questions, id) {
+  const box = document.getElementById('ai-messages');
+  const d = document.createElement('div');
+  d.className = role==='ai' ? 'ai-msg-ai' : 'ai-msg-user';
+  if(id) d.id = id;
+  let qHtml = '';
+  if(questions && questions.length) {
+    qHtml = `<div class="ai-q-block"><div class="ai-q-title">❓ Нужна информация</div>${questions.map((q,i)=>`<div class="ai-q-item"><span style="font-weight:700;color:#C97B84;flex-shrink:0">${i+1}.</span><span>${q}</span></div>`).join('')}</div>`;
+  }
+  const avatarStyle = `background:${role==='ai'?'#8B4A5C':'#C97B84'}`;
+  d.innerHTML = `<div class="ai-avatar" style="${avatarStyle}">${role==='ai'?'ИГ':'ОФ'}</div><div class="${role==='ai'?'ai-bubble-ai':'ai-bubble-user'}">${text}${qHtml}</div>`;
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+}
+
+function aiUpdateMsg(id, text) {
+  const d = document.getElementById(id);
+  if(!d) return;
+  const bubble = d.querySelector('.ai-bubble-ai, .ai-bubble-user');
+  if(bubble) bubble.innerHTML = text;
+  const box = document.getElementById('ai-messages');
+  if(box) box.scrollTop = box.scrollHeight;
+}
+
+function aiShowTyping() {
+  const box = document.getElementById('ai-messages');
+  const d = document.createElement('div');
+  d.className = 'ai-msg-ai'; d.id = 'ai-typing';
+  d.innerHTML = `<div class="ai-avatar" style="background:#8B4A5C">ИГ</div><div class="ai-bubble-ai"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
+  box.appendChild(d); box.scrollTop = box.scrollHeight;
+}
+function aiRemoveTyping(){const t=document.getElementById('ai-typing');if(t)t.remove();}
+
+
+const STANDARD_WORKER_RAZRYAD = 'III';
+const STANDARD_WORKER_COUNT = 1;
+
+// Стандартный справочник из «ОБРАЗЕЦ Сведения о рабочих (15).docx».
+const COMPANY_ATT_WORKER_RULES = {
+  "7.1": [],
+  "7.2": [
+    "Землекоп"
+  ],
+  "7.2.1": [
+    "Арматурщик",
+    "Бетонщик",
+    "Такелажник",
+    "Каменщик"
+  ],
+  "7.2.2": [
+    "Монтажник строительных конструкций",
+    "Машинист крана автомобильного",
+    "Стропальщик",
+    "Бетонщик",
+    "Плотник",
+    "Арматурщик"
+  ],
+  "7.2.3": [
+    "Монтажник строительных конструкций",
+    "Бетонщик",
+    "Плотник",
+    "Арматурщик"
+  ],
+  "7.3": [],
+  "7.3.1": [
+    "Арматурщик",
+    "Такелажник",
+    "Машинист башенного крана",
+    "Подсобный рабочий",
+    "Электросварщик ручной сварки",
+    "Слесарь строительный"
+  ],
+  "7.3.2": [
+    "Стропальщик",
+    "Монтажник строительных конструкций",
+    "Машинист крана"
+  ],
+  "7.3.3": [
+    "Монтажник строительных конструкций",
+    "Машинист крана"
+  ],
+  "7.3.4": [
+    "Подсобный рабочий",
+    "Стропальщик",
+    "Такелажник",
+    "Машинист"
+  ],
+  "7.4": [],
+  "7.4.1": [
+    "Монтажник строительных конструкций",
+    "Каменщик",
+    "Арматурщик",
+    "Электросварщик ручной сварки",
+    "Плотник",
+    "Такелажник",
+    "Подсобный рабочий",
+    "Машинист башенного крана"
+  ],
+  "7.4.2": [
+    "Бетонщик",
+    "Плотник",
+    "Арматурщик",
+    "Машинист башенного крана",
+    "Электросварщик ручной сварки",
+    "Такелажник",
+    "Подсобный рабочий",
+    "Слесарь строительный",
+    "Каменщик"
+  ],
+  "7.4.3": [
+    "Бетонщик",
+    "Арматурщик",
+    "Машинист башенного крана",
+    "Слесарь строительный",
+    "Электросварщик ручной сварки",
+    "Такелажник",
+    "Подсобный рабочий",
+    "Стропальщик",
+    "Каменщик"
+  ],
+  "7.4.4": [
+    "Монтажник строительных конструкций",
+    "Машинист крана автомобильного",
+    "Электросварщик ручной сварки"
+  ],
+  "7.4.5": [
+    "Монтажник строительных конструкций",
+    "Плотник",
+    "Подсобный рабочий"
+  ],
+  "7.4.6": [
+    "Машинист крана",
+    "Такелажник",
+    "Стропальщик",
+    "Монтажник строительных конструкций"
+  ],
+  "7.5": [
+    "Маляр",
+    "Подсобный рабочий",
+    "Машинист аппарата безвоздушного распыления",
+    "Машинист компрессора",
+    "Изолировщик на антикоррозионной изоляции"
+  ],
+  "7.6": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.1": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.2": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.3": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.4": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.6.5": [
+    "Кровельщик по металлическим кровлям",
+    "Кровельщик по рулонным кровлям и по кровлям из штучных материалов"
+  ],
+  "7.7": [
+    "Изолировщик на термоизоляции"
+  ],
+  "7.8": [],
+  "7.8.1": [
+    "Монтажник санитарно-технических систем и оборудования",
+    "Подсобный рабочий"
+  ],
+  "7.8.2": [
+    "Монтажник санитарно-технических систем и оборудования",
+    "Подсобный рабочий"
+  ],
+  "7.8.3": [
+    "Монтажник санитарно-технических систем и оборудования",
+    "Слесарь",
+    "Подсобный рабочий"
+  ],
+  "7.8.4": [
+    "Монтажник систем вентиляции и пневмотранспорта",
+    "Подсобный рабочий",
+    "Монтажник санитарно-технических систем и оборудования"
+  ],
+  "7.8.5": [
+    "Монтажник систем газоснабжения"
+  ],
+  "7.9": [
+    "Монтажник наружных трубопроводов",
+    "Машинист крана-трубоукладчика",
+    "Электросварщик ручной сварки",
+    "Машинист автокрана",
+    "Машинист бульдозера",
+    "Стропальщик"
+  ],
+  "7.9.1": [
+    "Монтажник наружных трубопроводов",
+    "Машинист крана-трубоукладчика",
+    "Электросварщик ручной сварки",
+    "Машинист автокрана",
+    "Машинист бульдозера",
+    "Стропальщик"
+  ],
+  "7.9.2": [
+    "Монтажник наружных трубопроводов",
+    "Машинист крана-трубоукладчика",
+    "Электросварщик ручной сварки",
+    "Машинист автокрана",
+    "Машинист бульдозера",
+    "Стропальщик"
+  ],
+  "7.10": [
+    "Электромонтажник по кабельным сетям",
+    "Монтажник связи-кабельщик",
+    "Подсобный рабочий",
+    "Слесарь-электромонтажник"
+  ],
+  "7.11": [
+    "Монтажник связи-кабельщик",
+    "Электромонтажник по кабельным сетям",
+    "Такелажник",
+    "Землекоп",
+    "Электромонтажник по электрооборудованию, силовым и осветительным сетям",
+    "Машинист"
+  ],
+  "7.12": [
+    "Электромонтер охранно-пожарной сигнализации",
+    "Монтажник связи-кабельщик"
+  ],
+  "7.13": [
+    "Электромонтажник по электрооборудованию, силовым и осветительным сетям",
+    "Электросварщик ручной сварки",
+    "Монтажник приборов и систем автоматики"
+  ],
+  "7.14": [
+    "Монтажник систем холодоснабжения"
+  ],
+  "7.15": [
+    "Монтажник технологических трубопроводов",
+    "Машинист",
+    "Слесарь",
+    "Сварщик"
+  ],
+  "7.16": [
+    "Изолировщик на термоизоляции (теплоизоляции)",
+    "Штукатур",
+    "Подсобный рабочий"
+  ],
+  "7.19": [],
+  "7.19.1": [
+    "Дорожный рабочий",
+    "Машинист катка",
+    "Монтажник",
+    "Стропальщик"
+  ],
+  "7.19.2": [
+    "Машинист экскаватора",
+    "Дорожный рабочий",
+    "Землекоп"
+  ],
+  "7.19.3": [
+    "Маляр",
+    "Дорожный рабочий",
+    "Машинист разметочной машины"
+  ],
+  "7.24": [],
+  "7.24.1": [
+    "Дорожный рабочий",
+    "Плиточник",
+    "Подсобный рабочий",
+    "Стропальщик"
+  ],
+  "7.24.2": [
+    "Дорожный рабочий",
+    "Асфальтобетонщик",
+    "Машинист"
+  ]
+};
+
+const COMPANY_ATT_WORK_SUBCODES = {
+  "7.2": [
+    "7.2.1",
+    "7.2.2",
+    "7.2.3"
+  ],
+  "7.3": [
+    "7.3.1",
+    "7.3.2",
+    "7.3.3",
+    "7.3.4"
+  ],
+  "7.4": [
+    "7.4.1",
+    "7.4.2",
+    "7.4.3",
+    "7.4.4",
+    "7.4.5",
+    "7.4.6"
+  ],
+  "7.6": [
+    "7.6.1",
+    "7.6.2",
+    "7.6.3",
+    "7.6.4",
+    "7.6.5"
+  ],
+  "7.8": [
+    "7.8.1",
+    "7.8.2",
+    "7.8.3",
+    "7.8.4",
+    "7.8.5"
+  ],
+  "7.9": [
+    "7.9.1",
+    "7.9.2"
+  ],
+  "7.19": [
+    "7.19.1",
+    "7.19.2",
+    "7.19.3"
+  ],
+  "7.24": [
+    "7.24.1",
+    "7.24.2"
+  ]
+};
+
+const COMPANY_ATT_WORKER_PRESETS = {
+  "общестрой_без_фасадов": [
+    {
+      "profession": "Монтажник строительных конструкций",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Монтажник строительных конструкций",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Плотник",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Слесарь строительный",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Стропальщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Арматурщик",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Арматурщик",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Электросварщик ручной сварки",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Электросварщик ручной сварки",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Каменщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Такелажник",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Бетонщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Подсобный рабочий",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Маляр",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Маляр",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на антикоррозионной изоляции",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на антикоррозионной изоляции",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Кровельщик по металлическим кровлям",
+      "razryad": "III",
+      "count": 2
+    },
+    {
+      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Штукатур",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Землекоп",
+      "razryad": "IV",
+      "count": 1
+    }
+  ],
+  "общестрой_с_фасадами": [
+    {
+      "profession": "Монтажник строительных конструкций",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Монтажник строительных конструкций",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Плотник",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Слесарь строительный",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Стропальщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Арматурщик",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Арматурщик",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Электросварщик ручной сварки",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Электросварщик ручной сварки",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Каменщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Такелажник",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Бетонщик",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Подсобный рабочий",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Маляр",
+      "razryad": "II",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на антикоррозионной изоляции",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на антикоррозионной изоляции",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Кровельщик по металлическим кровлям",
+      "razryad": "III",
+      "count": 2
+    },
+    {
+      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
+      "razryad": "III",
+      "count": 1
+    },
+    {
+      "profession": "Кровельщик по рулонным кровлям и по кровлям из штучных материалов",
+      "razryad": "IV",
+      "count": 1
+    },
+    {
+      "profession": "Изолировщик на термоизоляции",
+      "razryad": "III",
+      "count": 2
+    }
+  ]
+};
+
+const COMPANY_ATT_SCOPE_PRESETS = {
+  'общестроительные работы': {work_items:['7.2','7.3','7.4','7.5','7.6']},
+  'сантехнические работы': {work_items:['7.8','7.9']},
+  'электромонтажные работы': {work_items:['7.10','7.11','7.12','7.13']},
+  'дорожные работы': {work_items:['7.19']},
+  'благоустройство территории': {work_items:['7.24']}
+};
+
+function aiScopeText(ca) {
+  return [
+    ca?.work_scope_text,
+    aiCurrentData?.certification?.scope,
+    ...(aiCurrentData?.work_types || [])
+  ].filter(Boolean).join(' ').toLowerCase().replace(/ё/g,'е');
+}
+
+function aiFindCompanyAttPreset(ca) {
+  const haystack = aiScopeText(ca);
+  if(haystack.includes('общестроит') || haystack.trim() === 'общестрой') {
+    const withFacade = haystack.includes('фасад') || (ca?.work_items || []).includes('7.7');
+    return {
+      ...COMPANY_ATT_SCOPE_PRESETS['общестроительные работы'],
+      workerPreset: withFacade ? 'общестрой_с_фасадами' : 'общестрой_без_фасадов',
+      withFacade
+    };
+  }
+  if(haystack.includes('сантех') || haystack.includes('водоснабж') || haystack.includes('канализац') || haystack.includes('отоплен') || haystack.includes('вентиляц')) return COMPANY_ATT_SCOPE_PRESETS['сантехнические работы'];
+  if(haystack.includes('электромонтаж') || haystack.includes('электрик') || haystack.includes('электроснабж') || haystack.includes('слаботоч') || haystack.includes('автоматизац')) return COMPANY_ATT_SCOPE_PRESETS['электромонтажные работы'];
+  if(haystack.includes('благоустрой')) return COMPANY_ATT_SCOPE_PRESETS['благоустройство территории'];
+  if(haystack.includes('дорог') || haystack.includes('дорожн')) return COMPANY_ATT_SCOPE_PRESETS['дорожные работы'];
+  return null;
+}
+
+function aiWorkerKey(w) {
+  return `${String(w.profession||'').trim().toLowerCase().replace(/ё/g,'е')}|${String(w.razryad||'').trim().toUpperCase()}`;
+}
+
+function aiExpandedWorkerRuleCodes(workItems) {
+  const result = [];
+  (workItems || []).forEach(raw => {
+    const code = String(raw || '').trim();
+    if(!code) return;
+    const parts = code.split('.');
+    const parent = parts.length >= 3 ? parts.slice(0,2).join('.') : code;
+    [parent, code].forEach(c => { if(c && !result.includes(c)) result.push(c); });
+    (COMPANY_ATT_WORK_SUBCODES[code] || []).forEach(c => { if(!result.includes(c)) result.push(c); });
+  });
+  return result;
+}
+
+function aiBuildStandardWorkers(workItems) {
+  const professions = [];
+  const seen = new Set();
+  aiExpandedWorkerRuleCodes(workItems).forEach(code => {
+    (COMPANY_ATT_WORKER_RULES[code] || []).forEach(profession => {
+      const key = String(profession).trim().toLowerCase().replace(/ё/g,'е');
+      if(key && !seen.has(key)) {
+        seen.add(key);
+        professions.push({
+          profession,
+          razryad: STANDARD_WORKER_RAZRYAD,
+          count: STANDARD_WORKER_COUNT,
+          source:'auto'
+        });
+      }
+    });
+  });
+  return professions;
+}
+
+function aiStageTextLines(value) {
+  const values = Array.isArray(value) ? value : [value];
+  const out = [];
+  values.forEach(item => {
+    if(item === undefined || item === null) return;
+    String(item).split(/[\r\n]+/).forEach(part => {
+      const text = part.replace(/\s+/g,' ').trim();
+      if(text && !['—','-','–'].includes(text)) out.push(text);
+    });
+  });
+  return out;
+}
+
+function aiNormalizeItrStage(person) {
+  if(!person || typeof person !== 'object') return person;
+
+  const form2Lines = aiStageTextLines(person.stage_form2_text);
+  const legacyLines = aiStageTextLines(person.stage_years);
+  const legacySource = String(person.stage_source || '').toLowerCase();
+
+  // Completed Form №2 is only an independent reference. The backend must calculate
+  // the live result from employment_periods extracted from the labour book.
+  if(!aiHasMeaningfulValue(person.stage_reference_total)) {
+    person.stage_reference_total = form2Lines[0]
+      || (['document','document_reference'].includes(legacySource) ? legacyLines[0] : '');
+  }
+  if(!aiHasMeaningfulValue(person.stage_reference_here)) {
+    person.stage_reference_here = form2Lines[1]
+      || (['document','document_reference'].includes(legacySource) ? legacyLines[1] : '');
+  }
+
+  if(['document','document_reference'].includes(legacySource)) {
+    person.stage_years = '';
+    person.stage_years_here = '';
+    person.stage_source = 'document_reference';
+    person.stage_is_final = false;
+  }
+
+  if(!Array.isArray(person.employment_periods)) person.employment_periods = [];
+  if(!Array.isArray(person.uncertain_fields)) person.uncertain_fields = [];
+  return person;
+}
+
+function aiPersonHasFinalStage(person) {
+  if(!person) return false;
+  aiNormalizeItrStage(person);
+  return String(person.stage_source || '').toLowerCase() === 'calculated'
+    && person.stage_is_final === true
+    && !person.stage_needs_review
+    && aiHasMeaningfulValue(person.stage_years)
+    && aiHasMeaningfulValue(person.stage_years_here);
+}
+
+
+function aiNormalizeCompanyAttestation() {
+  const ca = aiCurrentData.company_attestation;
+  if(!ca) return;
+
+  if(Array.isArray(ca.itr)) ca.itr = ca.itr.map(p => aiNormalizeItrStage({...p}));
+
+  ca.work_items = [...new Set((ca.work_items || []).filter(Boolean).map(String))];
+  let preset = aiFindCompanyAttPreset(ca);
+  const commonCodes = ['7.2','7.3','7.4','7.5','7.6'];
+  if(!preset && commonCodes.every(code => ca.work_items.includes(code))) {
+    const withFacade = ca.work_items.includes('7.7');
+    preset = {
+      ...COMPANY_ATT_SCOPE_PRESETS['общестроительные работы'],
+      workerPreset: withFacade ? 'общестрой_с_фасадами' : 'общестрой_без_фасадов',
+      withFacade
+    };
+  }
+  const workItemsSource = String(ca.work_items_source || '').toLowerCase();
+  const workItemsExact = ['document_exact','manual_exact'].includes(workItemsSource);
+
+  if(preset && !workItemsExact) {
+    ca.work_items = [...new Set([...ca.work_items, ...preset.work_items])];
+    if(preset.withFacade && !ca.work_items.includes('7.7')) ca.work_items.push('7.7');
+    ca.work_items_source = 'auto';
+  }
+
+  const existing = Array.isArray(ca.workers) ? ca.workers.map(w => ({...w})) : [];
+  const confirmedWorkers = existing.filter(w => ['document','manual','expert'].includes(String(w.source || '').toLowerCase()));
+  const documentWorkers = confirmedWorkers.filter(w => String(w.source || '').toLowerCase() === 'document');
+  const excludedWorkerKeys = new Set((ca.excluded_workers || []).map(String));
+
+  let autoWorkers = [];
+  // Загруженная заполненная Форма №2 является источником истины.
+  if(!documentWorkers.length) {
+    if(preset?.workerPreset) {
+      autoWorkers = (COMPANY_ATT_WORKER_PRESETS[preset.workerPreset] || []).map(w => ({...w,source:'auto'}));
+    } else {
+      autoWorkers = aiBuildStandardWorkers(ca.work_items);
+    }
+    autoWorkers = autoWorkers.filter(w => !excludedWorkerKeys.has(aiWorkerKey(w)));
+  }
+
+  const merged = new Map();
+  [...autoWorkers, ...confirmedWorkers].forEach(w => {
+    if(!w || !w.profession) return;
+    const normalized = {
+      ...w,
+      profession: String(w.profession).trim(),
+      razryad: String(w.razryad || STANDARD_WORKER_RAZRYAD).trim().toUpperCase(),
+      count: Math.max(1, Number(w.count) || STANDARD_WORKER_COUNT)
+    };
+    const key = aiWorkerKey(normalized);
+    const source = String(normalized.source || '').toLowerCase();
+    const prev = merged.get(key);
+    if(!prev || ['document','manual','expert'].includes(source)) {
+      merged.set(key, normalized);
+    } else {
+      merged.set(key, {...prev,count:Math.max(Number(prev.count)||1, normalized.count)});
+    }
+  });
+
+  ca.workers = [...merged.values()];
+  ca.excluded_workers = [...excludedWorkerKeys];
+
+  const itrCount = Array.isArray(ca.itr) ? ca.itr.length : 0;
+  const workerCount = ca.workers.reduce((sum,w) => sum + (Number(w.count) || 0), 0);
+  ca.staff_total = Math.max(Number(ca.staff_total) || 0, itrCount + workerCount);
+}
+
+function aiValidateReadiness(data) {
+  const missing = [], warnings = [];
+  const company = data.company || {};
+  const product = data.certification?.standard || '';
+  if(!company.name) missing.push('название компании');
+  if(!company.form) missing.push('форма организации');
+  if(!company.unp) warnings.push('не указан УНП');
+  if(!company.director_fio) missing.push('ФИО директора');
+  if(!product) missing.push('выбранный продукт');
+  if(product === 'company_att') {
+    const ca = data.company_attestation || {};
+    if(!ca.is_cancellation) {
+      if(!(ca.work_items || []).length) missing.push('виды работ для аттестации');
+      if(!(ca.itr || []).length) missing.push('ИТР для Формы №2');
+      if(!(ca.workers || []).length) missing.push('рабочие для Формы №2');
+      (ca.workers || []).forEach((w,i) => {
+        if(!w.profession || !w.razryad || !Number(w.count)) missing.push(`рабочий №${i+1}: профессия, разряд и количество`);
+      });
+    } else if(!ca.old_attestat_number) missing.push('номер старого аттестата');
+  }
+  if(product === 'att' && !(data.attestation?.persons || []).length) missing.push('специалисты для аттестации');
+  return {ready: missing.length === 0, missing:[...new Set(missing)], warnings:[...new Set(warnings)]};
+}
+function aiAddCompanyWorker() {
+  const profession = prompt('Профессия рабочего:'); if(!profession) return;
+  const razryad = (prompt('Разряд (II–VI):','IV') || '').toUpperCase(); if(!razryad) return;
+  const count = Number(prompt('Количество человек:','1')); if(!count || count < 1) return;
+  aiCurrentData.company_attestation = aiCurrentData.company_attestation || {};
+  aiCurrentData.company_attestation.workers = aiCurrentData.company_attestation.workers || [];
+  const newWorker = {profession,razryad,count,source:'manual'};
+  aiCurrentData.company_attestation.workers.push(newWorker);
+  const excluded = new Set((aiCurrentData.company_attestation.excluded_workers || []).map(String));
+  excluded.delete(aiWorkerKey(newWorker));
+  aiCurrentData.company_attestation.excluded_workers = [...excluded];
+  aiNormalizeCompanyAttestation(); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
+}
+function aiEditCompanyWorker(index) {
+  const workers = aiCurrentData.company_attestation?.workers || []; const w = workers[index]; if(!w) return;
+  const profession = prompt('Профессия рабочего:',w.profession||''); if(!profession) return;
+  const razryad = (prompt('Разряд (II–VI):',w.razryad||'IV') || '').toUpperCase(); if(!razryad) return;
+  const count = Number(prompt('Количество человек:',String(w.count||1))); if(!count || count < 1) return;
+  const ca = aiCurrentData.company_attestation;
+  const excluded = new Set((ca.excluded_workers || []).map(String));
+  const oldKey = aiWorkerKey(w);
+  if(String(w.source || '').toLowerCase() === 'auto') excluded.add(oldKey);
+  const updated = {profession,razryad,count,source:'manual'};
+  const newKey = aiWorkerKey(updated);
+  if(newKey !== oldKey) excluded.delete(newKey);
+  ca.excluded_workers = [...excluded];
+  workers[index] = updated;
+  aiNormalizeCompanyAttestation(); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
+}
+function aiDeleteCompanyWorker(index) {
+  const workers = aiCurrentData.company_attestation?.workers || []; if(!workers[index]) return;
+  if(!confirm(`Удалить рабочего «${workers[index].profession}»?`)) return;
+  const ca = aiCurrentData.company_attestation;
+  const excluded = new Set((ca.excluded_workers || []).map(String));
+  excluded.add(aiWorkerKey(workers[index]));
+  ca.excluded_workers = [...excluded];
+  workers.splice(index,1); aiNormalizeCompanyAttestation(); aiRenderCardFromCurrent(); aiSaveCurrentCompany().catch(()=>{});
+}
+
+function aiDeepMergeDefined(base, patch) {
+  if(patch === undefined) return base;
+  if(Array.isArray(patch)) return patch.map(item => (item && typeof item === 'object') ? aiCloneForStorage(item) : item);
+  if(!patch || typeof patch !== 'object') return patch;
+  const out = (base && typeof base === 'object' && !Array.isArray(base)) ? {...base} : {};
+  Object.entries(patch).forEach(([key, value]) => {
+    if(value === undefined) return;
+    out[key] = (value && typeof value === 'object' && !Array.isArray(value))
+      ? aiDeepMergeDefined(out[key], value)
+      : (Array.isArray(value) ? value.map(item => (item && typeof item === 'object') ? aiCloneForStorage(item) : item) : value);
+  });
+  return out;
+}
+
+function aiNormIdentity(value) {
+  return String(value || '').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/gi,' ').trim();
+}
+
+function aiMergeEntityArray(previous, incoming, keyFn) {
+  const oldRows = Array.isArray(previous) ? previous : [];
+  const newRows = Array.isArray(incoming) ? incoming : [];
+  if(!newRows.length) return oldRows; // неполный ответ ИИ не должен стирать сохранённый список
+  const out = oldRows.map(row => aiCloneForStorage(row));
+  const index = new Map();
+  out.forEach((row, i) => {
+    const key = keyFn(row);
+    if(key) index.set(key, i);
+  });
+  newRows.forEach(row => {
+    const key = keyFn(row);
+    if(key && index.has(key) && row && typeof row === 'object' && !Array.isArray(row)) {
+      const pos = index.get(key);
+      out[pos] = aiDeepMergeDefined(out[pos], row);
+    } else if(key && index.has(key)) {
+      out[index.get(key)] = row;
+    } else {
+      out.push(aiCloneForStorage(row));
+      if(key) index.set(key, out.length - 1);
+    }
+  });
+  return out;
+}
+
+function aiMergePrimitiveArray(previous, incoming) {
+  const out = Array.isArray(previous) ? [...previous] : [];
+  const seen = new Set(out.map(aiNormIdentity));
+  (Array.isArray(incoming) ? incoming : []).forEach(item => {
+    const key = aiNormIdentity(typeof item === 'string' ? item : JSON.stringify(item));
+    if(key && !seen.has(key)) { out.push(aiCloneForStorage(item)); seen.add(key); }
+  });
+  return out;
+}
+
+function aiRenderCard(data) {
+  if(data === null) {
+    // Полная очистка карточки (для новой компании)
+    aiCurrentData = {};
+    const cc = document.getElementById('ai-card-body');
+    if(cc) cc.innerHTML = '<div style="color:#B49E93;text-align:center;padding:20px 10px">Передайте данные в чате →</div>';
+    const st0 = document.getElementById('ai-card-status');
+    if(st0) st0.textContent = 'Данных нет';
+    const genBtn0 = document.getElementById('ai-gen-btn');
+    if(genBtn0) { genBtn0.disabled = true; genBtn0.style.background = '#C299A8'; genBtn0.style.cursor = 'not-allowed'; }
+    return;
+  }
+  if(!data) return;
+  // Глубокое объединение: частичный ответ ИИ не должен стирать сохранённые реквизиты,
+  // сотрудников, объекты, поставщиков, оборудование, СИ, ТТК и документы.
+  if(data.company !== undefined) aiCurrentData.company = aiDeepMergeDefined(aiCurrentData.company, data.company);
+  if(data.certification !== undefined) aiCurrentData.certification = aiDeepMergeDefined(aiCurrentData.certification, data.certification);
+  if(data.dates !== undefined) aiCurrentData.dates = aiDeepMergeDefined(aiCurrentData.dates, data.dates);
+
+  if(data.staff !== undefined) {
+    aiCurrentData.staff = aiMergeEntityArray(aiCurrentData.staff, data.staff,
+      row => aiNormIdentity(row?.fio || row?.name || row?.full_name));
+  }
+  if(data.workers !== undefined) {
+    const incomingWorkers = Array.isArray(data.workers) ? data.workers : [];
+    const objectWorkers = incomingWorkers.some(x => x && typeof x === 'object');
+    aiCurrentData.workers = objectWorkers
+      ? aiMergeEntityArray(aiCurrentData.workers, incomingWorkers,
+          row => aiNormIdentity(row?.fio || row?.profession || row?.name))
+      : aiMergePrimitiveArray(aiCurrentData.workers, incomingWorkers);
+  }
+  if(data.work_types !== undefined) aiCurrentData.work_types = aiMergePrimitiveArray(aiCurrentData.work_types, data.work_types);
+  if(data.objects !== undefined) {
+    aiCurrentData.objects = aiMergeEntityArray(aiCurrentData.objects, data.objects,
+      row => aiNormIdentity(typeof row === 'string' ? row : (row?.name || row?.object_name || row?.address)));
+  }
+  if(data.suppliers !== undefined) {
+    aiCurrentData.suppliers = aiMergeEntityArray(aiCurrentData.suppliers, data.suppliers,
+      row => aiNormIdentity(typeof row === 'string' ? row : (row?.name || row?.supplier)));
+  }
+  if(data.source_documents !== undefined) {
+    aiCurrentData.source_documents = aiMergeEntityArray(aiCurrentData.source_documents, data.source_documents,
+      row => aiNormIdentity(row?.filename || row?.path));
+  }
+  if(data.flags !== undefined) aiCurrentData.flags = Array.isArray(data.flags) ? data.flags : [];
+  if(data.review_items !== undefined) aiCurrentData.review_items = aiMergeEntityArray(
+    aiCurrentData.review_items, data.review_items,
+    row => aiNormIdentity(`${row?.field || ''}|${row?.value || ''}|${row?.reason || ''}`)
+  );
+  if(data.iso_suot !== undefined) aiCurrentData.iso_suot = aiDeepMergeDefined(aiCurrentData.iso_suot, data.iso_suot);
+  if(data.spk !== undefined) aiCurrentData.spk = aiDeepMergeDefined(aiCurrentData.spk, data.spk);
+  if(data.readiness !== undefined) aiCurrentData.readiness = data.readiness;
+  if(data.attestation !== undefined) {
+    const previousAtt = aiCurrentData.attestation || {};
+    const incomingAtt = data.attestation || {};
+    aiCurrentData.attestation = aiDeepMergeDefined(previousAtt, incomingAtt);
+    if(incomingAtt.persons !== undefined) {
+      aiCurrentData.attestation.persons = aiMergeEntityArray(previousAtt.persons, incomingAtt.persons,
+        row => aiNormIdentity(row?.fio || row?.name));
+    }
+  }
+  if(data.company_attestation !== undefined) {
+    const incoming = data.company_attestation || {};
+    const previous = aiCurrentData.company_attestation || {};
+    // Коллекции обрабатываем отдельно. Раньше mergeDefined сначала целиком заменял
+    // itr/workers/work_items неполным ответом ИИ, и только потом пытался их объединить —
+    // к этому моменту исходный стаж и трудовые уже были потеряны.
+    const scalarPatch = {};
+    Object.entries(incoming).forEach(([k,v]) => {
+      if(!['itr','work_items','workers','experience_objects'].includes(k)) scalarPatch[k] = v;
+    });
+    aiCurrentData.company_attestation = aiDeepMergeDefined(previous, scalarPatch);
+
+    if(incoming.itr !== undefined) {
+      aiCurrentData.company_attestation.itr = aiMergeItrRecords(
+        previous.itr, Array.isArray(incoming.itr) ? incoming.itr : [], false
+      );
+    } else if(previous.itr !== undefined) {
+      aiCurrentData.company_attestation.itr = previous.itr;
+    }
+
+    ['work_items','workers','experience_objects'].forEach(k => {
+      if(incoming[k] === undefined) {
+        if(previous[k] !== undefined) aiCurrentData.company_attestation[k] = previous[k];
+        return;
+      }
+      const incomingList = Array.isArray(incoming[k]) ? incoming[k] : [];
+      if(k === 'workers') {
+        const hasDocumentWorkers = Array.isArray(previous.workers) && previous.workers.some(w => String(w?.source || '').toLowerCase() === 'document');
+        const incomingIsAuthoritative = incomingList.some(w => ['document','manual','expert'].includes(String(w?.source || '').toLowerCase()));
+        aiCurrentData.company_attestation.workers = hasDocumentWorkers && !incomingIsAuthoritative
+          ? previous.workers : incomingList;
+      } else if(k === 'work_items') {
+        const previousExact = ['document_exact','manual_exact'].includes(String(previous.work_items_source || '').toLowerCase());
+        const incomingExact = ['document_exact','manual_exact'].includes(String(incoming.work_items_source || '').toLowerCase());
+        aiCurrentData.company_attestation.work_items = previousExact && !incomingExact
+          ? previous.work_items : incomingList;
+        if(previousExact && !incomingExact) {
+          aiCurrentData.company_attestation.work_items_source = previous.work_items_source;
+        }
+      } else {
+        aiCurrentData.company_attestation[k] = incomingList;
+      }
+    });
+  }
+  aiNormalizeCompanyAttestation();
+
+  // Автосохранение в постоянное хранилище — не блокируем рендер, ошибки молча логируем
+  aiSaveCurrentCompany().catch(e => console.warn('autosave failed:', e));
+
+  const readiness = aiValidateReadiness(aiCurrentData);
+  const st = document.getElementById('ai-card-status');
+  if(readiness.ready) st.textContent = readiness.warnings.length ? '⚠️ Можно формировать, есть замечания' : '✅ Готово к генерации';
+  else st.textContent = '📋 Не хватает: ' + readiness.missing.slice(0,2).join(', ');
+
+  // Собираем HTML карточки
+  let html = '';
+
+  // Флаги
+  (aiCurrentData.flags||[]).forEach(f => {
+    const cls = f.type==='error'?'ai-flag-err':f.type==='warning'?'ai-flag-warn':'ai-flag-ok';
+    html += `<div class="${cls}">${f.text}</div>`;
+  });
+
+  // Сведения, которые ИИ/распознавание пометили для ручной проверки.
+  (aiCurrentData.review_items||[]).forEach(item => {
+    const field = item.field ? `<b>${item.field}:</b> ` : '';
+    const value = item.value || 'НЕ ЗАПОЛНЕНО';
+    const reason = item.reason ? ` — ${item.reason}` : '';
+    html += `<div class="ai-flag-warn">🟨 ${field}${value}${reason}</div>`;
+  });
+
+  // Компания
+  const c = aiCurrentData.company||{};
+  const cF = [['Название',c.name],['Форма',c.form],['УНП',c.unp],['Город',c.city],['Директор',c.director_fio],['Должность',c.director_position]].filter(([,v])=>v);
+  if(cF.length) {
+    html += '<div class="ai-sec">Компания</div><div>';
+    cF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
+    html += '</div>';
+  }
+
+  // Сертификация
+  const cert = aiCurrentData.certification||{};
+  const certF = [['Стандарт',cert.standard],['Область',cert.scope],['Орган',cert.body]].filter(([,v])=>v);
+  if(certF.length) {
+    html += '<div class="ai-sec">Сертификация</div><div>';
+    certF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
+    html += '</div>';
+  }
+
+  // Даты
+  const dt = aiCurrentData.dates||{};
+  const dtF = [['Аудит',dt.audit_date],['Разработка',dt.development_date],['Внедрение',dt.implementation_date]].filter(([,v])=>v);
+  if(dtF.length) {
+    html += '<div class="ai-sec">Даты</div><div>';
+    dtF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
+    html += '</div>';
+  }
+
+  // Сотрудники
+  const staff = aiCurrentData.staff||[];
+  if(staff.length) {
+    html += '<div class="ai-sec">Сотрудники</div>';
+    const rl = {director:'Директор',auditor:'Аудитор',responsible:'Ответств. ФНПА',itr:'ИТР'};
+    staff.forEach(p => {
+      const otBadge = p.ot_certificate ? (' · 🛡' + (p.ot_certificate_date && p.ot_certificate_date!=='undefined' ? ' '+p.ot_certificate_date : '')) : '';
+      const roleBadge = p.role ? (' · '+(rl[p.role]||p.role)) : '';
+      html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#8B4A5C;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${(p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase()}</div><div><div class="ai-pname">${p.fio||''}</div><div class="ai-prole">${p.position||''}${roleBadge}${otBadge}</div></div></div>`;
+    });
+  }
+
+  // Рабочие профессии (для СУОТ — инструкции ОТ и карты рисков)
+  const workers = aiCurrentData.workers||[];
+  if(workers.length) {
+    html += '<div class="ai-sec">Рабочие профессии (' + workers.length + ')</div><div>';
+    workers.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🦺 ${w}</span></div>`);
+    html += '</div>';
+  } else if(staff.length) {
+    html += '<div class="ai-sec" style="color:#C97A5F">⚠️ Рабочие профессии не указаны</div>';
+  }
+
+  // Виды работ для СПК
+  const workTypes = aiCurrentData.work_types||[];
+  if(workTypes.length) {
+    html += '<div class="ai-sec">Виды работ СПК (' + workTypes.length + ')</div><div>';
+    workTypes.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🏗 ${w}</span></div>`);
+    html += '</div>';
+  }
+
+  // Аттестация специалистов
+  const attPersons = (aiCurrentData.attestation && aiCurrentData.attestation.persons) || [];
+  if(attPersons.length) {
+    const reqCount = attPersons.reduce((s,p)=>s+((p.requests||[]).length),0);
+    html += '<div class="ai-sec">🎓 Аттестация (' + attPersons.length + ' чел., ' + reqCount + ' заявл.)</div><div>';
+    attPersons.forEach(pp => {
+      (pp.requests||[]).forEach(r => {
+        const gradeShort = r.grade || (r.stage_months ? '(грейд по стажу)' : '?');
+        html += `<div class="ai-df"><span class="ai-dv">${pp.fio||'?'} — ${gradeShort} (${r.specialization||'?'})${r.need_spravka?' · 📄 нужна справка':''}</span></div>`;
+      });
+    });
+    html += '</div>';
+  }
+
+  // Аттестация компании (юрлица) — с полными данными по каждому человеку (раскрывается по клику)
+  const compAtt = aiCurrentData.company_attestation;
+  if(compAtt && (compAtt.work_items?.length || compAtt.category || compAtt.is_cancellation || (compAtt.itr||[]).length)) {
+    const catLabel = compAtt.category ? `Генподряд, категория ${compAtt.category} (ГС)` : 'Подряд (СТ, без генподряда)';
+    html += `<div class="ai-sec">🏢 Аттестация компании — ${compAtt.is_cancellation ? 'заявление на отмену' : catLabel}</div><div>`;
+    if(!compAtt.is_cancellation) {
+      html += `<div class="ai-df"><span class="ai-dv">Видов работ (п.7): ${(compAtt.work_items||[]).length}</span></div>`;
+      html += `<div class="ai-df"><span class="ai-dv">Штат: ${compAtt.staff_total||'?'} чел., ИТР: ${(compAtt.itr||[]).length}, сметчик: ${compAtt.has_smetchik ? 'есть' : 'нет'}</span></div>`;
+    }
+    html += '</div>';
+
+    const itrPeople = compAtt.itr || [];
+    if(itrPeople.length) {
+      html += '<div class="ai-sec">👤 ИТР — полные данные (нажмите чтобы раскрыть)</div>';
+      itrPeople.forEach((p, idx) => {
+        const initials = (p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase();
+        const fields = [
+          ['Образование', p.education_level],
+          ['Диплом №', p.diploma_number],
+          ['Дата выдачи диплома', p.diploma_date],
+          ['Учебное заведение', p.diploma_institution],
+          ['Специальность', p.diploma_speciality],
+          ['Квалификация', p.diploma_qualification],
+          ['Стаж по деятельности', p.stage_years || (p.stage_reference_total ? `${p.stage_reference_total} (справочно, будет пересчитан)` : '')],
+          ['Стаж у нанимателя', p.stage_years_here || (p.stage_reference_here ? `${p.stage_reference_here} (справочно, будет пересчитан)` : '')],
+          ['Трудовая книжка №', p.trudovaya_number],
+          ['Приказ о приёме', p.order_number ? `№${p.order_number}${p.hire_date ? ' от '+p.hire_date : ''}` : ''],
+          ['Аттестат №', p.attestat_number],
+          ['Аттестат действителен', (p.attestat_date_from||p.attestat_date_to) ? `с ${p.attestat_date_from||'?'} по ${p.attestat_date_to||'?'}` : ''],
+          ['Специализация аттестата', p.attestat_specialization],
+          ['Паспорт', p.passport_series && p.passport_number ? `${p.passport_series} ${p.passport_number}` : ''],
+          ['Идентификационный №', p.id_number],
+        ];
+        const filledFields = fields.filter(([_, v]) => v && v !== '—');
+        const emptyCount = fields.length - filledFields.length;
+        html += `<details class="ai-person-detail">
+          <summary>
+            <div style="width:22px;height:22px;border-radius:50%;background:#8B4A5C;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${initials}</div>
+            <div style="flex:1"><div class="ai-pname">${p.fio||'?'}</div><div class="ai-prole">${p.position||''}</div></div>
+            <span style="font-size:11px;color:${emptyCount>3?'#C97A5F':'#A6837D'}">${filledFields.length}/${fields.length} полей</span>
+          </summary>
+          <div class="ai-person-detail-body">
+            ${filledFields.length ? filledFields.map(([label,val]) => `<div class="ai-field-row"><div class="ai-field-label">${label}</div><div class="ai-field-val">${val}</div></div>`).join('') : '<div class="ai-df" style="color:#C97A5F">Нет заполненных данных</div>'}
+            ${emptyCount > 0 ? `<div class="ai-df" style="color:#C97A5F;margin-top:6px">⚠️ Не заполнено полей: ${emptyCount}</div>` : ''}
+          </div>
+        </details>`;
+      });
+    }
+
+    const compWorkers = compAtt.workers || [];
+    html += '<div class="ai-sec">🦺 Рабочие для Формы №2 (' + compWorkers.length + ')</div><div>';
+    if(compWorkers.length) {
+      compWorkers.forEach((w, idx) => {
+        const source = w.source === 'auto' ? 'Подобрано автоматически по виду работ' : 'Изменено экспертом';
+        html += `<div class="ai-worker-row"><div class="ai-worker-main">${w.profession||'?'} — разряд ${w.razryad||'—'}, ${w.count||'?'} чел.<span class="ai-worker-note">${source}</span></div><button class="ai-mini-btn" onclick="aiEditCompanyWorker(${idx})">Изменить</button><button class="ai-mini-btn" onclick="aiDeleteCompanyWorker(${idx})">Удалить</button></div>`;
+      });
+    } else {
+      html += '<div class="ai-df" style="color:#C97A5F">Рабочие не определены. Добавьте вручную или выберите виды работ.</div>';
+    }
+    html += '<button class="ai-worker-add" onclick="aiAddCompanyWorker()">+ Добавить рабочего</button></div>';
+  }
+
+  // Миниатюры загруженных фото — для быстрой проверки глазами, что ИИ прочитал верно
+  const thumbKeys = Object.keys(aiPhotoThumbnails);
+  if(thumbKeys.length) {
+    html += `<div class="ai-sec">📎 Загруженные фото (${thumbKeys.length}) — сверьте с данными</div>`;
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">';
+    thumbKeys.forEach(fn => {
+      html += `<img src="data:image/jpeg;base64,${aiPhotoThumbnails[fn]}" title="${fn}"
+                onclick="aiShowPhotoFull('${fn.replace(/'/g,"\\'")}')"
+                style="width:56px;height:56px;object-fit:cover;border-radius:6px;border:1px solid #E8DCC8;cursor:pointer" />`;
+    });
+    html += '</div>';
+  }
+
+  // Объекты
+  const objs = aiCurrentData.objects||[];
+  if(objs.length) {
+    html += '<div class="ai-sec">Объекты</div><div>';
+    objs.forEach((o,i) => html += `<div class="ai-df"><span class="ai-dl">${i+1}. ${o.year||''}</span><span class="ai-dv">${o.name}${o.customer?' ('+o.customer+')':''}</span></div>`);
+    html += '</div>';
+  }
+
+  // Поставщики
+  const sups = aiCurrentData.suppliers||[];
+  if(sups.length) {
+    html += '<div class="ai-sec">Поставщики</div><div>';
+    sups.forEach((s,i) => html += `<div class="ai-df"><span class="ai-dl">${i+1}.</span><span class="ai-dv">${s.name}${s.type?' · '+s.type:''}</span></div>`);
+    html += '</div>';
+  }
+
+  document.getElementById('ai-card-body').innerHTML = html || '<div style="color:#B49E93;text-align:center;padding:20px 10px">Передайте данные в чате →</div>';
+
+  // Кнопка генерации управляется фактической валидацией данных, а не текстовым статусом модели.
+  const btn = document.getElementById('ai-gen-btn');
+  btn.disabled = !readiness.ready;
+  btn.title = readiness.ready ? (readiness.warnings.join(' • ') || 'Данные готовы') : 'Не заполнено: ' + readiness.missing.join(', ');
+  btn.style.cssText = readiness.ready
+    ? 'width:100%;height:36px;background:#A56B75;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s'
+    : 'width:100%;height:36px;background:#C299A8;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:not-allowed;transition:background .15s';
+  if(!readiness.ready && readiness.missing.length) {
+    document.getElementById('ai-card-body').insertAdjacentHTML('beforeend', `<div class="ai-missing-box"><b>Для формирования заполните:</b><br>${readiness.missing.join('<br>')}</div>`);
+  }
+}
+
+function aiParseResponse(raw) {
+  try {
+    let t = raw.trim();
+    if(t.startsWith('```')) t = t.replace(/^```json?\s*/,'').replace(/```\s*$/,'').trim();
+    const start = t.indexOf('{');
+    if(start === -1) return {message: raw};
+    return JSON.parse(t.slice(start));
+  } catch(e) { return {message: raw}; }
+}
+
+function aiHasMeaningfulValue(v) {
+  if(v === undefined || v === null) return false;
+  if(typeof v === 'string') return v.trim() !== '' && !['—','-'].includes(v.trim());
+  if(Array.isArray(v)) return v.length > 0;
+  if(typeof v === 'object') return Object.keys(v).length > 0;
+  return true;
+}
+
+function aiNormalizeFioKey(fio) {
+  return String(fio || '').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/gi,' ').trim().replace(/\s+/g,' ');
+}
+
+function aiMergeItrRecords(baseList, patchList, sourceAuthoritative=false) {
+  const order = [];
+  const map = new Map();
+  const cloneValue = value => Array.isArray(value) || (value && typeof value === 'object')
+    ? JSON.parse(JSON.stringify(value)) : value;
+  const put = (person, isPatch) => {
+    if(!person || typeof person !== 'object') return;
+    const key = aiNormalizeFioKey(person.fio) || `__row_${order.length}`;
+    if(!map.has(key)) { map.set(key, {}); order.push(key); }
+    const merged = {...map.get(key)};
+    const existingSource = String(merged.source || '').toLowerCase();
+    const incomingSource = String(person.source || '').toLowerCase();
+    const existingIsDocument = existingSource === 'document';
+    const incomingCanOverrideDocument = ['document','manual','expert'].includes(incomingSource);
+
+    Object.entries(person).forEach(([field, value]) => {
+      if(value === undefined) return;
+      const meaningful = aiHasMeaningfulValue(value);
+      let accept = sourceAuthoritative && isPatch ? meaningful : true;
+
+      // Заполненные Формы №2–5 — источник истины. Неполный ответ модели не должен
+      // стирать стаж, трудовые книжки, вкладыши, дипломы или аттестаты пустой строкой.
+      if(isPatch && existingIsDocument && !incomingCanOverrideDocument) {
+        if(aiHasMeaningfulValue(merged[field])) accept = false;
+        else accept = meaningful;
+      }
+      if(accept) merged[field] = cloneValue(value);
+    });
+    map.set(key, merged);
+  };
+  (Array.isArray(baseList) ? baseList : []).forEach(p => put(p, false));
+  (Array.isArray(patchList) ? patchList : []).forEach(p => put(p, true));
+  return order.map(key => map.get(key));
+}
+
+function aiMergeStructuredSource(baseData, sourceData) {
+  const base = JSON.parse(JSON.stringify(baseData || {}));
+  const source = sourceData || {};
+  ['company','certification','dates'].forEach(section => {
+    if(!source[section]) return;
+    base[section] = {...(base[section] || {})};
+    Object.entries(source[section]).forEach(([k,v]) => {
+      if(aiHasMeaningfulValue(v)) base[section][k] = JSON.parse(JSON.stringify(v));
+    });
+  });
+  if(source.company_attestation) {
+    const sca = source.company_attestation;
+    const bca = {...(base.company_attestation || {})};
+    Object.entries(sca).forEach(([k,v]) => {
+      if(k === 'itr') {
+        bca.itr = aiMergeItrRecords(bca.itr, v, true);
+      } else if(['work_items','workers'].includes(k)) {
+        if(Array.isArray(v) && v.length) bca[k] = JSON.parse(JSON.stringify(v));
+      } else if(aiHasMeaningfulValue(v)) {
+        bca[k] = JSON.parse(JSON.stringify(v));
+      }
+    });
+    base.company_attestation = bca;
+  }
+  if(Array.isArray(source._source_forms)) {
+    base._source_forms = [...new Set([...(base._source_forms || []), ...source._source_forms])];
+  }
+  return base;
+}
+
+function aiCombineStructuredSources(parts) {
+  return (parts || []).filter(Boolean).reduce((acc, part) => aiMergeStructuredSource(acc, part), {});
+}
+
+// Ищет сохранённую компанию по части названия среди сохранённых на сервере (для запросов вида "загрузи ОмиТрейд")
+async function aiFindSavedCompanyByName(query) {
+  const q = query.toLowerCase();
+  const list = await aiListSavedCompanies();
+  return list.find(item => (item.label || '').toLowerCase().includes(q)) || null;
+}
+
+// Признаки того что пользователь хочет работать со старой/сохранённой компанией
+// (периодика, повторная генерация, "у тебя есть данные" и т.п.)
+function aiLooksLikeCompanyLookupRequest(text) {
+  return /период[ои]к|подгруз|загруз[иы]|у\s+тебя\s+(?:есть|сохран)|ранее\s+(?:дела|сохран)|повторн|дела[лм]и\s+(?:исо|суот|спк)/i.test(text);
+}
+
+// Прямое сопоставление: ищем в тексте любое слово/фразу, совпадающую с названием
+// одной из реально сохранённых компаний — надёжнее чем угадывать по регулярке структуру фразы
+async function aiDetectCompanyLookupQuery(text) {
+  if (!aiLooksLikeCompanyLookupRequest(text)) return null;
+  const list = await aiListSavedCompanies();
+  if (!list.length) return null;
+  const textLower = text.toLowerCase();
+  for (const item of list) {
+    // label выглядит как: ООО «ОмиТрейд» — извлекаем само название без формы/кавычек
+    const nameMatch = (item.label || '').match(/«([^»]+)»/);
+    const name = (nameMatch ? nameMatch[1] : item.label || '').toLowerCase().trim();
+    if (name && textLower.includes(name)) return name;
+  }
+  return null;
+}
+
+function aiIsRedundantWorkerQuestion(text) {
+  const value = String(text || '').toLowerCase().replace(/ё/g,'е');
+  return /(?:уточн|укажите|сообщите|нужн)[\s\S]{0,180}(?:количеств|разряд)[\s\S]{0,180}рабоч/.test(value)
+    || /рабоч[\s\S]{0,180}(?:количеств|разряд)[\s\S]{0,180}(?:уточн|укажите|сообщите)/.test(value);
+}
+
+function aiRemoveRedundantWorkerRequest(message) {
+  let text = String(message || '');
+  // Удаляем отдельный нумерованный пункт с просьбой указать количество/разряды.
+  text = text.replace(/(?:^|\n)\s*\d+[.)]\s*[^\n]*(?:количеств|разряд)[^\n]*рабоч[^\n]*(?=\n|$)/gim, '\n');
+  // И обычное предложение, если модель сформулировала вопрос без списка.
+  text = text.replace(/(?:уточните|укажите|сообщите|нужно указать|необходимо указать)[^.!?\n]{0,240}(?:количество|разряды)[^.!?\n]{0,240}рабоч[^.!?\n]*[.!?]?/gim, '');
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function aiIsRedundantStageRequest(text) {
+  const value = String(text || '').toLowerCase().replace(/ё/g,'е');
+  return /employment_periods|точн(?:ые|ых)\s+дат|ставлю\s*[«"]?01\.01|фото\s+трудов|скан(?:ы|ов)?\s+трудов|стаж\s+(?:кажется|выглядит)\s+неполн|пересчитаю[^.!?\n]{0,120}точн/.test(value)
+    || /почему[^.!?\n]{0,120}стаж[^.!?\n]{0,120}неполн/.test(value);
+}
+
+function aiRemoveRedundantStageRequest(message) {
+  let text = String(message || '');
+  // Удаляем абзацы/пункты, где модель просит даты или объясняет employment_periods,
+  // когда готовые две строки стажа уже находятся в карточке.
+  text = text.replace(/(?:^|\n)\s*\d+[.)]\s*[^\n]*(?:точн(?:ые|ых)\s+дат|employment_periods|01\.01|фото\s+трудов|скан(?:ы|ов)?\s+трудов)[^\n]*(?=\n|$)/gim, '\n');
+  text = text.replace(/[^\n]*(?:employment_periods|ставлю\s*[«"]?01\.01|пришлите[^\n]*(?:фото|скан)[^\n]*трудов|нужн[^\n]*точн[^\n]*дат)[^\n]*(?=\n|$)/gim, '');
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function aiFinalizeCompanyAttestationReply(parsed) {
+  const result = {...(parsed || {})};
+  const isCompanyAtt = aiCurrentData.certification?.standard === 'company_att';
+  if(!isCompanyAtt) return result;
+
+  const ca = aiCurrentData.company_attestation || {};
+  const hasAutoWorkers = Array.isArray(ca.work_items) && ca.work_items.length > 0
+    && Array.isArray(ca.workers) && ca.workers.length > 0;
+  const itr = Array.isArray(ca.itr) ? ca.itr : [];
+  const allStageReady = itr.length > 0 && itr.every(aiPersonHasFinalStage);
+  const hasLabourData = itr.some(p =>
+    (Array.isArray(p?.employment_periods) && p.employment_periods.length > 0)
+    || aiHasMeaningfulValue(p?.trudovaya_number)
+    || (Array.isArray(p?.trudovye_numbers) && p.trudovye_numbers.length > 0)
+  );
+
+  const originalQuestions = Array.isArray(result.questions) ? result.questions : [];
+  result.questions = originalQuestions.filter(q => {
+    const text = typeof q === 'string' ? q : (q?.text || q?.question || '');
+    if(hasAutoWorkers && aiIsRedundantWorkerQuestion(text)) return false;
+    // Once labour-book data is present, incomplete chronology must not block the
+    // package: the generator will calculate the confirmed part and mark review
+    // fields yellow. Ask for labour books only when there is no labour source at all.
+    if(hasLabourData && aiIsRedundantStageRequest(text)) return false;
+    return true;
+  });
+
+  const originalMessage = String(result.message || '');
+  const hadWorkerRequest = hasAutoWorkers && (
+    aiIsRedundantWorkerQuestion(originalMessage)
+    || result.questions.length !== originalQuestions.length
+  );
+  const hadStageRequest = hasLabourData && aiIsRedundantStageRequest(originalMessage);
+
+  let cleaned = originalMessage;
+  if(hadWorkerRequest) cleaned = aiRemoveRedundantWorkerRequest(cleaned);
+  if(hadStageRequest) cleaned = aiRemoveRedundantStageRequest(cleaned);
+
+  const confirmations = [];
+  if(hadWorkerRequest) confirmations.push('Рабочие для Формы №2 уже подставлены автоматически по выбранным видам работ.');
+  if(hadStageRequest) confirmations.push(allStageReady
+    ? 'Стаж рассчитан автоматически по точным периодам из трудовой книжки.'
+    : 'Стаж будет рассчитан автоматически по подтверждённым периодам трудовой; неполные или неуверенные данные в пакете выделятся жёлтым.');
+
+  if((hadWorkerRequest || hadStageRequest) && (!cleaned || aiIsRedundantStageRequest(cleaned))) {
+    cleaned = confirmations.join('\n\n');
+  } else if(confirmations.length) {
+    cleaned += (cleaned ? '\n\n' : '') + confirmations.join('\n\n');
+  }
+  result.message = cleaned;
+  return result;
+}
+
+async function aiSend() {
+  if(aiLoading) return;
+  const ta = document.getElementById('ai-input');
+  const text = ta.value.trim();
+  if(!text && aiAttachedFiles.length === 0) return;
+
+  // Показываем сообщение пользователя
+  const fileNames = aiAttachedFiles.map(f=>f.name).join(', ');
+  const displayText = text + (fileNames ? (text ? '\n📎 ' : '📎 ') + fileNames : '');
+  aiAddMsg('user', displayText);
+  ta.value = ''; ta.style.height = '';
+
+  aiLoading = true;
+  document.getElementById('ai-send-btn').disabled = true;
+  aiShowTyping();
+
+  // Проверяем — не просит ли пользователь подгрузить ранее сохранённую компанию (для периодики и т.п.)
+  let savedCompanyContext = '';
+  try {
+    const foundName = await aiDetectCompanyLookupQuery(text);
+    if (foundName) {
+      const found = await aiFindSavedCompanyByName(foundName);
+      if (found) {
+        const r = await kvGet(found.key);
+        if (r) {
+          const payload = JSON.parse(r.value);
+          savedCompanyContext = 'НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ «' + foundName + '» (используй как базу, пользователь будет вносить корректировки поверх этих данных, например для периодики — обнови даты, штат, объекты по новым вводным):\n'
+            + JSON.stringify(payload.data, null, 2) + '\n\n';
+          // Сразу подгружаем найденные данные в текущую карточку
+          aiCurrentData = JSON.parse(JSON.stringify(payload.data));
+          aiCurrentCompanyKey = found.key;
+          aiRenderCardFromCurrent();
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('aiDetectCompanyLookupQuery error:', e);
+  }
+
+  // Читаем файлы — ПАЧКАМИ по 2, а не все разом (сервер на Render Free не тянет
+  // 4+ одновременных запросов к медленной vision-модели — падает по памяти/времени,
+  // и вместо JSON приходит HTML-страница ошибки от Render)
+  let filesContent = '';
+  let authoritativeSourceData = {};
+  if(aiAttachedFiles.length > 0) {
+    const total = aiAttachedFiles.length;
+    const BATCH = 2;
+    const fileData = [];
+    const typingMsg = document.getElementById('ai-messages').lastElementChild;
+    for(let i = 0; i < total; i += BATCH) {
+      const batch = aiAttachedFiles.slice(i, i + BATCH);
+      aiAddMsg('ai', `⏳ Читаю файлы ${i+1}-${Math.min(i+BATCH,total)} из ${total}...`);
+      const results = await Promise.all(batch.map(aiReadFile));
+      fileData.push(...results);
+      // убираем промежуточное сообщение о прогрессе
+      const msgs2 = document.getElementById('ai-messages');
+      const lastProgress = msgs2.lastElementChild;
+      if(lastProgress && lastProgress.textContent.includes('Читаю файлы')) lastProgress.remove();
+    }
+    aiAttachedFiles = [];
+    aiRenderFileList();
+    // Удаляем сообщение "Читаю файлы"
+    const msgs = document.getElementById('ai-messages');
+    const last = msgs.lastElementChild;
+    if(last && last.textContent.includes('Читаю файлы')) last.remove();
+
+    filesContent = fileData.map(f =>
+      `\n===== ФАЙЛ: ${f.name} =====\n${f.content}\n`
+    ).join('\n');
+    authoritativeSourceData = aiCombineStructuredSources(fileData.map(f => f.structured_data));
+    if(Object.keys(authoritativeSourceData).length) {
+      // Completed Forms 1–5 are copied directly from Word tables and have priority
+      // over model guesses. This prevents loss of experience, inserts and attestations.
+      aiCurrentData = aiMergeStructuredSource(aiCurrentData, authoritativeSourceData);
+      aiRenderCardFromCurrent();
+    }
+  }
+
+  // Команда «Обучись:» создаёт общее правило базы знаний, а не меняет карточку компании.
+  // Обучать могут все пользователи; правило сначала показывается как черновик и
+  // становится активным после нажатия «Подтвердить обучение».
+  if(/^\s*обучись\s*:/i.test(text)) {
+    try {
+      aiRemoveTyping();
+      knowledgeSourceFilename = fileNames || '';
+      await knowledgeCreateDraftFromChat(text, filesContent);
+    } catch(e) {
+      aiRemoveTyping();
+      aiAddMsg('ai', '❌ Не удалось подготовить правило: ' + e.message);
+    }
+    aiLoading = false;
+    document.getElementById('ai-send-btn').disabled = false;
+    return;
+  }
+
+  // Собираем контент для ИИ
+  let content = '';
+  if(savedCompanyContext) content += savedCompanyContext;
+  if(filesContent) content += 'СОДЕРЖИМОЕ ФАЙЛОВ:' + filesContent + '\n\n';
+  if(Object.keys(authoritativeSourceData).length > 0) {
+    content += 'СТРУКТУРИРОВАННЫЕ ДАННЫЕ ИЗ ЗАПОЛНЕННЫХ ФОРМ 1–5 ' +
+      '(ИСТОЧНИК ИСТИНЫ, НЕ СОКРАЩАТЬ И НЕ ПЕРЕИМЕНОВЫВАТЬ):\n' +
+      JSON.stringify(authoritativeSourceData, null, 2) + '\n\n';
+  }
+  if(Object.keys(aiCurrentData).length > 0) {
+    content += 'ТЕКУЩИЕ ДАННЫЕ КАРТОЧКИ:\n' + JSON.stringify(aiCurrentData, null, 2) + '\n\n';
+  }
+  content += text ? 'ЗАПРОС: ' + text : 'Проанализируй файлы и заполни карточку компании.';
+
+  aiHistory.push({role:'user', content});
+
+  try {
+    const resp = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({messages: aiHistory.slice(-10), product: aiCurrentData?.certification?.standard || 'all'})
+    });
+    const result = await resp.json();
+    aiRemoveTyping();
+
+    if(!result.success) throw new Error(result.error || 'Ошибка сервера');
+
+    let parsed = aiParseResponse(result.text);
+
+    if(parsed.data || Object.keys(authoritativeSourceData).length) {
+      const dataForCard = Object.keys(authoritativeSourceData).length
+        ? aiMergeStructuredSource(parsed.data || {}, authoritativeSourceData)
+        : parsed.data;
+      aiRenderCard(dataForCard);
+    }
+    // После детерминированной нормализации карточки удаляем бессмысленный запрос
+    // количества/разрядов: эти данные уже рассчитаны справочником приложения.
+    parsed = aiFinalizeCompanyAttestationReply(parsed);
+    const cleanHistoryPayload = JSON.stringify(parsed);
+    aiHistory.push({role:'assistant', content: cleanHistoryPayload});
+    aiAddMsg('ai', parsed.message || result.text, parsed.questions);
+
+  } catch(e) {
+    aiRemoveTyping();
+    aiAddMsg('ai', '❌ Ошибка: ' + e.message);
+  }
+
+  aiLoading = false;
+  document.getElementById('ai-send-btn').disabled = false;
+}
+
+let aiAttachedFiles = [];
+
+function aiHandleFiles(files) {
+  Array.from(files).forEach(f => {
+    if(!aiAttachedFiles.find(a => a.name === f.name)) aiAttachedFiles.push(f);
+  });
+  document.getElementById('ai-file-input').value = '';
+  aiRenderFileList();
+}
+
+function aiRenderFileList() {
+  const box = document.getElementById('ai-file-list');
+  box.innerHTML = aiAttachedFiles.map((f,i) => `
+    <div style="display:flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;background:#F3E3E6;border:0.5px solid #C3A8A0;font-size:10.5px;color:#A56B75">
+      📄 ${f.name}
+      <span onclick="aiRemoveFile(${i})" style="cursor:pointer;opacity:.7;margin-left:2px">✕</span>
+    </div>`).join('');
+}
+
+function aiRemoveFile(i) {
+  aiAttachedFiles.splice(i, 1);
+  aiRenderFileList();
+}
+
+async function aiReadFile(file) {
+  // PNG/JPG/HEIC — только через vision; PDF — пробует text потом vision (сервер решает)
+  // ZIP/RAR — асинхронно, с распознаванием фото внутри (фон + прогресс, не блокирует запрос)
+  // DOC/DOCX/XLS/XLSX — только через extract-text
+  const ext = file.name.split('.').pop().toLowerCase();
+  if(ext === 'zip' || ext === 'rar') {
+    return aiReadArchiveAsync(file);
+  }
+  const isVisual = ['png','jpg','jpeg','webp','heic','heif','pdf'].includes(ext);
+  const endpoint = isVisual ? '/api/analyze-image' : '/api/extract-text';
+  return new Promise((resolve) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    fetch(endpoint, {method:'POST', body: formData})
+      .then(r => r.json())
+      .then(data => {
+        // Сохраняем миниатюру для показа рядом с данными в карточке (проверка человеком)
+        if(data.thumbnail_b64) {
+          aiPhotoThumbnails[file.name] = data.thumbnail_b64;
+        }
+        let content = data.text || '[Не удалось извлечь текст из файла]';
+        if(data.verified_match === false) {
+          content = `⚠️ [Двойная проверка распознавания разошлась — сверьте с оригиналом]\n${content}`;
+        }
+        resolve({ name: file.name, content, structured_data: data.structured_data || null });
+      })
+      .catch(err => resolve({
+        name: file.name,
+        content: '[Ошибка загрузки файла: ' + err.message + ']'
+      }));
+  });
+}
+
+async function aiCompressImageBlob(blob, maxDim, quality) {
+  // Уменьшает фото прямо в браузере через canvas — до отправки на сервер.
+  // Это единственный надёжный способ обойти непредсказуемый лимит на размер
+  // тела запроса у Render (он не документирован и отклоняет запрос ДО нашего кода —
+  // никакая серверная защита тут не поможет, раз байты даже не долетают).
+  try {
+    const bitmap = await createImageBitmap(blob);
+    let {width, height} = bitmap;
+    if(Math.max(width, height) > maxDim) {
+      const ratio = maxDim / Math.max(width, height);
+      width = Math.round(width * ratio);
+      height = Math.round(height * ratio);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    return await new Promise(res => canvas.toBlob(res, 'image/jpeg', quality));
+  } catch(e) {
+    return blob; // не смогли сжать — отправляем как есть
+  }
+}
+
+async function aiCompressArchiveClientSide(file, onProgress) {
+  // Распаковывает zip в браузере, уменьшает фото внутри, запаковывает обратно.
+  // Реальные архивы клиентов (сканы + фото с телефона) обычно весят 100+ МБ из-за
+  // необработанных фотографий по 3-6 МБ каждая — после сжатия остаётся 15-25% от размера.
+  if(typeof JSZip === 'undefined') return file; // библиотека не загрузилась — шлём как есть
+
+  const IMAGE_EXT = ['jpg','jpeg','png','webp'];
+  const zip = await JSZip.loadAsync(file);
+  const outZip = new JSZip();
+  const entries = Object.values(zip.files).filter(f => !f.dir && !f.name.includes('__MACOSX') && !f.name.endsWith('.DS_Store'));
+
+  let done = 0;
+  for(const entry of entries) {
+    const ext = entry.name.split('.').pop().toLowerCase();
+    done++;
+    if(onProgress) onProgress(done, entries.length, entry.name.split('/').pop());
+    if(IMAGE_EXT.includes(ext)) {
+      try {
+        const blob = await entry.async('blob');
+        const compressed = await aiCompressImageBlob(blob, 1600, 0.72);
+        outZip.file(entry.name, compressed);
+      } catch(e) {
+        outZip.file(entry.name, await entry.async('blob'));
+      }
+    } else {
+      outZip.file(entry.name, await entry.async('blob'));
+    }
+  }
+  const outBlob = await outZip.generateAsync({type: 'blob', compression: 'DEFLATE', compressionOptions: {level: 6}});
+  return new File([outBlob], file.name, {type: 'application/zip'});
+}
+
+async function aiReadArchiveAsync(file) {
+  // Архив (zip/rar) обрабатывается в фоне на сервере: текстовые файлы читаются как раньше,
+  // а ФОТО внутри теперь тоже распознаются через vision (раньше пропускались молча).
+  // Не блокирует один HTTP-запрос — можно грузить архивы гораздо крупнее.
+  const progressMsgId = 'archive-prog-' + Date.now();
+  aiAddMsg('ai', `⏳ Разбираю архив «${file.name}»...`, null, progressMsgId);
+
+  let uploadFile = file;
+  const ext = file.name.split('.').pop().toLowerCase();
+  // Сжимаем фото внутри ДО отправки — иначе тело запроса может вообще не долететь
+  // до сервера (Render отклоняет слишком большие запросы ещё на своей стороне, без
+  // объяснений — это выглядит как "Unexpected token '<'"). RAR так сжать не можем
+  // (нет библиотеки в браузере) — для него просто пробуем отправить как есть.
+  if(ext === 'zip' && file.size > 15 * 1024 * 1024) {
+    aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: сжимаю фото перед загрузкой (${(file.size/1024/1024).toFixed(0)} МБ)...`);
+    try {
+      uploadFile = await aiCompressArchiveClientSide(file, (done, total, name) => {
+        aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: сжимаю ${done}/${total} — ${name}`);
+      });
+      aiUpdateMsg(progressMsgId,
+        `⏳ «${file.name}»: сжато с ${(file.size/1024/1024).toFixed(0)} МБ до ${(uploadFile.size/1024/1024).toFixed(0)} МБ, загружаю...`);
+    } catch(e) {
+      console.warn('Сжатие архива не удалось, отправляю как есть:', e);
+      uploadFile = file;
+    }
+  }
+
+  try {
+    const formData = new FormData();
+    formData.append('file', uploadFile);
+    const startResp = await fetch('/api/extract-archive-async', {method:'POST', body: formData}).then(r=>r.json());
+    if(!startResp.success) {
+      aiUpdateMsg(progressMsgId, `❌ ${file.name}: ${startResp.error || 'не удалось начать обработку'}`);
+      return {name: file.name, content: '[Ошибка: ' + (startResp.error||'не удалось начать обработку') + ']'};
+    }
+    const taskId = startResp.task_id;
+    const MAX_POLLS = 600; // архив с 25-60 фото может обрабатываться до 30 минут (было 10 — не хватало)
+    let pollCount = 0;
+
+    while(pollCount < MAX_POLLS) {
+      await new Promise(res => setTimeout(res, 3000));
+      pollCount++;
+      let tr;
+      try {
+        const raw = await fetch('/api/task/' + taskId).then(x=>x.text());
+        tr = JSON.parse(raw);
+      } catch(e) { continue; } // временная сетевая заминка — пробуем на следующем опросе
+
+      if(tr.status === 'running') {
+        const lastMsg = tr.progress && tr.progress.length ? tr.progress[tr.progress.length-1] : 'обрабатываю...';
+        aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ${lastMsg}`);
+      } else if(tr.status === 'done') {
+        aiUpdateMsg(progressMsgId, `✅ Архив «${file.name}» разобран`);
+        return {name: file.name, content: tr.text || '[Архив: данные не найдены]',
+                summary: tr.summary || '',
+                structured_data: tr.structured_data || null};
+      } else if(tr.status === 'error') {
+        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${tr.error || 'ошибка обработки'}`);
+        return {name: file.name, content: '[Ошибка обработки архива: ' + (tr.error||'') + ']'};
+      } else if(tr.status === 'not_found') {
+        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: задача потерялась (сервер перезапустился?)`);
+        return {name: file.name, content: '[Задача обработки архива потерялась — попробуйте ещё раз]'};
+      }
+    }
+    aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: превышено время ожидания в браузере (30 минут). Попробуйте ещё раз — возможно архив слишком большой, разбейте на части поменьше (по 1-2 человека за раз).`);
+    return {name: file.name, content: '[Превышено время ожидания обработки архива]'};
+  } catch(err) {
+    aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${err.message}`);
+    return {name: file.name, content: '[Ошибка: ' + err.message + ']'};
+  }
+}
+
+async function aiRawCheckArchive(file) {
+  // Сервер теперь САМ сводит все документы каждого человека в готовую карточку
+  // (реквизиты компании + люди по номерам, при расхождениях между документами
+  // выбран наиболее вероятный вариант) — задача фронтенда просто ПОКАЗАТЬ этот
+  // текст и дать удобно скопировать, не заниматься сложным разбором самому.
+  if(!file) return;
+  document.getElementById('ai-raw-check-input').value = '';
+
+  aiAddMsg('user', `🔍 Проверка архива «${file.name}» — данные для копирования`);
+  const result = await aiReadArchiveAsync(file);
+  const text = result.content || '[пусто]';
+  const summary = result.summary || 'Архив разобран. Подробный распознанный текст доступен ниже.';
+
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const boxId = 'raw-copy-' + Date.now();
+  const hasDiscrepancy = summary.includes('⚠️');
+
+  const html = `<div style="font-size:12px;line-height:1.55;background:#FDF8EE;border:1px solid #E8DCC8;border-radius:8px;padding:12px;margin-bottom:10px;white-space:pre-wrap">${esc(summary)}</div>`
+             + `<div style="font-size:11px;color:#A6837D;margin-bottom:8px">`
+             + (hasDiscrepancy ? `<span style="color:#C97A5F">⚠️ проверьте перечисленные расхождения</span>` : `<span style="color:#6B9B7A">✅ технических ошибок чтения не отмечено</span>`)
+             + `</div>`
+             + `<details style="border:1px solid #E8DCC8;border-radius:8px;padding:8px;background:#fff">`
+             + `<summary style="cursor:pointer;color:#8B4A5C;font-size:11.5px;font-weight:700">Показать полный распознанный текст</summary>`
+             + `<button onclick="navigator.clipboard.writeText(document.getElementById('${boxId}').innerText).then(()=>{this.innerText='✅ Скопировано'; setTimeout(()=>this.innerText='📋 Скопировать полный текст',1500)})" `
+             + `style="margin:8px 0;padding:6px 14px;border-radius:6px;border:1px solid #C97A5F;background:#F7DDE1;color:#8B4A5C;font-size:11px;cursor:pointer;font-family:inherit">📋 Скопировать полный текст</button>`
+             + `<pre id="${boxId}" style="white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:11px;background:#FDF8EE;border:1px solid #E8DCC8;border-radius:8px;padding:12px;max-height:500px;overflow-y:auto;margin:0">${esc(text)}</pre>`
+             + `</details>`;
+
+  aiAddMsg('ai', html);
+}
+
+function aiHandleKey(e) {
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();aiSend();}
+}
+function aiResize(ta) {
+  ta.style.height='auto';
+  ta.style.height=Math.min(ta.scrollHeight,100)+'px';
+}
+function aiQuick(t) {
+  document.getElementById('ai-input').value = t;
+  document.getElementById('ai-input').focus();
+}
+
+function selectProduct(key, label, short) {
+  SELECTED_PRODUCT.key = key;
+  SELECTED_PRODUCT.label = label;
+  document.querySelectorAll('.prod-btn').forEach(b => b.classList.remove('active-prod'));
+  document.getElementById('pb-' + key)?.classList.add('active-prod');
+  aiAddMsg('ai', `Переключаю на продукт: <strong>${label}</strong>. Передавайте данные — я адаптирую требования.`);
+}
+
+async function aiGenerate() {
+  aiNormalizeCompanyAttestation();
+  const validation = aiValidateReadiness(aiCurrentData);
+  if(!validation.ready) {
+    aiAddMsg('ai', '❌ Нельзя сформировать пакет. Не заполнено:<br>• ' + validation.missing.join('<br>• '));
+    aiRenderCardFromCurrent();
+    return;
+  }
+  const c = aiCurrentData.company;
+
+  // Передаём ai_data в существующий endpoint /api/generate
+  // Определяем продукт из данных Игоря
+  const certStd = aiCurrentData.certification?.standard || 'iso';
+  const product = certStd; // iso | suot | iso_suot | spk_stroy | spk_bisp
+
+  const payload = {
+    orgName: c.name,
+    orgForm: c.form || 'ООО',
+    city: c.city || 'Минск',
+    scope: aiCurrentData.certification?.scope || '',
+    implDate: aiCurrentData.dates?.implementation_date || '',
+    startDate: aiCurrentData.dates?.development_date || '',
+    dirSurname: (c.director_fio||'').split(' ')[0] || '',
+    dirInitials: (c.director_fio||'').split(' ').slice(1).map(x=>x[0]||'').join('.') + '.' || '',
+    product: product,
+    ai_data: aiCurrentData,
+    itrList: (aiCurrentData.staff||[]).filter(s=>!s.is_worker).map(s=>s.fio).join('\n'),
+  };
+
+  // Показываем прогресс
+  const progressId = 'progress_' + Date.now();
+  const steps = [
+    '📋 Анализирую данные компании...',
+    '👥 Назначаю роли сотрудникам...',
+    '📅 Рассчитываю даты документов...',
+    '📄 Заполняю шаблоны документов...',
+    '🗜️ Упаковываю архив...'
+  ];
+  let stepIdx = 0;
+  
+  const progDiv = document.createElement('div');
+  progDiv.id = progressId;
+  progDiv.className = 'ai-msg-ai';
+  progDiv.innerHTML = `<div class="ai-avatar" style="background:#8B4A5C">ИГ</div>
+    <div class="ai-bubble-ai">
+      <div id="${progressId}-text" style="margin-bottom:8px">📋 Анализирую данные компании...</div>
+      <div style="background:#EDE1D6;border-radius:4px;height:6px;overflow:hidden">
+        <div id="${progressId}-bar" style="background:#A56B75;height:100%;width:0%;transition:width .5s;border-radius:4px"></div>
+      </div>
+      <div id="${progressId}-pct" style="font-size:10px;color:#A8938A;margin-top:4px">0%</div>
+    </div>`;
+  document.getElementById('ai-messages').appendChild(progDiv);
+  document.getElementById('ai-messages').scrollTop = 99999;
+
+  const interval = setInterval(() => {
+    stepIdx = Math.min(stepIdx + 1, steps.length - 1);
+    const pct = Math.round((stepIdx / steps.length) * 85);
+    document.getElementById(progressId + '-text').textContent = steps[stepIdx];
+    document.getElementById(progressId + '-bar').style.width = pct + '%';
+    document.getElementById(progressId + '-pct').textContent = pct + '%';
+  }, 1200);
+
+  const btn = document.getElementById('ai-gen-btn');
+  btn.disabled = true; btn.textContent = '⏳ Генерирую...';
+
+  try {
+    // Запускаем генерацию асинхронно
+    const resp = await fetch('/api/generate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const r = await resp.json();
+
+    if(!r.success) {
+      clearInterval(interval);
+      progDiv.remove();
+      aiAddMsg('ai', '❌ Ошибка: ' + (r.error||'неизвестная ошибка'));
+      btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+      return;
+    }
+
+    // Если асинхронный режим — опрашиваем статус
+    if(r.async && r.task_id) {
+      const taskId = r.task_id;
+      const msgLines = [steps[0]];
+
+      let pollErrors = 0;
+      let lastKnownStep = 0;
+      let pollCount = 0;
+      const MAX_POLLS = 400; // 400 * 3сек = 20 минут максимум
+
+      // Кнопка ручной проверки
+      const checkBtn = document.createElement('button');
+      checkBtn.textContent = '🔄 Проверить статус';
+      checkBtn.style = 'margin-top:8px;padding:4px 10px;border-radius:4px;border:1px solid #D4C4B8;background:#fff;cursor:pointer;font-size:11px';
+      checkBtn.onclick = async () => {
+        try {
+          const raw2 = await fetch('/api/task/' + taskId).then(x=>x.text());
+          const tr = JSON.parse(raw2);
+          if(tr.status === 'done') {
+            clearInterval(poll);
+            clearInterval(interval);
+            progDiv.remove();
+            await aiSaveToPersistentJournal(tr.orgName, tr.fileCount, tr.dates, tr.zipB64);
+            const safeOrg = (tr.orgName||'documents').replace(/[^\wа-яё\s-]/gi,'');
+            const warnBlock = (tr.warnings && tr.warnings.length)
+              ? `<div style="margin-top:10px;padding:10px 12px;background:#FBF0E6;border:1px solid #E8B39F;border-radius:8px;font-size:12.5px;color:#A6503D">
+                   <b>⚠️ Проверьте перед подачей:</b><ul style="margin:6px 0 0 18px;padding:0">${tr.warnings.map(w=>`<li>${w}</li>`).join('')}</ul>
+                 </div>` : '';
+            if(tr.zipB64) {
+              const blob = aiBase64ToBlob(tr.zipB64, 'application/zip');
+              const url = URL.createObjectURL(blob);
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Файл сохранён в журнале.<br><br>
+                <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#E9EFE0;border:1px solid #B8C9A8;border-radius:8px;color:#7D8F6E;font-weight:700;font-size:13px;text-decoration:none">
+                  📥 Скачать пакет документов
+                </a>${warnBlock}`);
+            } else {
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Проверьте журнал.${warnBlock}`);
+            }
+            btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+          } else {
+            checkBtn.textContent = `Статус: ${tr.status}, шаг ${tr.step}/${tr.total}`;
+            setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000);
+          }
+        } catch(e) { checkBtn.textContent = '❌ ' + e.message; setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000); }
+      };
+      progDiv.appendChild(checkBtn);
+
+      // Ссылка на журнал для ручного скачивания
+      const journalLink = document.createElement('a');
+      journalLink.href = '/api/journal';
+      journalLink.textContent = '📋 Открыть журнал генераций';
+      journalLink.target = '_blank';
+      journalLink.style = 'display:block;margin-top:6px;font-size:10px;color:#A6837D;text-decoration:underline';
+      progDiv.appendChild(journalLink);
+
+      const poll = setInterval(async () => {
+        pollCount++;
+        if(pollCount > MAX_POLLS) {
+          clearInterval(poll);
+          clearInterval(interval);
+          document.getElementById(progressId+'-text').textContent = 'Превышено время ожидания. Проверьте журнал.';
+          btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+          return;
+        }
+        try {
+          const controller = new AbortController();
+          const fetchTimeout = setTimeout(() => controller.abort(), 25000);
+          const raw = await fetch('/api/task/' + taskId, {signal: controller.signal}).then(x=>x.text());
+          clearTimeout(fetchTimeout);
+          if(!raw || !raw.trim()) throw new Error('Empty response');
+          let tr;
+          try { tr = JSON.parse(raw); }
+          catch(je) { throw new Error('Bad JSON: ' + raw.slice(0,50)); }
+          pollErrors = 0;
+
+          const pct = tr.total ? Math.round((tr.step/tr.total)*95) : Math.min(lastKnownStep+2, 90);
+          lastKnownStep = pct;
+          const lastMsg = tr.progress && tr.progress.length ? tr.progress[tr.progress.length-1] : '';
+
+          if(lastMsg) document.getElementById(progressId+'-text').textContent = lastMsg;
+          document.getElementById(progressId+'-bar').style.width = pct+'%';
+          document.getElementById(progressId+'-pct').textContent = pct+'%';
+
+          if(tr.status === 'done') {
+            clearInterval(poll);
+            clearInterval(interval);
+            document.getElementById(progressId+'-bar').style.width = '100%';
+            document.getElementById(progressId+'-pct').textContent = '100%';
+            document.getElementById(progressId+'-text').textContent = 'Готово!';
+            await new Promise(res=>setTimeout(res,400));
+            progDiv.remove();
+            await aiSaveToPersistentJournal(tr.orgName, tr.fileCount, tr.dates, tr.zipB64);
+            const safeOrg = (tr.orgName||'documents').replace(/[^\wа-яё\s-]/gi,'');
+            const warnBlock = (tr.warnings && tr.warnings.length)
+              ? `<div style="margin-top:10px;padding:10px 12px;background:#FBF0E6;border:1px solid #E8B39F;border-radius:8px;font-size:12.5px;color:#A6503D">
+                   <b>⚠️ Проверьте перед подачей:</b><ul style="margin:6px 0 0 18px;padding:0">${tr.warnings.map(w=>`<li>${w}</li>`).join('')}</ul>
+                 </div>` : '';
+            if(tr.zipB64) {
+              const blob = aiBase64ToBlob(tr.zipB64, 'application/zip');
+              const url = URL.createObjectURL(blob);
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Файл сохранён в журнале.<br><br>
+                <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#E9EFE0;border:1px solid #B8C9A8;border-radius:8px;color:#7D8F6E;font-weight:700;font-size:13px;text-decoration:none">
+                  📥 Скачать пакет документов
+                </a>${warnBlock}`);
+            } else {
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Проверьте журнал.${warnBlock}`);
+            }
+            btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+          } else if(tr.status === 'error') {
+            clearInterval(poll);
+            clearInterval(interval);
+            progDiv.remove();
+            aiAddMsg('ai', '❌ Ошибка генерации: ' + (tr.error||'неизвестная'));
+            btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+          }
+        } catch(pollErr) {
+          pollErrors++;
+          console.warn('Poll error #'+pollErrors+':', pollErr.message);
+          // Анимируем прогресс-бар чтобы пользователь видел что идёт работа
+          const fakePct = Math.min(lastKnownStep + 1, 94);
+          lastKnownStep = fakePct;
+          document.getElementById(progressId+'-bar').style.width = fakePct+'%';
+          document.getElementById(progressId+'-pct').textContent = fakePct+'%';
+          // После 20 ошибок подряд (60 сек) — сообщаем но НЕ останавливаем
+          if(pollErrors === 20) {
+            document.getElementById(progressId+'-text').textContent = 'Генерация продолжается, ожидайте...';
+          }
+        }
+      }, 3000);
+    } else {
+      // Синхронный ответ (старый режим)
+      clearInterval(interval);
+      progDiv.remove();
+      if(r.success && r.journalId) {
+        aiAddMsg('ai', `✅ Готово! <strong>${r.fileCount} документов</strong>.<br><br>
+          <a href="/api/download/${r.journalId}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#E9EFE0;border:1px solid #B8C9A8;border-radius:8px;color:#7D8F6E;font-weight:700;font-size:12px;text-decoration:none">📥 Скачать</a>`);
+      }
+      btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+    }
+  } catch(e) {
+    clearInterval(interval);
+    progDiv.remove();
+    aiAddMsg('ai', '❌ Ошибка соединения: ' + e.message);
+    btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+  }
+}
+
+// ── ЗНАНИЯ ИИГОРЯ ─────────────────────────────────────────────
+let knowledgeRules = [];
+let knowledgeSourceText = '';
+let knowledgeSourceFilename = '';
+let knowledgePageInitialized = false;
+
+function igorEscape(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+async function knowledgePost(path, payload) {
+  const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload || {})});
+  const data = await response.json();
+  if(!response.ok || data.success === false) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function knowledgeInitPage() {
+  const author = document.getElementById('knowledge-author');
+  if(author && !author.value) {
+    try { author.value = localStorage.getItem('igor:knowledge:author') || ''; } catch(_) {}
+  }
+  knowledgePageInitialized = true;
+  knowledgeLoadRules();
+}
+
+async function knowledgeReadSelectedFile(file) {
+  knowledgeSourceText = '';
+  knowledgeSourceFilename = '';
+  const status = document.getElementById('knowledge-file-status');
+  if(!file) { if(status) status.textContent=''; return; }
+  if(status) status.textContent = `⏳ Читаю «${file.name}»...`;
+  try {
+    const result = await aiReadFile(file);
+    knowledgeSourceText = result.content || '';
+    knowledgeSourceFilename = file.name;
+    if(status) status.textContent = `✅ «${file.name}» прочитан, ${knowledgeSourceText.length.toLocaleString('ru-RU')} знаков`;
+  } catch(e) {
+    if(status) status.textContent = '❌ ' + e.message;
+  }
+}
+
+function knowledgeScopeLabel(scope) {
+  const labels = {all:'Все продукты',iso:'ISO 9001',suot:'СУОТ',iso_suot:'ISO + СУОТ',spk:'Все СПК',spk_stroy:'СПК Стройкомплекс',spk_bisp:'СПК БИСП',company_att:'Аттестация компании',att:'Аттестация специалиста',periodika:'Периодика'};
+  return labels[scope] || scope || 'Все продукты';
+}
+
+function knowledgeRulePreviewHtml(rule, chatMode=false) {
+  const cond = (rule.conditions || []).map(v=>`<li>${igorEscape(v)}</li>`).join('');
+  const acts = (rule.actions || []).map(v=>`<li>${igorEscape(v)}</li>`).join('');
+  const conflict = rule.conflict_warning ? `<div style="margin-top:8px;padding:8px;border-radius:6px;background:#FFF0ED;color:#A6503D"><b>⚠️ Возможный конфликт:</b> ${igorEscape(rule.conflict_warning)}</div>` : '';
+  const controls = rule.active
+    ? `<button class="igor-btn soft" onclick="knowledgeSetActive('${rule.id}',false)">Отключить</button>`
+    : `<button class="igor-btn green" onclick="knowledgeSetActive('${rule.id}',true)">✅ Подтвердить обучение</button>`;
+  return `<div class="knowledge-rule ${rule.active?'':'draft'}" id="knowledge-rule-${rule.id}">
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div><b style="color:#8B4A5C">${igorEscape(rule.title)}</b><div style="margin-top:4px"><span class="knowledge-pill">${igorEscape(knowledgeScopeLabel(rule.scope))}</span><span class="knowledge-pill">версия ${Number(rule.version||1)}</span></div></div><span style="font-size:10px;color:#A8938A">${igorEscape(rule.author||'')}</span></div>
+    <div style="font-size:12px;line-height:1.5;margin-top:9px;white-space:pre-wrap">${igorEscape(rule.instruction)}</div>
+    ${cond?`<div style="font-size:11px;margin-top:7px"><b>Когда применять:</b><ul style="margin:4px 0 0 18px">${cond}</ul></div>`:''}
+    ${acts?`<div style="font-size:11px;margin-top:7px"><b>Что делать:</b><ul style="margin:4px 0 0 18px">${acts}</ul></div>`:''}
+    ${rule.source_filename?`<div style="font-size:10px;color:#8B7E76;margin-top:6px">Источник: ${igorEscape(rule.source_filename)}</div>`:''}
+    ${conflict}
+    <div style="display:flex;gap:7px;margin-top:10px;flex-wrap:wrap">${controls}${chatMode?'':`<button class="igor-btn soft" onclick="knowledgeEditRule('${rule.id}')">Редактировать</button><button class="igor-btn danger" onclick="knowledgeDeleteRule('${rule.id}')">Удалить</button>`}</div>
+  </div>`;
+}
+
+async function knowledgePreviewRule() {
+  const instruction = (document.getElementById('knowledge-instruction')?.value || '').trim();
+  const scope = document.getElementById('knowledge-scope')?.value || 'all';
+  const author = (document.getElementById('knowledge-author')?.value || '').trim() || 'Пользователь ИИгоря';
+  try { localStorage.setItem('igor:knowledge:author', author); } catch(_) {}
+  const box = document.getElementById('knowledge-preview');
+  if(box) box.innerHTML = '<div style="font-size:11px;color:#A8938A">⏳ ИИгорь формулирует правило и проверяет конфликты...</div>';
+  try {
+    const data = await knowledgePost('/api/knowledge/preview', {instruction, scope, author, source_filename:knowledgeSourceFilename, source_text:knowledgeSourceText});
+    if(box) box.innerHTML = `<div style="font-size:10px;color:#A8938A;margin-bottom:6px">Проверьте формулировку. Правило начнёт действовать только после подтверждения.</div>${knowledgeRulePreviewHtml(data.rule)}`;
+    await knowledgeLoadRules();
+  } catch(e) {
+    if(box) box.innerHTML = `<div style="color:#A6503D;font-size:11px">❌ ${igorEscape(e.message)}</div>`;
+  }
+}
+
+function knowledgeClearForm() {
+  const ids=['knowledge-instruction','knowledge-file'];
+  ids.forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
+  knowledgeSourceText=''; knowledgeSourceFilename='';
+  const status=document.getElementById('knowledge-file-status'); if(status) status.textContent='';
+  const preview=document.getElementById('knowledge-preview'); if(preview) preview.innerHTML='';
+}
+
+async function knowledgeLoadRules() {
+  try {
+    const response = await fetch('/api/knowledge/list');
+    const data = await response.json();
+    knowledgeRules = data.rules || [];
+    knowledgeRenderRules();
+  } catch(e) {
+    const box=document.getElementById('knowledge-rules-list'); if(box) box.innerHTML=`<div style="color:#A6503D">${igorEscape(e.message)}</div>`;
+  }
+}
+
+function knowledgeRenderRules() {
+  const box=document.getElementById('knowledge-rules-list'); if(!box) return;
+  const q=(document.getElementById('knowledge-search')?.value || '').toLowerCase().trim();
+  const rows=knowledgeRules.filter(r=>!q || `${r.title} ${r.instruction} ${r.author} ${r.scope}`.toLowerCase().includes(q));
+  if(!rows.length){box.innerHTML='<div style="font-size:11px;color:#A8938A">Правил пока нет</div>';return;}
+  box.innerHTML=rows.map(r=>knowledgeRulePreviewHtml(r)).join('');
+}
+
+async function knowledgeSetActive(id, active) {
+  try {
+    const data=await knowledgePost('/api/knowledge/activate',{id,active});
+    const node=document.getElementById('knowledge-rule-'+id);
+    if(node) node.outerHTML=knowledgeRulePreviewHtml(data.rule, node.closest?.('.ai-bubble-ai')!=null);
+    await knowledgeLoadRules();
+    if(active) aiAddMsg('ai','✅ Правило активировано. ИИгорь будет учитывать его в следующих ответах и при формировании документов.');
+  } catch(e){alert('Ошибка: '+e.message);}
+}
+
+async function knowledgeDeleteRule(id) {
+  if(!confirm('Удалить правило из базы знаний?')) return;
+  try { await knowledgePost('/api/knowledge/delete',{id}); await knowledgeLoadRules(); }
+  catch(e){alert('Ошибка: '+e.message);}
+}
+
+async function knowledgeEditRule(id) {
+  const rule=knowledgeRules.find(r=>r.id===id); if(!rule) return;
+  const instruction=prompt('Исправьте текст правила:',rule.instruction); if(instruction===null) return;
+  const title=prompt('Название правила:',rule.title); if(title===null) return;
+  try { await knowledgePost('/api/knowledge/update',{id,title,instruction,author:(document.getElementById('knowledge-author')?.value||rule.author)}); await knowledgeLoadRules(); }
+  catch(e){alert('Ошибка: '+e.message);}
+}
+
+async function knowledgeCreateDraftFromChat(text, filesContent) {
+  const instruction=String(text||'').replace(/^\s*обучись\s*:\s*/i,'').trim();
+  const scope=aiCurrentData?.certification?.standard || 'all';
+  let author='Пользователь ИИгоря';
+  try { author=localStorage.getItem('igor:knowledge:author') || author; } catch(_) {}
+  const data=await knowledgePost('/api/knowledge/preview',{instruction,scope,author,source_filename:knowledgeSourceFilename || '',source_text:String(filesContent||'').slice(0,120000)});
+  aiAddMsg('ai',`<div style="font-size:11px;color:#A8938A;margin-bottom:6px">Вот что ИИгорь понял. Нажмите подтверждение, чтобы правило стало общим для всех пользователей.</div>${knowledgeRulePreviewHtml(data.rule,true)}`);
+  knowledgeRules.unshift(data.rule);
+}
+
+// ── КАЛЬКУЛЯТОР СТАЖА ─────────────────────────────────────────────
+let stageCompanies=[];
+let stageCompanyPayload=null;
+let stageCompanyKey='';
+let stagePeople=[];
+let stageSelectedPerson=null;
+let stageLastResult=null;
+
+function stageTodayIso(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+function stageParseDate(value){if(!value)return null;const m=String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);if(!m)return null;const d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3]));return Number.isNaN(d.getTime())?null:d;}
+function stageToIso(value){if(!value)return '';const s=String(value).trim();let m=s.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);if(m)return `${m[3]}-${m[2]}-${m[1]}`;m=s.match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?s:'';}
+function stageFromIso(value){const m=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?`${m[3]}.${m[2]}.${m[1]}`:'';}
+function stageDaysToYmd(days){days=Math.max(0,Math.floor(Number(days)||0));const years=Math.floor(days/360);const rem=days-years*360;const months=Math.floor(rem/30);return {years,months,days:rem-months*30,totalDays:days,text:`${years} ${stagePlural(years,'год','года','лет')} ${months} мес. ${rem-months*30} дн.`};}
+function stagePlural(n,a,b,c){n=Math.abs(n)%100;const n1=n%10;if(n>10&&n<20)return c;if(n1>1&&n1<5)return b;if(n1===1)return a;return c;}
+function stageMergeIntervals(intervals){const sorted=intervals.slice().sort((a,b)=>a.start-b.start);const out=[];for(const it of sorted){const last=out[out.length-1];if(last&&it.start<=new Date(last.end.getTime()+86400000)){if(it.end>last.end)last.end=it.end;}else out.push({start:new Date(it.start),end:new Date(it.end)});}return out;}
+function stageIntervalDays(intervals,inclusive=true,merge=true){const valid=intervals.filter(x=>x.start&&x.end&&x.end>=x.start);const arr=merge?stageMergeIntervals(valid):valid;return arr.reduce((sum,x)=>sum+Math.floor((x.end-x.start)/86400000)+(inclusive?1:0),0);}
+
+async function stageReloadCompanies(){
+  const select=document.getElementById('stage-company'); if(!select)return;
+  const current=select.value;
+  stageCompanies=await aiListSavedCompanies();
+  select.innerHTML='<option value="">Выберите компанию</option>'+stageCompanies.map(c=>`<option value="${igorEscape(c.key)}">${igorEscape(c.label||'Без названия')}</option>`).join('');
+  if(current&&stageCompanies.some(c=>c.key===current))select.value=current;
+  const calcDate=document.getElementById('stage-calc-date');if(calcDate&&!calcDate.value)calcDate.value=stageTodayIso();
+  const baseEnd=document.getElementById('stage-base-end');if(baseEnd&&!baseEnd.value)baseEnd.value=stageTodayIso();
+}
+
+async function stageSelectCompany(){
+  stageCompanyKey=document.getElementById('stage-company')?.value||'';
+  stageCompanyPayload=null;stagePeople=[];stageSelectedPerson=null;
+  const personSel=document.getElementById('stage-person');if(personSel)personSel.innerHTML='<option value="">Выберите сотрудника</option>';
+  stageClearRows(false);
+  if(!stageCompanyKey)return;
+  stageCompanyPayload=aiLocalGetCompany(stageCompanyKey);
+  if(!stageCompanyPayload){const r=await kvGet(stageCompanyKey);if(r&&r.value)stageCompanyPayload=JSON.parse(r.value);}
+  const data=stageCompanyPayload?.data||{};
+  const map=new Map();
+  function add(list,path){(list||[]).forEach((p,i)=>{const fio=String(p?.fio||'').trim();if(!fio)return;const key=fio.toLowerCase();const existing=map.get(key);const ref={fio,position:p.position||'',person:p,path,index:i};if(!existing||((p.employment_periods||[]).length>(existing.person.employment_periods||[]).length))map.set(key,ref);});}
+  add(data.staff,'staff');add(data.company_attestation?.itr,'company_attestation.itr');add(data.attestation?.persons,'attestation.persons');
+  stagePeople=[...map.values()].sort((a,b)=>a.fio.localeCompare(b.fio,'ru'));
+  if(personSel)personSel.innerHTML='<option value="">Выберите сотрудника</option>'+stagePeople.map((p,i)=>`<option value="${i}">${igorEscape(p.fio)}${p.position?' — '+igorEscape(p.position):''}</option>`).join('');
+}
+
+function stageSelectPerson(){
+  const rawValue=document.getElementById('stage-person')?.value ?? '';
+  const idx=rawValue===''?-1:Number(rawValue);
+  stageSelectedPerson=Number.isInteger(idx)&&idx>=0&&stagePeople[idx]?stagePeople[idx]:null;
+  stageClearRows(false);
+  if(!stageSelectedPerson)return;
+  const periods=stageSelectedPerson.person.employment_periods||[];
+  periods.forEach(p=>stageAddRow({start:stageToIso(p.start),end:p.end===null||p.end===''?'':stageToIso(p.end),employer:p.employer||'',position:p.position||'',relevant:p.relevant!==false,current:!!p.is_current_employer,confidence:p.confidence==null?1:Number(p.confidence)}));
+  if(!periods.length)stageAddRow();
+  stageCalculate();
+}
+
+function stageAddRow(period={}){
+  const body=document.getElementById('stage-periods-body');if(!body)return;
+  const tr=document.createElement('tr');
+  const conf=period.confidence==null?1:period.confidence;
+  tr.innerHTML=`<td><input type="date" class="st-start" value="${igorEscape(period.start||'')}" onchange="stageCalculate()"></td><td><input type="date" class="st-end" value="${igorEscape(period.end||'')}" onchange="stageCalculate()" title="Оставьте пустым, если сотрудник продолжает работать"></td><td><input type="text" class="st-employer" value="${igorEscape(period.employer||'')}" oninput="stageCalculate()"></td><td><input type="text" class="st-position" value="${igorEscape(period.position||'')}" oninput="stageCalculate()"></td><td style="text-align:center"><input type="checkbox" class="st-relevant" ${period.relevant===false?'':'checked'} onchange="stageCalculate()"></td><td style="text-align:center"><input type="checkbox" class="st-current" ${period.current?'checked':''} onchange="stageCalculate()"></td><td><input type="number" class="st-confidence" min="0" max="1" step="0.05" value="${Number(conf).toFixed(2)}" style="width:65px" onchange="stageCalculate()"></td><td><button class="ai-mini-btn" onclick="this.closest('tr').remove();stageCalculate()">✕</button></td>`;
+  body.appendChild(tr);stageCalculate();
+}
+
+function stageClearRows(addBlank=true){const body=document.getElementById('stage-periods-body');if(body)body.innerHTML='';if(addBlank)stageAddRow();else stageCalculate();}
+function stageCollectRows(){
+  const calcIso=document.getElementById('stage-calc-date')?.value||stageTodayIso();
+  const rows=[...document.querySelectorAll('#stage-periods-body tr')];
+  return rows.map(tr=>{const start=tr.querySelector('.st-start').value;let end=tr.querySelector('.st-end').value;const open=!end;if(open)end=calcIso;return {tr,start,end,open,employer:tr.querySelector('.st-employer').value.trim(),position:tr.querySelector('.st-position').value.trim(),relevant:tr.querySelector('.st-relevant').checked,current:tr.querySelector('.st-current').checked,confidence:Number(tr.querySelector('.st-confidence').value||0)};});
+}
+
+function stageCalculate(){
+  const inclusive=document.getElementById('stage-inclusive')?.checked!==false;
+  const merge=document.getElementById('stage-merge-overlaps')?.checked!==false;
+  const rows=stageCollectRows();const warnings=[];const valid=[];
+  rows.forEach((r,i)=>{r.tr.classList.remove('stage-row-warning');const start=stageParseDate(r.start),end=stageParseDate(r.end);let rowWarning=false;if(!start||!end||end<start){if(r.start||r.end||r.employer||r.position)warnings.push(`Строка ${i+1}: неполная или неверная дата`);r.tr.classList.add('stage-row-warning');return;}if(!r.employer){warnings.push(`Строка ${i+1}: не указана организация`);rowWarning=true;}if(!r.position){warnings.push(`Строка ${i+1}: не указана должность`);rowWarning=true;}if(r.confidence<.85){warnings.push(`Строка ${i+1}: низкая уверенность распознавания`);rowWarning=true;}if(rowWarning)r.tr.classList.add('stage-row-warning');valid.push({...r,start,end});});
+  const all=stageDaysToYmd(stageIntervalDays(valid,inclusive,merge));
+  const relevant=stageDaysToYmd(stageIntervalDays(valid.filter(x=>x.relevant),inclusive,merge));
+  const current=stageDaysToYmd(stageIntervalDays(valid.filter(x=>x.current),inclusive,merge));
+  document.getElementById('stage-total-result').textContent=all.text;document.getElementById('stage-relevant-result').textContent=relevant.text;document.getElementById('stage-current-result').textContent=current.text;
+  document.getElementById('stage-warnings').innerHTML=warnings.length?'⚠️ '+warnings.map(igorEscape).join('<br>⚠️ '):'✅ Все используемые периоды имеют полные даты';
+  stageLastResult={all,relevant,current,warnings,rows,calculation_date:document.getElementById('stage-calc-date')?.value||stageTodayIso(),inclusive,merge};return stageLastResult;
+}
+
+function stageFindPersonTargets(data,fio){const targets=[];(data.staff||[]).forEach(p=>{if((p.fio||'').trim().toLowerCase()===fio.toLowerCase())targets.push(p)});(data.company_attestation?.itr||[]).forEach(p=>{if((p.fio||'').trim().toLowerCase()===fio.toLowerCase())targets.push(p)});(data.attestation?.persons||[]).forEach(p=>{if((p.fio||'').trim().toLowerCase()===fio.toLowerCase())targets.push(p)});return targets;}
+
+async function stageSaveToPerson(){
+  if(!stageCompanyPayload||!stageSelectedPerson){alert('Сначала выберите компанию и сотрудника');return;}
+  const result=stageCalculate();const data=stageCompanyPayload.data||{};const targets=stageFindPersonTargets(data,stageSelectedPerson.fio);if(!targets.length){alert('Сотрудник не найден в карточке');return;}
+  const periods=result.rows.filter(r=>r.start||r.employer||r.position).map(r=>{const uncertain=[];if(!r.start)uncertain.push('start');if(!r.position)uncertain.push('position');if(!r.employer)uncertain.push('employer');if(r.confidence<.85)uncertain.push('recognition');return {start:stageFromIso(r.start),end:r.open?null:stageFromIso(r.end),position:r.position,employer:r.employer,is_current_employer:r.current,relevant:r.relevant,confidence:r.confidence,uncertain_fields:uncertain};});
+  targets.forEach(person=>{person.employment_periods=periods;person.stage_source='calculated';person.stage_is_final=result.warnings.length===0;person.stage_years=result.relevant.text;person.stage_years_here=result.current.text;person.stage_calculation={calculation_date:stageFromIso(result.calculation_date),total_days:result.relevant.totalDays,current_company_days:result.current.totalDays,merge_overlaps:result.merge,inclusive_end_day:result.inclusive,warnings:result.warnings};if(Array.isArray(person.requests)){person.requests.forEach(req=>{req.stage_months=result.relevant.years*12+result.relevant.months;req.work_experience_text=result.relevant.text;});}});
+  stageCompanyPayload.savedAt=new Date().toISOString();stageCompanyPayload.data=data;aiLocalSetCompany(stageCompanyKey,stageCompanyPayload);try{await kvSet(stageCompanyKey,JSON.stringify(stageCompanyPayload));}catch(e){console.warn(e);}
+  if(stageCompanyKey===aiCurrentCompanyKey){aiCurrentData=data;aiRenderCardFromCurrent();}
+  alert('Стаж рассчитан и сохранён в карточку сотрудника');
+}
+
+function stageCalculateFromBase(){
+  const start=stageParseDate(document.getElementById('stage-base-start')?.value);const end=stageParseDate(document.getElementById('stage-base-end')?.value);const box=document.getElementById('stage-base-result');if(!start||!end||end<start){box.textContent='Заполните корректные даты';return;}
+  const initial=(Number(document.getElementById('stage-base-years').value)||0)*360+(Number(document.getElementById('stage-base-months').value)||0)*30+(Number(document.getElementById('stage-base-days').value)||0);
+  const added=Math.floor((end-start)/86400000)+(document.getElementById('stage-inclusive')?.checked!==false?1:0);box.textContent=stageDaysToYmd(initial+added).text;
+}
+
+async function stageReadLabourFile(file){
+  if(!file||!stageSelectedPerson){alert('Сначала выберите сотрудника');return;}
+  const btnLabel=document.querySelector('label[for="stage-labour-file"]');
+  try{
+    const parsedFile=await aiReadFile(file);const product=stageCompanyPayload?.data?.certification?.standard||'company_att';
+    const prompt=`Извлеки из трудовой книжки все периоды работы для сотрудника ${stageSelectedPerson.fio}. Сохраняй только реальные полные даты; не придумывай день и месяц. Верни их в data.company_attestation.itr[0].employment_periods.\n\n${parsedFile.content}`;
+    const response=await fetch('/api/ai/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({product,messages:[{role:'user',content:prompt}]})});const raw=await response.json();if(!raw.success)throw new Error(raw.error||'Ошибка распознавания');const parsed=aiParseResponse(raw.text);const candidates=parsed.data?.company_attestation?.itr?.[0]?.employment_periods||parsed.data?.staff?.[0]?.employment_periods||[];if(!candidates.length)throw new Error('Периоды работы не найдены');stageClearRows(false);candidates.forEach(p=>stageAddRow({start:stageToIso(p.start),end:p.end?stageToIso(p.end):'',employer:p.employer||'',position:p.position||'',relevant:p.relevant!==false,current:!!p.is_current_employer,confidence:(p.confidence==null?0.75:p.confidence)}));stageCalculate();
+  }catch(e){alert('Не удалось распознать трудовую: '+e.message);}
+  finally{document.getElementById('stage-labour-file').value='';}
+}
+
+
+// Автозапуск — открываем ИИгорь Оформитель сразу
+document.addEventListener('DOMContentLoaded', () => {
+  const aiItem = document.querySelector('.sb-item[data-page="ai"]');
+  if(aiItem) nav('ai', aiItem);
+
+  // Вешаем listener на file input здесь — после объявления всех функций
+  const fileInput = document.getElementById('ai-file-input');
+  if(fileInput) {
+    fileInput.addEventListener('change', function() {
+      console.log('Files selected:', this.files.length);
+      aiHandleFiles(this.files);
+    });
+  }
+
+  aiInstallAutosaveGuards();
+
+  // Восстанавливаем именно последнюю открытую карточку. Если она недоступна — самую свежую.
+  aiListSavedCompanies().then(async list => {
+    if(list && list.length) {
+      let preferredKey = null;
+      try { preferredKey = localStorage.getItem(AI_LAST_COMPANY_KEY); } catch (_) {}
+      const last = list.find(item => item.key === preferredKey) || list[0];
+      const ok = await aiLoadCompany(last.key);
+      if(ok) {
+        aiRestoreChatUI();
+        aiRenderCardFromCurrent();
+        const companyLabel = last.label || (aiCurrentData?.company?.name ? `${aiCurrentData.company.form||'ООО'} «${aiCurrentData.company.name}»` : 'сохранённая компания');
+        aiAddMsg('ai', `🔄 Восстановлена предыдущая работа с ${companyLabel}. Все реквизиты, сотрудники, рабочие, объекты, поставщики и продукт загружены из сохранённой карточки.`);
+      }
+    } else {
+      aiCurrentCompanyKey = aiMakeStableCompanyKey();
+    }
+  }).catch(e => {
+    console.warn('aiListSavedCompanies failed on startup:', e);
+    aiCurrentCompanyKey = aiMakeStableCompanyKey();
+  });
+});
+</script>
+
+</body>
+</html>

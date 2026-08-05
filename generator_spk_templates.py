@@ -703,6 +703,8 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     ]
     add(f"{org} СПК - 8 Справка СИ.docx", render_spravka_si(company, director_fio, si_list))
 
+    warnings = []
+
     if variant == 'spk_bisp':
         try:
             from generator_bisp_templates import (
@@ -739,9 +741,10 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
             add(f"{org} СПК БИСП - Перечень продукции входного контроля.docx",
                 render_perechen_produkcii(company, director_fio))
         except Exception as e:
-            print(f"  ❌ Ошибка генерации документов БИСП: {e}")
+            message = f"Часть документов БИСП не сформирована: {type(e).__name__}: {e}"
+            warnings.append(message)
+            print(f"  ❌ {message}")
 
-    warnings = []
     if not gl_inzhener_fio:
         warnings.append("Не найден главный инженер в штате — в документах СПК это поле осталось пустым.")
     if not any(foremen):
