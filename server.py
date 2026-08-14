@@ -660,6 +660,56 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 
 
 
+AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 9001 / СУОТ для Mavis Group.
+Твоя задача — БЫСТРО извлечь данные из архива и вернуть структурированную карточку.
+Не составляй документы в чате: готовые DOCX формирует детерминированный генератор.
+
+КРИТИЧЕСКИЕ ПРАВИЛА:
+1. Используй только ТЕКУЩУЮ организацию и только certification.scope текущего пакета. Не переноси
+   название, область, сотрудников, даты или реквизиты компании-образца.
+2. Штатное расписание — источник состава персонала. ИТР (директор, ГИ, прораб, инженер, бухгалтер и т.п.)
+   идут в staff с is_worker=false; рабочие профессии — staff с is_worker=true и одновременно в workers.
+3. Для ISO/СУОТ сохраняй ВСЕ найденные объекты, поставщиков и удостоверения ОТ.
+4. Не говори «файла нет», если он перечислен в СОСТАВЕ АРХИВА. Если не прочитан — назови конкретную ошибку.
+5. Если имя файла и содержимое конфликтуют, не угадывай: needs_review=true, confidence<0.85, review_reason.
+6. Не выдумывай отсутствующие данные. Неуверенное сохраняй как есть и помечай для жёлтой проверки.
+7. ПРАВКИ ПОЛЬЗОВАТЕЛЯ ОБЯЗАНЫ МЕНЯТЬ JSON. Если запрос «исправь/замени/добавь/удали/убери/обнови»
+   невозможно выразить изменением структурированных данных, прямо напиши, что правка НЕ применена.
+   НИКОГДА не пиши «исправил», «готово», «учёл», если возвращаемый data фактически не изменён.
+8. Активные правила базы знаний имеют приоритет при конфликте, но не утверждай, что Word-шаблон
+   изменён, если правило нельзя выразить полями карточки.
+9. После загрузки архива сообщение краткое: что найдено/заполнено, что требует сверки, чего реально нет.
+
+ДЛЯ ГОТОВОГО ПАКЕТА:
+- должностные инструкции формируются только для фактических ИТР;
+- инструкции ОТ — только для фактических рабочих профессий;
+- программа внутренних аудитов — по фактическим ИТР-должностям;
+- отчёты используют только certification.scope;
+- везде должна быть текущая организация.
+
+ОТВЕЧАЙ СТРОГО JSON без markdown:
+{
+  "message":"краткий ответ по-русски",
+  "questions":[],
+  "data":{
+    "company":{"name":"без ООО/ОДО","form":"ООО","unp":"","address":"","city":"","director_fio":"","director_position":"","phone":"","email":"","bank_details":"","bank_account":"","bank_name":"","bik":"","scope":"","has_welding":false},
+    "certification":{"standard":"iso|suot|iso_suot","scope":"точная область текущего пакета","body":"","audit_date":""},
+    "dates":{"audit_date":"","development_date":"","implementation_date":""},
+    "staff":[{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"employment_type":"основное место|совместительство|договор|","part_time":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":"","needs_review":false,"confidence":1.0}],
+    "workers":["профессия"],
+    "objects":[{"name":"","year":"","customer":""}],
+    "suppliers":[{"name":"","type":""}],
+    "iso_suot":{"ot_certificates":[{"fio":"","number":"","date":"","organization":"","confidence":1.0,"needs_review":false}],"instructions":[],"responsible_persons":[]},
+    "source_documents":[{"filename":"","document_type":"","status":"read|error|needs_review","summary":"","needs_review":false,"review_reason":""}],
+    "review_items":[{"field":"","value":"","reason":"","confidence":0.0}],
+    "flags":[],
+    "readiness":"waiting|partial|review|ready"
+  }
+}
+Включай только поля, для которых есть данные или которые пользователь явно меняет.
+"""
+
+
 
 def _sanitize_ai_visible_response(raw_text):
     """Prevent the model from dumping internal archive source blocks into chat.
@@ -694,23 +744,33 @@ def _sanitize_ai_visible_response(raw_text):
     return json.dumps(payload, ensure_ascii=False)
 
 
-def call_ai(messages, api_key, knowledge_text=""):
-    """Вызов BitrixGPT через Vibe Code API — с повторными попытками при таймауте.
-    Чат с Игорем может обрабатывать сразу несколько файлов/специалистов за раз (например,
-    аттестация 3 человек одним сообщением) — 60 сек не всегда хватает, особенно если
-    системный промпт большой (ИСО+СУОТ+СПК+АТТ правила сразу)."""
+def call_ai(messages, api_key, knowledge_text="", product="all"):
+    """Call BitrixGPT. ISO/SUOT uses a compact product-specific prompt and fewer
+    retries, which removes most of the avoidable waiting without changing document generation.
+    """
     import time
+    product = str(product or 'all')
+    fast_iso = product in ('iso', 'suot', 'iso_suot')
+    system_base = AI_SYSTEM_ISO_SUOT_FAST if fast_iso else AI_SYSTEM
+    if knowledge_text:
+        system_base += (
+            "\n\n=== АКТИВНЫЕ ПРАВИЛА БАЗЫ ЗНАНИЙ ИИГОРЯ ===\n"
+            + knowledge_text
+            + "\n=== КОНЕЦ ПРАВИЛ ==="
+        )
+    attempts = 2 if fast_iso else 3
+    timeout = 105 if fast_iso else 150
     last_err = None
-    for attempt in range(3):
+    for attempt in range(attempts):
         try:
             resp = req_lib.post(
                 VIBE_URL,
                 headers={"Content-Type":"application/json","X-Api-Key":api_key},
                 json={"model":VIBE_MODEL,"max_tokens":3000,"messages":[
-                    {"role":"system","content":AI_SYSTEM + (("\n\n=== АКТИВНЫЕ ПРАВИЛА БАЗЫ ЗНАНИЙ ИИГОРЯ (НОВЫЕ ПРАВИЛА ИДУТ ПЕРВЫМИ И ИМЕЮТ ПРИОРИТЕТ ПРИ КОНФЛИКТЕ) ===\n" + knowledge_text + "\n=== КОНЕЦ ПРАВИЛ ===") if knowledge_text else "")},
-                    *messages[-10:]
+                    {"role":"system","content":system_base},
+                    *messages[-8 if fast_iso else -10:]
                 ]},
-                timeout=150
+                timeout=timeout
             )
             resp.raise_for_status()
             data = resp.json()
@@ -720,17 +780,16 @@ def call_ai(messages, api_key, knowledge_text=""):
             if text:
                 return _sanitize_ai_visible_response(text)
             last_err = "Пустой ответ от модели"
-            time.sleep(2)
+            time.sleep(1)
         except req_lib.exceptions.Timeout:
             last_err = "Timeout"
-            print(f"  ⚠️  Таймаут чата (попытка {attempt+1}/3), повтор...")
-            time.sleep(3 * (attempt + 1))
+            print(f"  ⚠️  Таймаут чата (попытка {attempt+1}/{attempts}), повтор...")
+            time.sleep(2 * (attempt + 1))
         except req_lib.exceptions.RequestException as e:
             last_err = str(e)
             print(f"  ⚠️  Ошибка запроса: {e}, повтор...")
-            time.sleep(3 * (attempt + 1))
-    raise RuntimeError(f"BitrixGPT не ответил после 3 попыток: {last_err}. "
-                        f"Попробуйте прислать меньше файлов за раз (например по одному специалисту).")
+            time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"BitrixGPT не ответил после {attempts} попыток: {last_err}.")
 
 
 # ── Дата-утилиты (без изменений) ─────────────────────────────
@@ -1004,7 +1063,7 @@ def _tesseract_ocr_image(pil_image):
     return text
 
 
-def _try_tesseract_first(file_bytes, filename):
+def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
     """Пытается прочитать файл локальным OCR ПЕРЕД тем как идти во внешний vision API.
     Работает только для ПЕЧАТНОГО текста (дипломы/справки/официальные бланки — почти
     всегда печать) — для рукописного текста (старые записи в трудовой от руки) заведомо
@@ -1018,7 +1077,7 @@ def _try_tesseract_first(file_bytes, filename):
         import io as _io5
         ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
         if ext == 'pdf':
-            max_pages = _pdf_page_limit(filename)
+            max_pages = int(max_pages_override or _pdf_page_limit(filename))
             total_pages = _pdf_total_pages(file_bytes)
             pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
             texts = []
@@ -1044,7 +1103,7 @@ def _try_tesseract_first(file_bytes, filename):
         return None
 
 
-def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None):
+def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None, max_pages_override=None):
     """Синхронный вызов vision для одного файла (фото/скан). Сначала пробует локальный
     Tesseract OCR (бесплатно, быстро, не зависит от внешнего API) — если он недоступен
     на сервере или не справился (плохой скан/рукопись), падает на внешний vision API
@@ -1055,7 +1114,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
 
     if ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf'):
-        tesseract_text = _try_tesseract_first(file_bytes, filename)
+        tesseract_text = _try_tesseract_first(file_bytes, filename, max_pages_override=max_pages_override)
         if tesseract_text:
             print(f"  ✅ vision_extract({filename}): прочитано локальным Tesseract OCR, "
                   f"{len(tesseract_text)} символов — в vision API не ходили")
@@ -1065,7 +1124,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # Labour books may contain many pages. Render a filename-sensitive number of
         # pages and send them to vision in small batches so one large request does not
         # overflow Render memory or the model context.
-        max_pages = _pdf_page_limit(filename)
+        max_pages = int(max_pages_override or _pdf_page_limit(filename))
         try:
             total_pages = _pdf_total_pages(file_bytes)
             pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
@@ -1605,7 +1664,7 @@ def _is_company_requisites_block(block):
     return any(keyword in haystack for keyword in company_keywords)
 
 
-def _reconcile_all_people(texts, api_key):
+def _reconcile_all_people(texts, api_key, fast_mode=False):
     """Группирует блоки по человеку; для людей с 2+ документами делает сверку
     (см. _reconcile_person_summary), убирая дубли и выбирая наиболее вероятный
     вариант при расхождениях. Общие документы (без папки) сводятся в реквизиты
@@ -1658,6 +1717,21 @@ def _reconcile_all_people(texts, api_key):
     preserved_source_blocks.sort(
         key=lambda block: 0 if _is_operational_source_block(block) else 1
     )
+
+    # ISO/SUOT fast mode deliberately skips the N+1 AI reconciliation calls.
+    # Raw blocks stay available to the single structured chat call below the archive step.
+    if fast_mode:
+        final_parts = []
+        if completed_form_blocks:
+            final_parts.append("=== 📋 ЗАПОЛНЕННЫЕ ФОРМЫ 1–5 ===\n" + "\n\n".join(completed_form_blocks))
+        if preserved_source_blocks:
+            final_parts.append(
+                "=== 📚 ИСХОДНЫЕ ДОКУМЕНТЫ ИЗ АРХИВА — ИСПОЛЬЗОВАТЬ ДЛЯ ВЫБРАННОГО ПРОДУКТА ===\n"
+                + "\n\n".join(preserved_source_blocks)
+            )
+        for person in people_order:
+            final_parts.append(f"=== 👤 {person} ===\n" + "\n\n".join(groups.get(person) or []))
+        return final_parts
 
     results = {}
     with _TPE(max_workers=2) as ex:
@@ -1800,7 +1874,35 @@ def _compact_archive_summary(result_text):
     return '\n'.join(lines)
 
 
-def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None):
+def _compact_product_analysis_text(full_text, product):
+    """Keep the complete archive for raw inspection, but send a smaller product-focused
+    context to the chat model.  ISO/SUOT normally needs staff, OT, objects, suppliers and
+    requisites; retaining every unrelated scan is a major source of latency.
+    """
+    text = str(full_text or '')
+    if str(product) not in ('iso', 'suot', 'iso_suot') or len(text) <= 110000:
+        return text
+    keywords = (
+        'состав архива','реквизит','счет-заказ','счёт-заказ','заказчик','унп','директор',
+        'сотрудник','штат','персонал','работник','рабоч','должност','профес',
+        'удостовер','охрана труда','от ','поставщик','объект','аудит','инструкц',
+        'сертифик','область','виды работ','вид работ'
+    )
+    chunks = re.split(r'(?=^--- |^=== )', text, flags=re.M)
+    kept = []
+    for chunk in chunks:
+        low = chunk.lower().replace('ё','е')
+        if any(k in low for k in keywords):
+            kept.append(chunk)
+    compact = ''.join(kept)
+    if not compact:
+        compact = text[:110000]
+    if len(compact) > 110000:
+        compact = compact[:110000] + '\n[контекст сокращён для ускорения ISO/СУОТ; полный архив доступен через исходный просмотр]'
+    return compact
+
+
+def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all"):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
     - текстовые файлы (docx/pdf/txt/csv/xlsx) читаются как раньше, быстро
@@ -1930,7 +2032,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
                     return (f"--- {folder + '/' if folder else ''}{short} ---\n"
                             f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания — "
                             f"пришлите этот документ отдельными фото по 1-2 страницы вместо одного большого PDF]")
-                txt = vision_extract(data, short, api_key)
+                txt = vision_extract(data, short, api_key, max_pages_override=(2 if str(product) in ('iso','suot','iso_suot') else None))
             else:
                 txt = vision_extract(data, short, api_key)
 
@@ -1973,7 +2075,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
     # того чтобы Игорь или человек потом сами искали противоречия в стене текста.
     try:
         p("Свожу данные по каждому человеку...")
-        texts = _reconcile_all_people(texts, api_key)
+        texts = _reconcile_all_people(texts, api_key, fast_mode=(str(product) in ('iso','suot','iso_suot')))
     except Exception as e:
         print(f"  ⚠️ Сверка по людям не удалась ({type(e).__name__}: {e}) — отдаю как есть, без свода")
 
@@ -2046,6 +2148,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None)
     final_text = result or '[Архив: читаемых данных не найдено]'
     return {
         'text': final_text,
+        'analysis_text': _compact_product_analysis_text(final_text, product),
         'summary': _compact_archive_summary(final_text),
         'structured_data': structured_data,
     }
@@ -2482,19 +2585,33 @@ class H(http.server.BaseHTTPRequestHandler):
                 parts = body.split(b'--' + boundary)
                 filename = None
                 file_bytes = None
+                archive_product = 'all'
                 for part in parts:
                     if b'Content-Disposition' not in part: continue
-                    if b'filename=' not in part: continue
                     header_end = part.find(b'\r\n\r\n')
                     if header_end == -1: continue
                     header = part[:header_end].decode('utf-8','replace')
+                    body_value = part[header_end+4:].rstrip(b'\r\n--')
+                    name_m = _re3.search(r'name="([^"]+)"', header)
+                    field_name = name_m.group(1) if name_m else ''
+                    if field_name == 'product' and b'filename=' not in part:
+                        archive_product = body_value.decode('utf-8','replace').strip() or 'all'
+                        continue
+                    if b'filename=' not in part: continue
                     m = _re3.search(r'filename="([^"]+)"', header)
                     if not m: continue
                     filename = m.group(1)
-                    file_bytes = part[header_end+4:].rstrip(b'\r\n--')
-                    break
+                    file_bytes = body_value
                 if not filename or file_bytes is None:
                     self._json({'success':False,'error':'Файл не найден в запросе'},400); return
+                if archive_product == 'all':
+                    low_name = str(filename).lower().replace('ё','е')
+                    if 'исо' in low_name and 'суот' in low_name:
+                        archive_product = 'iso_suot'
+                    elif 'суот' in low_name:
+                        archive_product = 'suot'
+                    elif 'исо' in low_name or 'iso' in low_name:
+                        archive_product = 'iso'
 
                 # Асинхронный режим не привязан к таймауту одного HTTP-запроса, поэтому лимит
                 # щедрее — реальный потолок теперь скорее у самого Render на приём тела запроса.
@@ -2510,23 +2627,25 @@ class H(http.server.BaseHTTPRequestHandler):
                 TASKS[task_id] = {'status':'running','kind':'archive','progress':[],'step':0,'total':100}
                 _prune_tasks()
 
-                def run_archive(_tid=task_id, _bytes=file_bytes, _fn=filename, _key=api_key):
+                def run_archive(_tid=task_id, _bytes=file_bytes, _fn=filename, _key=api_key, _product=archive_product):
                     try:
                         def on_prog(msg):
                             TASKS[_tid]['progress'] = (TASKS[_tid].get('progress') or [])[-30:] + [msg]
                             print(f"  [archive {_tid}] {msg}")
-                        result_bundle = extract_archive_with_vision(_bytes, _fn, _key, progress_cb=on_prog)
+                        result_bundle = extract_archive_with_vision(_bytes, _fn, _key, progress_cb=on_prog, product=_product)
                         if isinstance(result_bundle, dict):
                             result_text = result_bundle.get('text', '')
+                            result_analysis = result_bundle.get('analysis_text') or result_text
                             result_summary = result_bundle.get('summary') or _compact_archive_summary(result_text)
                             structured_data = result_bundle.get('structured_data') or {}
                         else:
                             result_text = str(result_bundle or '')
+                            result_analysis = result_text
                             result_summary = _compact_archive_summary(result_text)
                             structured_data = {}
                         TASKS[_tid].update({'status':'done','kind':'archive','text':result_text,
-                                            'summary': result_summary,
-                                            'structured_data': structured_data,'filename':_fn})
+                                            'summary': result_summary, 'analysis_text': result_analysis,
+                                            'structured_data': structured_data,'filename':_fn, 'product': _product})
                         _prune_tasks()
                     except Exception as _ex:
                         import traceback; traceback.print_exc()
@@ -2542,7 +2661,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     self._json({'success':False,'error':'VIBE_API_KEY не задан на сервере. Добавьте в Environment на Render.'},500); return
                 messages=req.get('messages',[])
                 product_scope = str(req.get('product') or 'all')
-                text=call_ai(messages, api_key, knowledge_context(product_scope))
+                text=call_ai(messages, api_key, knowledge_context(product_scope), product_scope)
                 self._json({'success':True,'text':text})
 
             elif p=='/api/knowledge/preview':

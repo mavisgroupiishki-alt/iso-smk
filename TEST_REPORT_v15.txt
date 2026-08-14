@@ -1,0 +1,12 @@
+V15 TEST REPORT
+
+PASS: all Python modules compile
+PASS: 5 pytest tests
+PASS: frontend correction helper test
+PASS: inline JavaScript node --check
+PASS: current certification.scope in ISO and SUOT reports
+PASS: actual staff count in SUOT source info
+PASS: staff-dependent DI / IOT / audit program
+PASS: no Varta in output names/content in test package
+PASS: no legacy AI fallback for ISO/SUOT
+PASS: ISO/SUOT fast archive mode skips N+1 AI reconciliation

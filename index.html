@@ -3126,6 +3126,67 @@ function aiFinalizeCompanyAttestationReply(parsed) {
   return result;
 }
 
+
+function aiIsCorrectionIntent(text) {
+  return /(^|\s)(исправ|замен|помен|измени|добав|дополни|удал|убер|обнов|скоррект|неправил|ошибк|должно\s+быть|нужно\s+чтобы)/i.test(String(text||''));
+}
+
+function aiStableSemanticValue(value, keyName='') {
+  // Exclude status-only fields: a model changing just "ready/review" is not a real correction.
+  const ignored = new Set(['readiness','flags','review_items','updated_at','saved_at','_saved_at','_knowledge_context']);
+  if(ignored.has(keyName)) return undefined;
+  if(Array.isArray(value)) return value.map(v => aiStableSemanticValue(v)).filter(v => v !== undefined);
+  if(value && typeof value === 'object') {
+    const out = {};
+    Object.keys(value).sort().forEach(k => {
+      const v = aiStableSemanticValue(value[k], k);
+      if(v !== undefined) out[k] = v;
+    });
+    return out;
+  }
+  return value;
+}
+
+function aiCardFingerprint(data) {
+  try { return JSON.stringify(aiStableSemanticValue(data || {})); }
+  catch(e) { return JSON.stringify(data || {}); }
+}
+
+function aiSuccessClaimWithoutDataChange(message) {
+  return /(исправил|исправлено|готово|всё\s+исправ|все\s+исправ|уч[её]л|обновил|заменил|добавил|удалил|сделал)/i.test(String(message||''));
+}
+
+async function aiRetryCorrectionIfNeeded(originalText, parsed, beforeFingerprint, product) {
+  if(!aiIsCorrectionIntent(originalText)) return parsed;
+  const afterFingerprint = aiCardFingerprint(aiCurrentData);
+  if(afterFingerprint !== beforeFingerprint) return parsed;
+
+  // One controlled retry: force the model to return an actual structured delta.
+  try {
+    const retryPrompt = [
+      'КОНТРОЛЬ ПРИМЕНЕНИЯ ПРАВКИ. Предыдущий ответ не изменил структурированные данные карточки.',
+      'Исходный запрос пользователя: ' + originalText,
+      'ТЕКУЩИЕ ДАННЫЕ КАРТОЧКИ: ' + JSON.stringify(aiCurrentData),
+      'Верни JSON с РЕАЛЬНО изменённым data. Если эта правка относится к программной логике генератора/Word-шаблону и её нельзя применить через поля карточки, прямо напиши, что правка не применена. Не говори «исправил/готово».',
+    ].join('\n\n');
+    const retryResp = await fetch('/api/ai/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({product: product || 'all', messages:[{role:'user',content:retryPrompt}]})
+    });
+    const retryJson = await retryResp.json();
+    if(retryJson.success) {
+      const retryParsed = aiParseResponse(retryJson.text);
+      if(retryParsed.data) aiRenderCard(retryParsed.data);
+      if(aiCardFingerprint(aiCurrentData) !== beforeFingerprint) return retryParsed;
+    }
+  } catch(e) { console.warn('Correction verification retry failed:', e); }
+
+  parsed = parsed || {};
+  parsed.questions = Array.isArray(parsed.questions) ? parsed.questions : [];
+  parsed.message = '⚠️ Я понял правку, но она не изменила данные карточки, поэтому не буду утверждать, что всё исправлено. Если это изменение конкретного поля — укажите новое значение. Если это правило формирования документов — добавьте его через «Обучись:», а результат нужно проверить на новом пакете.';
+  return parsed;
+}
+
 async function aiSend() {
   if(aiLoading) return;
   const ta = document.getElementById('ai-input');
@@ -3221,6 +3282,11 @@ async function aiSend() {
     return;
   }
 
+  // Запоминаем состояние перед обычной правкой. Если ИИ ответит «исправил», но
+  // структурированные данные не поменяются, интерфейс это обнаружит и не соврёт пользователю.
+  const correctionBeforeFingerprint = aiCardFingerprint(aiCurrentData);
+  const correctionRequested = aiIsCorrectionIntent(text);
+
   // Собираем контент для ИИ
   let content = '';
   if(savedCompanyContext) content += savedCompanyContext;
@@ -3255,6 +3321,12 @@ async function aiSend() {
         ? aiMergeStructuredSource(parsed.data || {}, authoritativeSourceData)
         : parsed.data;
       aiRenderCard(dataForCard);
+    }
+    if(correctionRequested) {
+      parsed = await aiRetryCorrectionIfNeeded(
+        text, parsed, correctionBeforeFingerprint,
+        aiCurrentData?.certification?.standard || 'all'
+      );
     }
     // После детерминированной нормализации карточки удаляем бессмысленный запрос
     // количества/разрядов: эти данные уже рассчитаны справочником приложения.
@@ -3414,13 +3486,14 @@ async function aiReadArchiveAsync(file) {
   try {
     const formData = new FormData();
     formData.append('file', uploadFile);
+    formData.append('product', aiCurrentData?.certification?.standard || 'all');
     const startResp = await fetch('/api/extract-archive-async', {method:'POST', body: formData}).then(r=>r.json());
     if(!startResp.success) {
       aiUpdateMsg(progressMsgId, `❌ ${file.name}: ${startResp.error || 'не удалось начать обработку'}`);
       return {name: file.name, content: '[Ошибка: ' + (startResp.error||'не удалось начать обработку') + ']'};
     }
     const taskId = startResp.task_id;
-    const MAX_POLLS = 600; // архив с 25-60 фото может обрабатываться до 30 минут (было 10 — не хватало)
+    const MAX_POLLS = 400; // аварийный потолок ~20 минут; ISO/СУОТ теперь обрабатывается в ускоренном режиме
     let pollCount = 0;
 
     while(pollCount < MAX_POLLS) {
@@ -3437,7 +3510,9 @@ async function aiReadArchiveAsync(file) {
         aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ${lastMsg}`);
       } else if(tr.status === 'done') {
         aiUpdateMsg(progressMsgId, `✅ Архив «${file.name}» разобран`);
-        return {name: file.name, content: tr.text || '[Архив: данные не найдены]',
+        return {name: file.name,
+                content: tr.analysis_text || tr.text || '[Архив: данные не найдены]',
+                raw_content: tr.text || tr.analysis_text || '[Архив: данные не найдены]',
                 summary: tr.summary || '',
                 structured_data: tr.structured_data || null};
       } else if(tr.status === 'error') {
@@ -3448,7 +3523,7 @@ async function aiReadArchiveAsync(file) {
         return {name: file.name, content: '[Задача обработки архива потерялась — попробуйте ещё раз]'};
       }
     }
-    aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: превышено время ожидания в браузере (30 минут). Попробуйте ещё раз — возможно архив слишком большой, разбейте на части поменьше (по 1-2 человека за раз).`);
+    aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: превышено время ожидания в браузере. Попробуйте ещё раз — возможно архив слишком большой, разбейте на части поменьше (по 1-2 человека за раз).`);
     return {name: file.name, content: '[Превышено время ожидания обработки архива]'};
   } catch(err) {
     aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${err.message}`);
@@ -3466,7 +3541,7 @@ async function aiRawCheckArchive(file) {
 
   aiAddMsg('user', `🔍 Проверка архива «${file.name}» — данные для копирования`);
   const result = await aiReadArchiveAsync(file);
-  const text = result.content || '[пусто]';
+  const text = result.raw_content || result.content || '[пусто]';
   const summary = result.summary || 'Архив разобран. Подробный распознанный текст доступен ниже.';
 
   const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -3851,7 +3926,7 @@ async function knowledgeSetActive(id, active) {
     const node=document.getElementById('knowledge-rule-'+id);
     if(node) node.outerHTML=knowledgeRulePreviewHtml(data.rule, node.closest?.('.ai-bubble-ai')!=null);
     await knowledgeLoadRules();
-    if(active) aiAddMsg('ai','✅ Правило активировано. ИИгорь будет учитывать его в следующих ответах и при формировании документов.');
+    if(active) aiAddMsg('ai','✅ Правило активировано и будет передаваться ИИгорю в следующих разборах. Если правило меняет именно логику Word-шаблона, результат считается применённым только после проверки нового сформированного пакета — ИИгорь больше не должен утверждать, что шаблон исправлен без фактического изменения.');
   } catch(e){alert('Ошибка: '+e.message);}
 }
 

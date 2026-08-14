@@ -797,12 +797,56 @@ def _finalize_package_result(result: dict, company_data: dict, product: str) -> 
         )
     return result
 
+def _merge_company_att_itr_from_staff(att_data: dict, staff: list) -> dict:
+    """Enrich Form No.2 ITR records with facts already stored in the common staff card.
+
+    The chat model often keeps diploma/work-book/experience evidence in ``staff`` while
+    company-attestation keeps only FIO/position.  Losing those fields at generation time
+    produced false ``ТРЕБУЕТ УТОЧНЕНИЯ`` cells.  Merge by normalized FIO; explicit
+    company_attestation values still win over generic staff values.
+    """
+    import copy
+    out = copy.deepcopy(att_data or {})
+
+    def key(value):
+        return re.sub(r'[^а-яa-z0-9]+', '', str(value or '').lower().replace('ё', 'е'))
+
+    staff_by_fio = {key(p.get('fio')): p for p in (staff or []) if isinstance(p, dict) and key(p.get('fio'))}
+    current = [p for p in (out.get('itr') or []) if isinstance(p, dict)]
+
+    # If the attestation branch has not received an ITR list yet, use all non-worker
+    # staff as candidates.  This is much safer than emitting empty Form No.2 rows.
+    if not current:
+        current = [copy.deepcopy(p) for p in (staff or []) if isinstance(p, dict) and not p.get('is_worker')]
+    else:
+        merged = []
+        for person in current:
+            base = copy.deepcopy(staff_by_fio.get(key(person.get('fio'))) or {})
+            base.update(copy.deepcopy(person))  # product-specific values have priority
+            # Preserve list-valued evidence instead of accidentally replacing it with []
+            src = staff_by_fio.get(key(person.get('fio'))) or {}
+            for field in ('diplomas','trudovye_numbers','trudovaya_form2_text','employment_periods',
+                          'attestations','uncertain_fields'):
+                if not base.get(field) and src.get(field):
+                    base[field] = copy.deepcopy(src.get(field))
+            merged.append(base)
+        current = merged
+
+    out['itr'] = current
+    return out
+
+
 def generate_package(company_data: dict, api_key: str, product: str, progress_cb=None) -> dict:
     global _GENERATION_KNOWLEDGE_CONTEXT
     _GENERATION_KNOWLEDGE_CONTEXT = str((company_data or {}).get('_knowledge_context') or '')[:32000]
-    company  = company_data.get('company', {})
-    staff    = company_data.get('staff', [])
-    dates_in = company_data.get('dates', {}) or company_data.get('certification', {})
+    company  = dict(company_data.get('company', {}) or {})
+    certification = dict(company_data.get('certification', {}) or {})
+    # The scope selected for THIS package is the source of truth for ISO/SUOT reports.
+    # Never reuse a broader historical company.scope when certification.scope exists.
+    if certification.get('scope'):
+        company['scope'] = certification.get('scope')
+    staff    = company_data.get('staff', []) or []
+    dates_in = company_data.get('dates', {}) or certification
     objects    = company_data.get('objects', []) or []
     suppliers  = company_data.get('suppliers', []) or []
     work_types = company_data.get('work_types', []) or []
@@ -898,7 +942,9 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
             return {'docs': [], 'dates': dates, 'responsible': {}, 'itr_count': 0,
                     'workers_count': 0, 'professions': [], 'error': f'Модуль аттестации компании не загружен: {e}'}
 
-        att_data = company_data.get('company_attestation', {})
+        att_data = _merge_company_att_itr_from_staff(
+            company_data.get('company_attestation', {}) or {}, staff
+        )
         step_ca = [0]
 
         def p_ca(step, total, msg):
@@ -997,19 +1043,31 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     if product in ('iso', 'suot', 'iso_suot'):
         try:
             from generator_iso_suot_templates import generate_iso_suot_package_v2
-            result_is = generate_iso_suot_package_v2(company, itr, dates, resp, product=product,
-                                                       progress_cb=lambda i, t, m: p(m))
+            result_is = generate_iso_suot_package_v2(
+                company, itr, dates, resp, product=product,
+                progress_cb=lambda i, t, m: p(m),
+                workers=workers, objects=objects, suppliers=suppliers,
+                iso_suot=company_data.get('iso_suot') or {},
+                knowledge_text=_GENERATION_KNOWLEDGE_CONTEXT,
+            )
             docs.extend(result_is['docs'])
             warnings.extend(result_is.get('warnings', []))
         except Exception as e:
-            fallback_warning = (f"Основной модуль ИСО/СУОТ не сработал; использован резервный генератор: "
-                                f"{type(e).__name__}: {e}")
-            warnings.append(fallback_warning)
-            print(f"  ❌ {fallback_warning}")
-            if product in ('iso', 'iso_suot'):
-                _gen_iso(org, company, dates, resp, itr, objects, suppliers, api_key, add, p)
-            if product in ('suot', 'iso_suot'):
-                _gen_suot(org, company, dates, resp, itr, workers, worker_professions, api_key, add, p)
+            # Never fall back to the legacy AI-per-document renderer here.  That path
+            # could take 20-30 minutes and also silently produce a different package.
+            # A deterministic failure must be visible and fast.
+            fatal_warning = (
+                'Пакет ISO/СУОТ не сформирован: быстрый шаблонный генератор завершился ошибкой: '
+                f'{type(e).__name__}: {e}'
+            )
+            warnings.append(fatal_warning)
+            print(f"  ❌ {fatal_warning}")
+            return _finalize_package_result({
+                'docs': docs, 'dates': dates, 'responsible': resp,
+                'itr_count': len(itr), 'workers_count': len(workers),
+                'professions': worker_professions, 'warnings': warnings,
+                'error': fatal_warning,
+            }, company_data, product)
 
     if product in ('spk_stroy', 'spk_bisp'):
         try:
