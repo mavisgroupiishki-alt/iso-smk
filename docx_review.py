@@ -580,6 +580,126 @@ def _review_docx(items: Sequence[Dict[str, str]], product: str) -> bytes:
     return buf.getvalue()
 
 
+
+def _clean_company_name(data: Dict[str, Any]) -> str:
+    company = data.get('company') or {}
+    raw = str(company.get('name') or '').strip()
+    clean = re.sub(r'^(ООО|ОДО|ЧУП|ЗАО|РУП|ИП|ЧТУП|ЧТУ|ОАО|ЧП)\s*[«"\']?\s*', '', raw, flags=re.I)
+    return clean.strip().strip('»"\'') or raw
+
+
+def _full_company_name(data: Dict[str, Any]) -> str:
+    company = data.get('company') or {}
+    form = str(company.get('form') or '').strip()
+    clean = _clean_company_name(data)
+    if form and clean:
+        return f'{form} «{clean}»'
+    return clean
+
+
+def _replace_paragraph_visible_text(paragraph_xml: str, new_text: str) -> str:
+    """Replace paragraph text across split Word runs while preserving first run style."""
+    runs = list(re.finditer(r'<w:r(?:\s[^>]*)?>.*?</w:r>', paragraph_xml, flags=re.S))
+    if not runs:
+        return paragraph_xml
+    first = runs[0].group(0)
+    match = re.match(r'(<w:r(?:\s[^>]*)?>)(.*?)(</w:r>)$', first, flags=re.S)
+    if not match:
+        return paragraph_xml
+    open_run, body, close_run = match.groups()
+    rpr = ''
+    rpr_match = re.search(r'<w:rPr(?:\s[^>]*)?>.*?</w:rPr>', body, flags=re.S)
+    if rpr_match:
+        rpr = rpr_match.group(0)
+    safe = html.escape(str(new_text or ''), quote=False)
+    new_run = f'{open_run}{rpr}<w:t xml:space="preserve">{safe}</w:t>{close_run}'
+    return paragraph_xml[:runs[0].start()] + new_run + paragraph_xml[runs[-1].end():]
+
+
+def _replace_stale_names_in_text(text: str, data: Dict[str, Any]) -> str:
+    current_clean = _clean_company_name(data)
+    current_full = _full_company_name(data)
+    if not current_clean:
+        return text
+    result = text
+    current_norm = _norm(current_clean)
+    for marker in STALE_TEMPLATE_MARKERS:
+        if _norm(marker) == current_norm:
+            continue
+        # Full company expression first, then the standalone old company name.
+        result = re.sub(
+            rf'\b(?:ООО|ОДО|ЧУП|ЗАО|РУП|ИП|ЧТУП|ЧТУ|ОАО|ЧП)\s*[«"“„]?\s*{re.escape(marker)}\s*[»"”“]?',
+            current_full,
+            result,
+            flags=re.I,
+        )
+        result = re.sub(
+            rf'(?<![\w]){re.escape(marker)}(?![\w])',
+            current_clean,
+            result,
+            flags=re.I,
+        )
+    return result
+
+
+def sanitize_stale_template_names(docx_bytes: bytes, data: Dict[str, Any]) -> bytes:
+    """Replace sample-company names in body, tables, headers and footers.
+
+    This runs for EVERY generated DOCX after product-specific rendering. It is the
+    final safety layer for cases where a legacy template stores the company name in
+    a split set of Word runs. The exact-token regex deliberately does not match the
+    substring ``варта`` inside the ordinary Russian word ``квартал``.
+    """
+    if not docx_bytes or not _clean_company_name(data):
+        return docx_bytes
+    try:
+        source = zipfile.ZipFile(io.BytesIO(docx_bytes), 'r')
+    except zipfile.BadZipFile:
+        return docx_bytes
+
+    output = io.BytesIO()
+    with source, zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as target:
+        for info in source.infolist():
+            payload = source.read(info.filename)
+            if info.filename.startswith('word/') and info.filename.endswith('.xml'):
+                try:
+                    xml = payload.decode('utf-8')
+
+                    # Direct replacement handles ordinary text nodes/text boxes.
+                    current_clean = _clean_company_name(data)
+                    current_full = _full_company_name(data)
+                    for marker in STALE_TEMPLATE_MARKERS:
+                        if _norm(marker) == _norm(current_clean):
+                            continue
+                        xml = re.sub(
+                            rf'\b(?:ООО|ОДО|ЧУП|ЗАО|РУП|ИП|ЧТУП|ЧТУ|ОАО|ЧП)\s*[«"“„]?\s*{re.escape(marker)}\s*[»"”“]?',
+                            lambda _m: html.escape(current_full, quote=False),
+                            xml,
+                            flags=re.I,
+                        )
+                        xml = re.sub(
+                            rf'(?<![\w]){re.escape(marker)}(?![\w])',
+                            lambda _m: html.escape(current_clean, quote=False),
+                            xml,
+                            flags=re.I,
+                        )
+
+                    # A company name can be split across runs: rebuild only those
+                    # paragraphs whose visible text actually changes.
+                    def para_repl(match: re.Match) -> str:
+                        paragraph = match.group(0)
+                        visible = _extract_text(paragraph)
+                        changed = _replace_stale_names_in_text(visible, data)
+                        return _replace_paragraph_visible_text(paragraph, changed) if changed != visible else paragraph
+
+                    xml = re.sub(r'<w:p(?:\s[^>]*)?>.*?</w:p>', para_repl, xml, flags=re.S)
+                    payload = xml.encode('utf-8')
+                except Exception:
+                    pass
+            target.writestr(info, payload)
+    return output.getvalue()
+
+
 def _docx_plain_text(docx_bytes: bytes) -> str:
     try:
         with zipfile.ZipFile(io.BytesIO(docx_bytes), 'r') as zf:
@@ -617,7 +737,9 @@ def _scan_rendered_documents(docs: Sequence[Dict[str, Any]], data: Dict[str, Any
         if not text:
             continue
         for marker in STALE_TEMPLATE_MARKERS:
-            if marker in text and _norm(marker) != current_name:
+            # Exact token only: ``Варта`` must NOT match the normal word ``квартал``.
+            marker_found = re.search(rf'(?<![\w]){re.escape(marker)}(?![\w])', text, flags=re.I)
+            if marker_found and _norm(marker) != current_name:
                 tokens.append(marker)
                 items.append({
                     'field': name,
@@ -643,6 +765,18 @@ def apply_package_review(
     """Apply universal review rules to every DOCX in a package."""
     review_tokens, items = collect_review_tokens_and_items(data)
     items.extend(collect_required_items(data, product))
+
+    # First repair stale sample-company names in the actual generated DOCX files,
+    # including headers/footers. Only leftovers AFTER this repair are warnings.
+    sanitized_docs: List[Dict[str, Any]] = []
+    for doc in docs or []:
+        copy = dict(doc)
+        name = str(copy.get('name') or '')
+        if name.lower().endswith('.docx') and isinstance(copy.get('bytes'), (bytes, bytearray)):
+            copy['bytes'] = sanitize_stale_template_names(bytes(copy['bytes']), data)
+        sanitized_docs.append(copy)
+    docs = sanitized_docs
+
     rendered_tokens, rendered_items = _scan_rendered_documents(docs, data)
     review_tokens.extend(rendered_tokens)
     items.extend(rendered_items)

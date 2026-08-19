@@ -630,11 +630,124 @@ def _actual_worker_rows(workers: list) -> list[dict]:
     return result
 
 
+
+# ---------------------------------------------------------------------------
+# Safe execution of learned document-text rules
+# ---------------------------------------------------------------------------
+def _knowledge_rule_text(rule: dict) -> str:
+    chunks = [str(rule.get('instruction') or '')]
+    chunks.extend(str(x) for x in (rule.get('actions') or []) if x)
+    return '\n'.join(x for x in chunks if x).strip()
+
+
+def _knowledge_replacements(company: dict, rules: list | None) -> list[tuple[str, str]]:
+    """Translate only safe, explicit learned rules into DOCX text replacements.
+
+    Free-form learning still influences data extraction through the AI context, but
+    arbitrary prose must not silently rewrite legal/technical documents.  Here we
+    execute only deterministic operations we can verify: explicit ``replace X with
+    Y`` rules and the common rule to remove a sample-company name in favour of the
+    current organisation.
+    """
+    replacements: list[tuple[str, str]] = []
+    current_clean = _clean_org_name(company)
+    current_full = _full_org(company)
+    stale_names = ('Варта', 'Кастом-Инвест', 'Сфера Секьюрити', 'МонТехБел')
+
+    for rule in rules or []:
+        if not isinstance(rule, dict) or not rule.get('active', True):
+            continue
+        text = _knowledge_rule_text(rule)
+        if not text:
+            continue
+        low = _norm(text)
+
+        # "Везде должна быть текущая организация", "не использовать Варту" etc.
+        if any(word in low for word in ('текущая организац', 'актуальная организац',
+                                        'организац из шаблон', 'название из шаблон',
+                                        'не использовать варта', 'убрать варта',
+                                        'удалить варта')):
+            for stale in stale_names:
+                replacements.append((f'ООО «{stale}»', current_full))
+                replacements.append((f'ООО "{stale}"', current_full))
+                replacements.append((stale, current_clean))
+
+        # Quoted explicit replacements are the safest and preferred syntax.
+        quoted = re.compile(
+            r'замен(?:ить|и|ять)\s+[«"“„\']([^»"”“\']{1,160})[»"”“\']\s+'
+            r'(?:на|→|->)\s+[«"“„\']([^»"”“\']{1,240})[»"”“\']',
+            flags=re.I,
+        )
+        for match in quoted.finditer(text):
+            old, new = match.group(1).strip(), match.group(2).strip()
+            if old and new and old != new:
+                replacements.append((old, new))
+
+        # Also allow a short unquoted command on one line: "заменить X на Y".
+        simple = re.compile(
+            r'(?im)^\s*замен(?:ить|и|ять)\s+(.{1,100}?)\s+(?:на|→|->)\s+(.{1,160}?)\s*[.;]?$'
+        )
+        for match in simple.finditer(text):
+            old, new = match.group(1).strip(' «»"\''), match.group(2).strip(' «»"\'')
+            if old and new and old != new and '\n' not in old and '\n' not in new:
+                replacements.append((old, new))
+
+    # Stable order, no duplicates.
+    out = []
+    seen = set()
+    for old, new in replacements:
+        key = (old, new)
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def _apply_text_replacements_to_docx(data: bytes, replacements: list[tuple[str, str]]) -> bytes:
+    if not replacements:
+        return data
+    try:
+        parts = {}
+        with zipfile.ZipFile(io.BytesIO(data), 'r') as src:
+            for name in src.namelist():
+                parts[name] = src.read(name)
+    except zipfile.BadZipFile:
+        return data
+
+    for part_name, payload in list(parts.items()):
+        if not (part_name.startswith('word/') and part_name.endswith('.xml')):
+            continue
+        try:
+            xml = payload.decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+
+        # Direct XML replacement handles headers/footers/text boxes when the text
+        # is stored in one XML text node.
+        for old, new in replacements:
+            xml = xml.replace(_esc(old), _esc(new)).replace(old, _esc(new))
+
+        # Paragraph rewrite also handles values split across multiple Word runs.
+        def repl_para(match: re.Match) -> str:
+            para = match.group(0)
+            visible = _xml_plain_text(para)
+            if not visible:
+                return para
+            changed = visible
+            for old, new in replacements:
+                changed = changed.replace(old, new)
+            return _replace_para_text(para, changed) if changed != visible else para
+
+        xml = re.sub(r'<w:p(?:\s[^>]*)?>.*?</w:p>', repl_para, xml, flags=re.S)
+        parts[part_name] = xml.encode('utf-8')
+    return _rebuild(parts)
+
+
 def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: dict,
                                   product: str = 'iso_suot', progress_cb=None,
                                   workers: list | None = None, objects: list | None = None,
                                   suppliers: list | None = None, iso_suot: dict | None = None,
-                                  knowledge_text: str = '') -> dict:
+                                  knowledge_text: str = '', knowledge_rules: list | None = None) -> dict:
     """Generate ISO/SUOT package in seconds using current card data only."""
     org = _clean_org_name(company)
     scope = str(company.get('scope') or '').strip()
@@ -813,10 +926,17 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             prog(f'Инструкция ОТ: {profession}')
             docs.append({'name': f'{org} СУОТ - ИОТ {profession}.docx', 'bytes': _generic_worker_instruction(company, profession, dates)})
 
-    # Knowledge rules are intentionally not silently claimed as executed if they
-    # cannot be represented deterministically. They remain available to chat/data
-    # extraction; generator-level behavioural rules must be reflected in code/data.
-    if knowledge_text:
-        warnings.append('Активные правила базы знаний учтены при подготовке данных. Свободный текст правила не считается изменением шаблона, если он не меняет структурированные поля карточки.')
+    # Execute the safe subset of active learned rules directly in generated Word
+    # files.  This makes training observable: explicit text replacements and rules
+    # about the current organisation affect the NEXT generated package, including
+    # headers and footers. Other free-form rules still influence structured data
+    # extraction but are never falsely reported as a completed template edit.
+    learned_replacements = _knowledge_replacements(company, knowledge_rules)
+    if learned_replacements:
+        docs = [
+            {**doc, 'bytes': _apply_text_replacements_to_docx(doc.get('bytes', b''), learned_replacements)}
+            if str(doc.get('name') or '').lower().endswith('.docx') else doc
+            for doc in docs
+        ]
 
     return {'docs': docs, 'warnings': warnings}

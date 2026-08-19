@@ -839,6 +839,7 @@ def _merge_company_att_itr_from_staff(att_data: dict, staff: list) -> dict:
 def generate_package(company_data: dict, api_key: str, product: str, progress_cb=None) -> dict:
     global _GENERATION_KNOWLEDGE_CONTEXT
     _GENERATION_KNOWLEDGE_CONTEXT = str((company_data or {}).get('_knowledge_context') or '')[:32000]
+    generation_knowledge_rules = [r for r in ((company_data or {}).get('_knowledge_rules') or []) if isinstance(r, dict)]
     company  = dict(company_data.get('company', {}) or {})
     certification = dict(company_data.get('certification', {}) or {})
     # The scope selected for THIS package is the source of truth for ISO/SUOT reports.
@@ -1049,6 +1050,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
                 workers=workers, objects=objects, suppliers=suppliers,
                 iso_suot=company_data.get('iso_suot') or {},
                 knowledge_text=_GENERATION_KNOWLEDGE_CONTEXT,
+                knowledge_rules=generation_knowledge_rules,
             )
             docs.extend(result_is['docs'])
             warnings.extend(result_is.get('warnings', []))
