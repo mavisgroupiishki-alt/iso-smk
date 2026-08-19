@@ -3127,6 +3127,17 @@ function aiFinalizeCompanyAttestationReply(parsed) {
 }
 
 
+function aiFriendlyError(value) {
+  const text = String(value || '').trim();
+  if(!text) return 'Не удалось выполнить действие. Попробуйте ещё раз.';
+  const low = text.toLowerCase();
+  if(low.includes('другая генерация') || low.includes('уже формируется')) return 'Уже формируется другой пакет. Дождитесь его завершения и попробуйте снова.';
+  if(low.includes('название компании')) return 'Не удалось определить название компании. Проверьте карточку компании и повторите формирование.';
+  const technical = /(json|api|http|backend|frontend|hardcoded|force[_-]?|render|environment|traceback|stack|vibe_api_key|bad json|empty response)/i;
+  if(technical.test(text) || text.length > 280) return 'Не удалось выполнить действие. Попробуйте ещё раз. Если ошибка повторится, сообщите ответственному за приложение.';
+  return text;
+}
+
 function aiIsCorrectionIntent(text) {
   return /(^|\s)(исправ|замен|помен|измени|добав|дополни|удал|убер|обнов|скоррект|неправил|ошибк|должно\s+быть|нужно\s+чтобы)/i.test(String(text||''));
 }
@@ -3183,7 +3194,7 @@ async function aiRetryCorrectionIfNeeded(originalText, parsed, beforeFingerprint
 
   parsed = parsed || {};
   parsed.questions = Array.isArray(parsed.questions) ? parsed.questions : [];
-  parsed.message = '⚠️ Я понял правку, но она не изменила данные карточки, поэтому не буду утверждать, что всё исправлено. Если это изменение конкретного поля — укажите новое значение. Если это правило формирования документов — добавьте его через «Обучись:», а результат нужно проверить на новом пакете.';
+  parsed.message = '⚠️ Правка пока не применилась. Я не буду писать, что всё исправлено, пока изменение действительно не появится в новом пакете. Сформируйте пакет заново и проверьте результат.';
   return parsed;
 }
 
@@ -3275,7 +3286,7 @@ async function aiSend() {
       await knowledgeCreateDraftFromChat(text, filesContent);
     } catch(e) {
       aiRemoveTyping();
-      aiAddMsg('ai', '❌ Не удалось подготовить правило: ' + e.message);
+      aiAddMsg('ai', '❌ ' + aiFriendlyError(e.message));
     }
     aiLoading = false;
     document.getElementById('ai-send-btn').disabled = false;
@@ -3312,7 +3323,7 @@ async function aiSend() {
     const result = await resp.json();
     aiRemoveTyping();
 
-    if(!result.success) throw new Error(result.error || 'Ошибка сервера');
+    if(!result.success) throw new Error(aiFriendlyError(result.error || 'Не удалось выполнить действие'));
 
     let parsed = aiParseResponse(result.text);
 
@@ -3706,7 +3717,7 @@ async function aiGenerate() {
             checkBtn.textContent = `Статус: ${tr.status}, шаг ${tr.step}/${tr.total}`;
             setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000);
           }
-        } catch(e) { checkBtn.textContent = '❌ ' + e.message; setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000); }
+        } catch(e) { checkBtn.textContent = '❌ ' + aiFriendlyError(e.message); setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000); }
       };
       progDiv.appendChild(checkBtn);
 
@@ -3775,7 +3786,7 @@ async function aiGenerate() {
             clearInterval(poll);
             clearInterval(interval);
             progDiv.remove();
-            aiAddMsg('ai', '❌ Ошибка генерации: ' + (tr.error||'неизвестная'));
+            aiAddMsg('ai', '❌ ' + aiFriendlyError(tr.error||'Не удалось сформировать пакет'));
             btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
           }
         } catch(pollErr) {

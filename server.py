@@ -376,6 +376,18 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 
 ПРОДУКТЫ: ISO 9001, ISO 45001/СУОТ, ISO 9001+45001, СПК Строй Комплекс, СПК БИСП, Периодика.
 
+ПРАВИЛО ОБЩЕНИЯ С ПОЛЬЗОВАТЕЛЕМ — ОБЯЗАТЕЛЬНО:
+- Пользователь — эксперт/оформитель, а не разработчик. Отвечай обычным рабочим языком.
+- НИКОГДА не показывай пользователю названия внутренних полей, служебные форматы, команды, код,
+  названия переменных, API, JSON, backend/frontend, hardcoded, prompt, модель, Render/Environment,
+  stack trace, FORCE_* и любые другие технические термины приложения.
+- Не придумывай техническую причину ошибки. Говори только о результате: что применилось, что не применилось,
+  какой документ/сведение нужно проверить и что сделать дальше.
+- Не отправляй пользователя «к разработчикам», не проси закрывать браузер/чистить кэш и не описывай внутреннюю
+  работу системы. Технические подробности остаются только в журнале сервера.
+- Если правка не применилась: коротко скажи «Правка пока не применилась» и не утверждай, что всё исправлено.
+- Ответ обычно 2–6 понятных предложений, без служебных названий и диагностической болтовни.
+
 ДАТЫ от даты выезда эксперта:
 - Политика = выезд минус 34 дня
 - Цели/Приказы = политика + 5 дней
@@ -664,6 +676,14 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
 Твоя задача — БЫСТРО извлечь данные из архива и вернуть структурированную карточку.
 Не составляй документы в чате: готовые DOCX формирует детерминированный генератор.
 
+ПРАВИЛО ОБЩЕНИЯ С ПОЛЬЗОВАТЕЛЕМ:
+- Пиши обычным языком эксперта/оформителя. Никаких JSON, API, backend/frontend, hardcoded, prompt,
+  внутренних названий полей, команд, кода, переменных, FORCE_*, Render/Environment и другой технической терминологии.
+- Не объясняй внутреннее устройство приложения и не придумывай технические причины.
+- Если правка не применилась, так и напиши: «Правка пока не применилась». Не говори «исправил», пока результат
+  реально не изменился. Дальше укажи только понятное действие: что проверить или сформировать заново.
+- Не отправляй пользователя к разработчикам и не проси закрывать браузер, чистить кэш и т.п.
+
 КРИТИЧЕСКИЕ ПРАВИЛА:
 1. Используй только ТЕКУЩУЮ организацию и только certification.scope текущего пакета. Не переноси
    название, область, сотрудников, даты или реквизиты компании-образца.
@@ -676,16 +696,21 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
 7. ПРАВКИ ПОЛЬЗОВАТЕЛЯ ОБЯЗАНЫ МЕНЯТЬ JSON. Если запрос «исправь/замени/добавь/удали/убери/обнови»
    невозможно выразить изменением структурированных данных, прямо напиши, что правка НЕ применена.
    НИКОГДА не пиши «исправил», «готово», «учёл», если возвращаемый data фактически не изменён.
-8. Активные правила базы знаний имеют приоритет при конфликте, но не утверждай, что Word-шаблон
-   изменён, если правило нельзя выразить полями карточки.
+8. Активные правила базы знаний имеют приоритет при конфликте. Правило обучения применяется к НОВЫМ анализам
+   и генерациям после активации. Не говори «всё исправил» только потому, что правило сохранено: сообщай
+   «правило активировано и будет проверено на следующем пакете».
 9. После загрузки архива сообщение краткое: что найдено/заполнено, что требует сверки, чего реально нет.
+10. НИКОГДА не проси пользователя прислать готовые должностные инструкции или инструкции по охране труда
+    для профессий. Для ISO/СУОТ это НЕ обязательный исходный документ: генератор сам выбирает готовый
+    шаблон по фактической должности/профессии, а при отсутствии точного шаблона создаёт редактируемый
+    проект инструкции. Отсутствие файла инструкции не должно попадать в questions и не блокирует пакет.
 
 ДЛЯ ГОТОВОГО ПАКЕТА:
 - должностные инструкции формируются только для фактических ИТР;
-- инструкции ОТ — только для фактических рабочих профессий;
+- инструкции ОТ — только для фактических рабочих профессий и НЕ требуют загрузки исходных инструкций;
 - программа внутренних аудитов — по фактическим ИТР-должностям;
 - отчёты используют только certification.scope;
-- везде должна быть текущая организация.
+- везде должна быть текущая организация, включая колонтитулы, таблицы и текстовые блоки Word.
 
 ОТВЕЧАЙ СТРОГО JSON без markdown:
 {
@@ -711,7 +736,71 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
 
 
 
-def _sanitize_ai_visible_response(raw_text):
+
+_USER_TECH_PATTERNS = (
+    r'\bjson\b', r'\bapi\b', r'backend', r'frontend', r'hardcoded', r'force[_\- ]?[a-z0-9_]*',
+    r'company\.[a-z_]+', r'certification\.[a-z_]+', r'\bfield\b', r'пол[ея]\s+(?:company|certification)\.',
+    r'системн\w*\s+команд', r'разработчик', r'код\w*\s+шаблон', r'\bбаг\b', r'промпт',
+    r'\bмодел[ьи]\b', r'\brender\b', r'\benvironment\b', r'stack\s*trace', r'traceback',
+    r'\bhttp\b', r'переменн\w*', r'дефолт\w*', r'кэш\w*', r'браузер\w*', r'bitrixgpt',
+)
+_USER_TECH_RE = re.compile('|'.join(f'(?:{p})' for p in _USER_TECH_PATTERNS), re.I)
+
+
+def _humanize_user_visible_text(value):
+    """Keep developer diagnostics out of the expert/formatter UI.
+
+    Technical details stay in server logs; the user sees only the result and a clear next action.
+    """
+    original = str(value or '').strip()
+    if not original:
+        return original
+    matches = list(_USER_TECH_RE.finditer(original))
+    if not matches:
+        return original
+
+    low = original.lower().replace('ё', 'е')
+    # If a response turned into a debugging monologue, replace it entirely.
+    if len(matches) >= 2 or len(original) > 700:
+        if any(k in low for k in ('исправ', 'правк', 'замен', 'обнов', 'не примен', 'добавил', 'сделал', 'учел', 'учёл')):
+            return ('Правка пока не применилась. Я не буду писать, что всё исправлено, пока изменение '
+                    'действительно не появится в новом пакете. Сформируйте пакет заново и проверьте результат.')
+        if any(k in low for k in ('ошиб', 'не удалось', 'сбой')):
+            return ('Не удалось выполнить действие. Попробуйте ещё раз. Если ошибка повторится, '
+                    'сообщите ответственному за приложение.')
+        return ('Я не буду перегружать вас внутренними подробностями. Укажу только, что получилось, '
+                'что требует проверки и какое действие нужно сделать дальше.')
+
+    # For one accidental technical sentence, keep the useful human sentences around it.
+    sentences = re.split(r'(?<=[.!?])\s+|\n+', original)
+    kept = [x.strip() for x in sentences if x.strip() and not _USER_TECH_RE.search(x)]
+    cleaned = ' '.join(kept).strip()
+    if cleaned:
+        return cleaned
+    return 'Не удалось применить изменение. Попробуйте ещё раз.'
+
+
+def _friendly_public_error(value):
+    """Convert internal exceptions to a short non-technical message for UI responses."""
+    text = str(value or '').strip()
+    if not text:
+        return 'Не удалось выполнить действие. Попробуйте ещё раз.'
+    low = text.lower().replace('ё', 'е')
+    if 'другая генерация' in low or 'already' in low and 'generation' in low:
+        return 'Уже формируется другой пакет. Дождитесь его завершения и попробуйте снова.'
+    if 'название компании' in low:
+        return 'Не удалось определить название компании. Проверьте карточку компании и повторите формирование.'
+    if any(k in low for k in ('timeout', 'timed out', 'connection', 'http', 'api', 'vibe_api_key', 'environment', 'traceback')):
+        return 'Сервис временно не ответил. Попробуйте ещё раз через минуту.'
+    if _USER_TECH_RE.search(text):
+        return _humanize_user_visible_text(text)
+    # Very long exceptions are never useful to an expert.
+    if len(text) > 280:
+        return 'Не удалось выполнить действие. Попробуйте ещё раз. Если ошибка повторится, сообщите ответственному за приложение.'
+    return text
+
+
+def _sanitize_ai_visible_response(raw_text, product="all"):
     """Prevent the model from dumping internal archive source blocks into chat.
 
     The full archive text remains in the prompt and in the raw-check details; only
@@ -723,9 +812,49 @@ def _sanitize_ai_visible_response(raw_text):
     try:
         payload = json.loads(candidate)
     except Exception:
-        return raw_text
+        return _humanize_user_visible_text(raw_text)
     if not isinstance(payload, dict):
-        return raw_text
+        return _humanize_user_visible_text(raw_text)
+
+    # ISO/SUOT instructions are OUTPUTS of the generator, not required source files.
+    # The model occasionally asks the user to upload profession-specific instructions
+    # despite having a complete staffing schedule. Remove those false questions here
+    # as a deterministic safety net in addition to the system prompt.
+    if str(product or '').lower() in ('iso', 'suot', 'iso_suot'):
+        def _instruction_upload_request(value):
+            text = str(value or '').lower().replace('ё', 'е')
+            has_instruction = ('инструкц' in text)
+            has_profession = any(k in text for k in ('професс', 'рабоч', 'должност'))
+            asks_upload = any(k in text for k in ('пришл', 'скин', 'загруз', 'предостав', 'прикреп', 'нужн'))
+            return has_instruction and (has_profession or 'охране труда' in text or 'от' in text) and asks_upload
+
+        questions = payload.get('questions')
+        if isinstance(questions, list):
+            payload['questions'] = [q for q in questions if not _instruction_upload_request(q)]
+
+        message_raw = str(payload.get('message') or '')
+        if _instruction_upload_request(message_raw):
+            sentences = re.split(r'(?<=[.!?])\s+|\n+', message_raw)
+            kept = [sent for sent in sentences if sent.strip() and not _instruction_upload_request(sent)]
+            message_raw = ' '.join(kept).strip()
+            if not message_raw:
+                message_raw = ('Штат распознан. Должностные инструкции и инструкции по охране труда '
+                               'сформируются автоматически по фактическим должностям и профессиям.')
+            elif 'автомат' not in message_raw.lower():
+                message_raw += (' Инструкции по должностям и рабочим профессиям сформируются автоматически '
+                                'по фактическому штатному расписанию.')
+            payload['message'] = message_raw
+
+    # Final user-language firewall: no developer jargon in chat, even if the model ignored instructions.
+    payload['message'] = _humanize_user_visible_text(payload.get('message') or '')
+    if isinstance(payload.get('questions'), list):
+        clean_questions = []
+        for q in payload.get('questions') or []:
+            clean_q = _humanize_user_visible_text(q)
+            if clean_q and clean_q not in clean_questions:
+                clean_questions.append(clean_q)
+        payload['questions'] = clean_questions
+
     message = str(payload.get('message') or '')
     technical_markers = (
         '=== 📦 СОСТАВ АРХИВА', '=== СОСТАВ АРХИВА',
@@ -738,7 +867,7 @@ def _sanitize_ai_visible_response(raw_text):
         suffix = (f' Сведений для ручной проверки: {review_count}.' if review_count else '')
         payload['message'] = (
             'Архив прочитан, найденные сведения перенесены в карточку. '
-            'Полный технический текст скрыт и доступен через «Проверить исходный архив».'
+            'Подробности можно посмотреть через «Проверить исходный архив».'
             + suffix
         )
     return json.dumps(payload, ensure_ascii=False)
@@ -778,7 +907,7 @@ def call_ai(messages, api_key, knowledge_text="", product="all"):
                 raise RuntimeError(data["error"])
             text = "".join(c.get("message",{}).get("content","") for c in data.get("choices",[]))
             if text:
-                return _sanitize_ai_visible_response(text)
+                return _sanitize_ai_visible_response(text, product)
             last_err = "Пустой ответ от модели"
             time.sleep(1)
         except req_lib.exceptions.Timeout:
@@ -2384,7 +2513,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     'journalId': task.get('journalId'),
                     'fileCount': task.get('fileCount',0),
                     'dates':     task.get('dates',{}),
-                    'error':     task.get('error',''),
+                    'error':     _friendly_public_error(task.get('error','')),
                     'zipB64':    task.get('zipB64'),
                     'orgName':   task.get('orgName',''),
                     'text':      task.get('text'),
@@ -2431,7 +2560,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 import io as _io, re as _re, base64 as _b64
                 api_key = os.environ.get('VIBE_API_KEY','')
                 if not api_key:
-                    self._json({'success':False,'error':'VIBE_API_KEY не задан'},500); return
+                    self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
 
                 content_type = self.headers.get('Content-Type','')
                 boundary = None
@@ -2573,7 +2702,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 import re as _re3
                 api_key = os.environ.get('VIBE_API_KEY','')
                 if not api_key:
-                    self._json({'success':False,'error':'VIBE_API_KEY не задан'},500); return
+                    self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
                 content_type = self.headers.get('Content-Type','')
                 boundary = None
                 for part in content_type.split(';'):
@@ -2658,7 +2787,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 req=json.loads(body)
                 api_key=os.environ.get('VIBE_API_KEY','')
                 if not api_key:
-                    self._json({'success':False,'error':'VIBE_API_KEY не задан на сервере. Добавьте в Environment на Render.'},500); return
+                    self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
                 messages=req.get('messages',[])
                 product_scope = str(req.get('product') or 'all')
                 text=call_ai(messages, api_key, knowledge_context(product_scope), product_scope)
@@ -2716,8 +2845,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 if SMART_GENERATOR and ai_data.get('company', {}).get('name'):
                     if GENERATION_IN_PROGRESS['active']:
                         self._json({'success': False,
-                                     'error': 'Уже идёт другая генерация. На Render Free одновременно можно '
-                                               'выполнять только одну — дождитесь её завершения и попробуйте снова.'},
+                                     'error': 'Уже формируется другой пакет. Дождитесь его завершения и попробуйте снова.'},
                                     429)
                         return
 
@@ -2738,6 +2866,10 @@ class H(http.server.BaseHTTPRequestHandler):
 
                             _data = dict(_data or {})
                             _data['_knowledge_context'] = knowledge_context(_prod)
+                            # Передаём генератору и структурированные правила. Это позволяет
+                            # исполнять безопасные обученные замены в DOCX, а не только добавлять
+                            # текст правила в промпт модели.
+                            _data['_knowledge_rules'] = knowledge_list(active_only=True, scope=_prod)
                             result = generate_package(_data, _key, _prod, on_prog)
                             docs = result['docs']
                             if result.get('error') or not docs:
@@ -2787,10 +2919,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     # docx-шаблонах), если ИИ не вернул company.name. Теперь явно сообщаем
                     # об этом, а не пытаемся читать несуществующую папку.
                     self._json({'success': False,
-                                 'error': 'Не удалось определить название компании из данных ИИ — '
-                                          'генерация невозможна. Попробуйте переформулировать запрос Игорю '
-                                          'так, чтобы он явно указал название и реквизиты компании перед '
-                                          'нажатием «Сформировать пакет».'},
+                                 'error': 'Не удалось определить название компании. Проверьте карточку компании и повторите формирование.'},
                                 400)
             elif p=='/api/journal/delete':
                 eid=json.loads(body)['id']
@@ -2806,7 +2935,8 @@ class H(http.server.BaseHTTPRequestHandler):
             else: self.send_response(404); self.end_headers()
         except Exception as e:
             import traceback
-            self._json({'success':False,'error':str(e),'trace':traceback.format_exc()},500)
+            traceback.print_exc()
+            self._json({'success':False,'error':_friendly_public_error(e)},500)
 
     def _json(self,d,code=200):
         b=json.dumps(d,ensure_ascii=False).encode('utf-8')

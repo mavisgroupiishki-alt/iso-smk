@@ -1,0 +1,279 @@
+--- a/server.py
++++ b/server.py
+@@ -375,6 +375,18 @@
+ AI_SYSTEM = """Ты — ИИгорь, оформитель документов ИСО/СУОТ/СПК (Mavis Group, Беларусь).
+ 
+ ПРОДУКТЫ: ISO 9001, ISO 45001/СУОТ, ISO 9001+45001, СПК Строй Комплекс, СПК БИСП, Периодика.
++
++ПРАВИЛО ОБЩЕНИЯ С ПОЛЬЗОВАТЕЛЕМ — ОБЯЗАТЕЛЬНО:
++- Пользователь — эксперт/оформитель, а не разработчик. Отвечай обычным рабочим языком.
++- НИКОГДА не показывай пользователю названия внутренних полей, служебные форматы, команды, код,
++  названия переменных, API, JSON, backend/frontend, hardcoded, prompt, модель, Render/Environment,
++  stack trace, FORCE_* и любые другие технические термины приложения.
++- Не придумывай техническую причину ошибки. Говори только о результате: что применилось, что не применилось,
++  какой документ/сведение нужно проверить и что сделать дальше.
++- Не отправляй пользователя «к разработчикам», не проси закрывать браузер/чистить кэш и не описывай внутреннюю
++  работу системы. Технические подробности остаются только в журнале сервера.
++- Если правка не применилась: коротко скажи «Правка пока не применилась» и не утверждай, что всё исправлено.
++- Ответ обычно 2–6 понятных предложений, без служебных названий и диагностической болтовни.
+ 
+ ДАТЫ от даты выезда эксперта:
+ - Политика = выезд минус 34 дня
+@@ -664,6 +676,14 @@
+ Твоя задача — БЫСТРО извлечь данные из архива и вернуть структурированную карточку.
+ Не составляй документы в чате: готовые DOCX формирует детерминированный генератор.
+ 
++ПРАВИЛО ОБЩЕНИЯ С ПОЛЬЗОВАТЕЛЕМ:
++- Пиши обычным языком эксперта/оформителя. Никаких JSON, API, backend/frontend, hardcoded, prompt,
++  внутренних названий полей, команд, кода, переменных, FORCE_*, Render/Environment и другой технической терминологии.
++- Не объясняй внутреннее устройство приложения и не придумывай технические причины.
++- Если правка не применилась, так и напиши: «Правка пока не применилась». Не говори «исправил», пока результат
++  реально не изменился. Дальше укажи только понятное действие: что проверить или сформировать заново.
++- Не отправляй пользователя к разработчикам и не проси закрывать браузер, чистить кэш и т.п.
++
+ КРИТИЧЕСКИЕ ПРАВИЛА:
+ 1. Используй только ТЕКУЩУЮ организацию и только certification.scope текущего пакета. Не переноси
+    название, область, сотрудников, даты или реквизиты компании-образца.
+@@ -716,6 +736,70 @@
+ 
+ 
+ 
++
++_USER_TECH_PATTERNS = (
++    r'\bjson\b', r'\bapi\b', r'backend', r'frontend', r'hardcoded', r'force[_\- ]?[a-z0-9_]*',
++    r'company\.[a-z_]+', r'certification\.[a-z_]+', r'\bfield\b', r'пол[ея]\s+(?:company|certification)\.',
++    r'системн\w*\s+команд', r'разработчик', r'код\w*\s+шаблон', r'\bбаг\b', r'промпт',
++    r'\bмодел[ьи]\b', r'\brender\b', r'\benvironment\b', r'stack\s*trace', r'traceback',
++    r'\bhttp\b', r'переменн\w*', r'дефолт\w*', r'кэш\w*', r'браузер\w*', r'bitrixgpt',
++)
++_USER_TECH_RE = re.compile('|'.join(f'(?:{p})' for p in _USER_TECH_PATTERNS), re.I)
++
++
++def _humanize_user_visible_text(value):
++    """Keep developer diagnostics out of the expert/formatter UI.
++
++    Technical details stay in server logs; the user sees only the result and a clear next action.
++    """
++    original = str(value or '').strip()
++    if not original:
++        return original
++    matches = list(_USER_TECH_RE.finditer(original))
++    if not matches:
++        return original
++
++    low = original.lower().replace('ё', 'е')
++    # If a response turned into a debugging monologue, replace it entirely.
++    if len(matches) >= 2 or len(original) > 700:
++        if any(k in low for k in ('исправ', 'правк', 'замен', 'обнов', 'не примен', 'добавил', 'сделал', 'учел', 'учёл')):
++            return ('Правка пока не применилась. Я не буду писать, что всё исправлено, пока изменение '
++                    'действительно не появится в новом пакете. Сформируйте пакет заново и проверьте результат.')
++        if any(k in low for k in ('ошиб', 'не удалось', 'сбой')):
++            return ('Не удалось выполнить действие. Попробуйте ещё раз. Если ошибка повторится, '
++                    'сообщите ответственному за приложение.')
++        return ('Я не буду перегружать вас внутренними подробностями. Укажу только, что получилось, '
++                'что требует проверки и какое действие нужно сделать дальше.')
++
++    # For one accidental technical sentence, keep the useful human sentences around it.
++    sentences = re.split(r'(?<=[.!?])\s+|\n+', original)
++    kept = [x.strip() for x in sentences if x.strip() and not _USER_TECH_RE.search(x)]
++    cleaned = ' '.join(kept).strip()
++    if cleaned:
++        return cleaned
++    return 'Не удалось применить изменение. Попробуйте ещё раз.'
++
++
++def _friendly_public_error(value):
++    """Convert internal exceptions to a short non-technical message for UI responses."""
++    text = str(value or '').strip()
++    if not text:
++        return 'Не удалось выполнить действие. Попробуйте ещё раз.'
++    low = text.lower().replace('ё', 'е')
++    if 'другая генерация' in low or 'already' in low and 'generation' in low:
++        return 'Уже формируется другой пакет. Дождитесь его завершения и попробуйте снова.'
++    if 'название компании' in low:
++        return 'Не удалось определить название компании. Проверьте карточку компании и повторите формирование.'
++    if any(k in low for k in ('timeout', 'timed out', 'connection', 'http', 'api', 'vibe_api_key', 'environment', 'traceback')):
++        return 'Сервис временно не ответил. Попробуйте ещё раз через минуту.'
++    if _USER_TECH_RE.search(text):
++        return _humanize_user_visible_text(text)
++    # Very long exceptions are never useful to an expert.
++    if len(text) > 280:
++        return 'Не удалось выполнить действие. Попробуйте ещё раз. Если ошибка повторится, сообщите ответственному за приложение.'
++    return text
++
++
+ def _sanitize_ai_visible_response(raw_text, product="all"):
+     """Prevent the model from dumping internal archive source blocks into chat.
+ 
+@@ -728,9 +812,9 @@
+     try:
+         payload = json.loads(candidate)
+     except Exception:
+-        return raw_text
++        return _humanize_user_visible_text(raw_text)
+     if not isinstance(payload, dict):
+-        return raw_text
++        return _humanize_user_visible_text(raw_text)
+ 
+     # ISO/SUOT instructions are OUTPUTS of the generator, not required source files.
+     # The model occasionally asks the user to upload profession-specific instructions
+@@ -761,6 +845,16 @@
+                                 'по фактическому штатному расписанию.')
+             payload['message'] = message_raw
+ 
++    # Final user-language firewall: no developer jargon in chat, even if the model ignored instructions.
++    payload['message'] = _humanize_user_visible_text(payload.get('message') or '')
++    if isinstance(payload.get('questions'), list):
++        clean_questions = []
++        for q in payload.get('questions') or []:
++            clean_q = _humanize_user_visible_text(q)
++            if clean_q and clean_q not in clean_questions:
++                clean_questions.append(clean_q)
++        payload['questions'] = clean_questions
++
+     message = str(payload.get('message') or '')
+     technical_markers = (
+         '=== 📦 СОСТАВ АРХИВА', '=== СОСТАВ АРХИВА',
+@@ -773,7 +867,7 @@
+         suffix = (f' Сведений для ручной проверки: {review_count}.' if review_count else '')
+         payload['message'] = (
+             'Архив прочитан, найденные сведения перенесены в карточку. '
+-            'Полный технический текст скрыт и доступен через «Проверить исходный архив».'
++            'Подробности можно посмотреть через «Проверить исходный архив».'
+             + suffix
+         )
+     return json.dumps(payload, ensure_ascii=False)
+@@ -2419,7 +2513,7 @@
+                     'journalId': task.get('journalId'),
+                     'fileCount': task.get('fileCount',0),
+                     'dates':     task.get('dates',{}),
+-                    'error':     task.get('error',''),
++                    'error':     _friendly_public_error(task.get('error','')),
+                     'zipB64':    task.get('zipB64'),
+                     'orgName':   task.get('orgName',''),
+                     'text':      task.get('text'),
+@@ -2466,7 +2560,7 @@
+                 import io as _io, re as _re, base64 as _b64
+                 api_key = os.environ.get('VIBE_API_KEY','')
+                 if not api_key:
+-                    self._json({'success':False,'error':'VIBE_API_KEY не задан'},500); return
++                    self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
+ 
+                 content_type = self.headers.get('Content-Type','')
+                 boundary = None
+@@ -2608,7 +2702,7 @@
+                 import re as _re3
+                 api_key = os.environ.get('VIBE_API_KEY','')
+                 if not api_key:
+-                    self._json({'success':False,'error':'VIBE_API_KEY не задан'},500); return
++                    self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
+                 content_type = self.headers.get('Content-Type','')
+                 boundary = None
+                 for part in content_type.split(';'):
+@@ -2693,7 +2787,7 @@
+                 req=json.loads(body)
+                 api_key=os.environ.get('VIBE_API_KEY','')
+                 if not api_key:
+-                    self._json({'success':False,'error':'VIBE_API_KEY не задан на сервере. Добавьте в Environment на Render.'},500); return
++                    self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
+                 messages=req.get('messages',[])
+                 product_scope = str(req.get('product') or 'all')
+                 text=call_ai(messages, api_key, knowledge_context(product_scope), product_scope)
+@@ -2751,8 +2845,7 @@
+                 if SMART_GENERATOR and ai_data.get('company', {}).get('name'):
+                     if GENERATION_IN_PROGRESS['active']:
+                         self._json({'success': False,
+-                                     'error': 'Уже идёт другая генерация. На Render Free одновременно можно '
+-                                               'выполнять только одну — дождитесь её завершения и попробуйте снова.'},
++                                     'error': 'Уже формируется другой пакет. Дождитесь его завершения и попробуйте снова.'},
+                                     429)
+                         return
+ 
+@@ -2826,10 +2919,7 @@
+                     # docx-шаблонах), если ИИ не вернул company.name. Теперь явно сообщаем
+                     # об этом, а не пытаемся читать несуществующую папку.
+                     self._json({'success': False,
+-                                 'error': 'Не удалось определить название компании из данных ИИ — '
+-                                          'генерация невозможна. Попробуйте переформулировать запрос Игорю '
+-                                          'так, чтобы он явно указал название и реквизиты компании перед '
+-                                          'нажатием «Сформировать пакет».'},
++                                 'error': 'Не удалось определить название компании. Проверьте карточку компании и повторите формирование.'},
+                                 400)
+             elif p=='/api/journal/delete':
+                 eid=json.loads(body)['id']
+@@ -2845,7 +2935,8 @@
+             else: self.send_response(404); self.end_headers()
+         except Exception as e:
+             import traceback
+-            self._json({'success':False,'error':str(e),'trace':traceback.format_exc()},500)
++            traceback.print_exc()
++            self._json({'success':False,'error':_friendly_public_error(e)},500)
+ 
+     def _json(self,d,code=200):
+         b=json.dumps(d,ensure_ascii=False).encode('utf-8')
+
+--- a/index.html
++++ b/index.html
+@@ -3127,6 +3127,17 @@
+ }
+ 
+ 
++function aiFriendlyError(value) {
++  const text = String(value || '').trim();
++  if(!text) return 'Не удалось выполнить действие. Попробуйте ещё раз.';
++  const low = text.toLowerCase();
++  if(low.includes('другая генерация') || low.includes('уже формируется')) return 'Уже формируется другой пакет. Дождитесь его завершения и попробуйте снова.';
++  if(low.includes('название компании')) return 'Не удалось определить название компании. Проверьте карточку компании и повторите формирование.';
++  const technical = /(json|api|http|backend|frontend|hardcoded|force[_-]?|render|environment|traceback|stack|vibe_api_key|bad json|empty response)/i;
++  if(technical.test(text) || text.length > 280) return 'Не удалось выполнить действие. Попробуйте ещё раз. Если ошибка повторится, сообщите ответственному за приложение.';
++  return text;
++}
++
+ function aiIsCorrectionIntent(text) {
+   return /(^|\s)(исправ|замен|помен|измени|добав|дополни|удал|убер|обнов|скоррект|неправил|ошибк|должно\s+быть|нужно\s+чтобы)/i.test(String(text||''));
+ }
+@@ -3183,7 +3194,7 @@
+ 
+   parsed = parsed || {};
+   parsed.questions = Array.isArray(parsed.questions) ? parsed.questions : [];
+-  parsed.message = '⚠️ Я понял правку, но она не изменила данные карточки, поэтому не буду утверждать, что всё исправлено. Если это изменение конкретного поля — укажите новое значение. Если это правило формирования документов — добавьте его через «Обучись:», а результат нужно проверить на новом пакете.';
++  parsed.message = '⚠️ Правка пока не применилась. Я не буду писать, что всё исправлено, пока изменение действительно не появится в новом пакете. Сформируйте пакет заново и проверьте результат.';
+   return parsed;
+ }
+ 
+@@ -3275,7 +3286,7 @@
+       await knowledgeCreateDraftFromChat(text, filesContent);
+     } catch(e) {
+       aiRemoveTyping();
+-      aiAddMsg('ai', '❌ Не удалось подготовить правило: ' + e.message);
++      aiAddMsg('ai', '❌ ' + aiFriendlyError(e.message));
+     }
+     aiLoading = false;
+     document.getElementById('ai-send-btn').disabled = false;
+@@ -3312,7 +3323,7 @@
+     const result = await resp.json();
+     aiRemoveTyping();
+ 
+-    if(!result.success) throw new Error(result.error || 'Ошибка сервера');
++    if(!result.success) throw new Error(aiFriendlyError(result.error || 'Не удалось выполнить действие'));
+ 
+     let parsed = aiParseResponse(result.text);
+ 
+@@ -3706,7 +3717,7 @@
+             checkBtn.textContent = `Статус: ${tr.status}, шаг ${tr.step}/${tr.total}`;
+             setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000);
+           }
+-        } catch(e) { checkBtn.textContent = '❌ ' + e.message; setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000); }
++        } catch(e) { checkBtn.textContent = '❌ ' + aiFriendlyError(e.message); setTimeout(() => checkBtn.textContent = '🔄 Проверить статус', 3000); }
+       };
+       progDiv.appendChild(checkBtn);
+ 
+@@ -3775,7 +3786,7 @@
+             clearInterval(poll);
+             clearInterval(interval);
+             progDiv.remove();
+-            aiAddMsg('ai', '❌ Ошибка генерации: ' + (tr.error||'неизвестная'));
++            aiAddMsg('ai', '❌ ' + aiFriendlyError(tr.error||'Не удалось сформировать пакет'));
+             btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+           }
+         } catch(pollErr) {
