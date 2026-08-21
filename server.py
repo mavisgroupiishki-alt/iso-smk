@@ -7,6 +7,14 @@ from datetime import datetime,timedelta
 
 BASE_DIR = Path(__file__).parent.resolve()
 
+# ── Версия приложения ──────────────────────────────────────────────────
+# Версия видна прямо в интерфейсе. На Render также показываем короткий SHA
+# фактически задеплоенного Git-коммита, чтобы сразу понимать, какая сборка Live.
+APP_VERSION = os.environ.get("IGOR_APP_VERSION", "v18.1")
+APP_BUILD_DATE = os.environ.get("IGOR_BUILD_DATE", "21.08.2026")
+RENDER_GIT_COMMIT = (os.environ.get("RENDER_GIT_COMMIT") or "").strip()
+APP_COMMIT = RENDER_GIT_COMMIT[:7] if RENDER_GIT_COMMIT else "local"
+
 # Импортируем умный генератор
 try:
     from generator import generate_package, calculate_dates, LIBS
@@ -1095,7 +1103,7 @@ def _is_labour_book_filename(filename: str) -> bool:
 
 def _pdf_page_limit(filename: str) -> int:
     """Use a larger safe page limit for labour books than for ordinary PDFs."""
-    return 24 if _is_labour_book_filename(filename) else 6
+    return 40 if _is_labour_book_filename(filename) else 8
 
 
 def _pdf_total_pages(file_bytes) -> int:
@@ -1206,6 +1214,8 @@ def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
         from PIL import Image
         import io as _io5
         ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        if ext == 'pdf' and _is_labour_book_filename(filename):
+            return None
         if ext == 'pdf':
             max_pages = int(max_pages_override or _pdf_page_limit(filename))
             total_pages = _pdf_total_pages(file_bytes)
@@ -1264,7 +1274,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         if not pages_b64:
             return '[PDF: страницы не найдены]'
 
-        batch_size = 4
+        batch_size = 2
         outputs = []
         for batch_start in range(0, len(pages_b64), batch_size):
             batch = pages_b64[batch_start:batch_start + batch_size]
@@ -2046,7 +2056,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     IMAGE_EXTS = ('jpg', 'jpeg', 'png', 'webp')
     TEXT_INNER_LIMIT = 4 * 1024 * 1024     # текстовые файлы — как раньше, 4 МБ
     IMAGE_INNER_LIMIT = 15 * 1024 * 1024   # фото крупнее (сами уменьшаются перед отправкой)
-    PDF_INNER_LIMIT = 20 * 1024 * 1024     # PDF-сканы (паспорта/трудовые) часто крупнее — до 20 МБ
+    PDF_INNER_LIMIT = 80 * 1024 * 1024     # PDF-сканы (паспорта/трудовые) часто крупнее — до 20 МБ
     MAX_ITEMS = 60  # защита от архивов с сотнями фото — вышло бы на часы обработки
 
     def p(msg):
@@ -2157,7 +2167,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 # до 24 страниц для трудовых книжек и до 6 для прочих документов.
                 # Если документ длиннее, распознанный текст содержит явное предупреждение,
                 # которое затем переводит связанные поля в жёлтую ручную проверку.
-                PDF_VISION_LIMIT = 40 * 1024 * 1024
+                PDF_VISION_LIMIT = 80 * 1024 * 1024
                 if len(data) > PDF_VISION_LIMIT:
                     return (f"--- {folder + '/' if folder else ''}{short} ---\n"
                             f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания — "
@@ -2181,7 +2191,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             return f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ПУСТОЙ РЕЗУЛЬТАТ (короче 10 символов)"
 
         if image_entries:
-            with ThreadPoolExecutor(max_workers=2) as ex:
+            heavy_pdf = any(e[3] == 'pdf' and e[2] > 12 * 1024 * 1024 for e in image_entries)
+            with ThreadPoolExecutor(max_workers=(1 if heavy_pdf else 2)) as ex:
                 futures = {ex.submit(process_image, e): e for e in image_entries}
                 for fut in as_completed(futures):
                     e = futures[fut]
@@ -2479,6 +2490,13 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         p=self.path.split('?')[0]
         if p in('/','//index.html'):          self._html(INDEX)
+        elif p=='/api/version':
+            self._json({
+                'version': APP_VERSION,
+                'build_date': APP_BUILD_DATE,
+                'commit': APP_COMMIT,
+                'environment': 'render' if RENDER_GIT_COMMIT else 'local',
+            })
         elif p=='/api/companies':             self._json(get_companies())
         elif p=='/api/journal':               self._json(get_journal())
         elif p=='/api/kv/get':
@@ -2590,14 +2608,15 @@ class H(http.server.BaseHTTPRequestHandler):
                 if not file_bytes:
                     self._json({'success':False,'error':'Файл не найден'},400); return
 
-                MAX_FILE_MB = 6
+                ext = filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
+                MAX_FILE_MB = 50 if ext == 'pdf' else 12
                 if len(file_bytes) > MAX_FILE_MB * 1024 * 1024:
                     self._json({'success': False,
-                                 'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ), лимит {MAX_FILE_MB} МБ на Render Free.'},
+                                 'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ). '
+                                          f'Для этого формата безопасный лимит {MAX_FILE_MB} МБ. '
+                                          f'Большие сканы лучше загружать архивом — ИИгорь обработает их в фоне.'},
                                 413)
                     return
-
-                ext = filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
 
                 # PDF: сначала пробуем текстовый парсер (быстро и точно, без похода в vision)
                 if ext == 'pdf':
@@ -2617,10 +2636,20 @@ class H(http.server.BaseHTTPRequestHandler):
                 # Для ОДИНОЧНОЙ загрузки (обычно самые важные документы — диплом/паспорт/аттестат)
                 # включаем двойную проверку: читаем дважды и сравниваем, чтобы поймать случаи
                 # когда модель один раз угадала неправильно.
-                text, matched = vision_extract_verified(file_bytes, filename, api_key)
+                if ext == 'pdf' and _is_labour_book_filename(filename):
+                    # Labour books can contain dozens of pages. Reading them twice turns one
+                    # upload into 20-40 vision calls and often hits timeouts. Read every page
+                    # once in small batches; uncertainty is preserved page-by-page in the text.
+                    text = vision_extract(file_bytes, filename, api_key)
+                    matched = None
+                else:
+                    text, matched = vision_extract_verified(file_bytes, filename, api_key)
                 thumbnail = make_thumbnail_b64(file_bytes, filename)
-                self._json({'success': True, 'text': text, 'method': 'vision',
-                             'verified_match': matched, 'thumbnail_b64': thumbnail})
+                payload = {'success': True, 'text': text, 'method': 'vision',
+                           'thumbnail_b64': thumbnail}
+                if matched is not None:
+                    payload['verified_match'] = matched
+                self._json(payload)
 
             elif p=='/api/extract-text':
                 import io, re as _re

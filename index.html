@@ -249,6 +249,21 @@ input::placeholder{color:#CDB8AA}
 .stage-result{border-radius:9px;padding:12px;background:#F7F2EC;border:1px solid #E4D7CC}.stage-result b{display:block;font-size:16px;color:#8B4A5C;margin-top:4px}
 @media(max-width:1000px){.igor-page-grid{grid-template-columns:1fr}.stage-result-grid{grid-template-columns:1fr}}
 
+
+.app-version-badge{
+  display:inline-flex;align-items:center;gap:6px;
+  margin-left:auto;margin-right:10px;padding:5px 9px;
+  border-radius:999px;border:1px solid #D8CBC0;background:#FAF6F0;
+  color:#7A665C;font-size:10px;font-weight:700;white-space:nowrap;
+}
+.app-version-dot{width:7px;height:7px;border-radius:50%;background:#B58A24;display:inline-block}
+.app-version-badge.ok{background:#F2F7EE;border-color:#CBDDBD;color:#58704D}
+.app-version-badge.ok .app-version-dot{background:#6E9B5B}
+.app-version-badge.mismatch{background:#FFF2D8;border-color:#E9C56E;color:#8A6515}
+.app-version-badge.mismatch .app-version-dot{background:#D19A18}
+.app-version-badge.error{background:#FFF0F0;border-color:#E3B3B3;color:#A14E4E}
+.app-version-badge.error .app-version-dot{background:#C65D5D}
+
 @media(max-width:700px){
   #sidebar{display:none}
   .g2,.g3,.g4{grid-template-columns:1fr}
@@ -298,6 +313,10 @@ input::placeholder{color:#CDB8AA}
 <div id="main">
   <div id="topbar">
     <h2 id="page-title">ИИгорь Оформитель</h2>
+    <div id="app-version-badge" class="app-version-badge" title="Версия приложения и задеплоенный коммит">
+      <span class="app-version-dot"></span>
+      <span id="app-version-text">проверяю версию…</span>
+    </div>
     <button class="tb-btn gold" onclick="openGenModal()" id="btn-gen-top" style="display:none">
       ⚡ Сформировать пакет
     </button>
@@ -3380,18 +3399,45 @@ function aiRemoveFile(i) {
 }
 
 async function aiReadFile(file) {
-  // PNG/JPG/HEIC — только через vision; PDF — пробует text потом vision (сервер решает)
-  // ZIP/RAR — асинхронно, с распознаванием фото внутри (фон + прогресс, не блокирует запрос)
-  // DOC/DOCX/XLS/XLSX — только через extract-text
+  // ZIP/RAR and large scanned PDFs are processed asynchronously with progress.
+  // This avoids synchronous HTTP timeouts and the old 6 MB single-file bottleneck.
   const ext = file.name.split('.').pop().toLowerCase();
   if(ext === 'zip' || ext === 'rar') {
     return aiReadArchiveAsync(file);
   }
-  const isVisual = ['png','jpg','jpeg','webp','heic','heif','pdf'].includes(ext);
+
+  // A large PDF is wrapped into a tiny one-file ZIP in the browser and sent to the
+  // existing background archive pipeline. The PDF itself is not recompressed or changed.
+  if(ext === 'pdf' && file.size > 5 * 1024 * 1024 && typeof JSZip !== 'undefined') {
+    try {
+      const z = new JSZip();
+      z.file(file.name, file);
+      const blob = await z.generateAsync({type:'blob', compression:'STORE'});
+      const wrapped = new File([blob], file.name.replace(/\.pdf$/i, '') + '_для_обработки.zip', {type:'application/zip'});
+      const result = await aiReadArchiveAsync(wrapped);
+      if(result) result.name = file.name;
+      return result;
+    } catch(e) {
+      console.warn('Не удалось перевести большой PDF в фоновую обработку:', e);
+    }
+  }
+
+  let uploadFile = file;
+  const imageExts = ['png','jpg','jpeg','webp','heic','heif'];
+  if(imageExts.includes(ext) && file.size > 3 * 1024 * 1024) {
+    try {
+      const blob = await aiCompressImageBlob(file, 2000, 0.80);
+      uploadFile = new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), {type:'image/jpeg'});
+    } catch(e) {
+      uploadFile = file;
+    }
+  }
+
+  const isVisual = imageExts.includes(ext) || ext === 'pdf';
   const endpoint = isVisual ? '/api/analyze-image' : '/api/extract-text';
   return new Promise((resolve) => {
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', uploadFile);
     fetch(endpoint, {method:'POST', body: formData})
       .then(r => r.json())
       .then(data => {
@@ -4078,8 +4124,46 @@ async function stageReadLabourFile(file){
 }
 
 
+
+// ── Контроль версии frontend/backend ─────────────────────────────────
+const IGOR_FRONTEND_VERSION = 'v18.1';
+
+async function igorLoadVersion(){
+  const badge = document.getElementById('app-version-badge');
+  const text = document.getElementById('app-version-text');
+  if(!badge || !text) return;
+
+  try{
+    const r = await fetch('/api/version?_=' + Date.now(), {cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const info = await r.json();
+
+    const backendVersion = String(info.version || '?');
+    const commit = String(info.commit || '').trim();
+    const buildDate = String(info.build_date || '').trim();
+    const same = backendVersion === IGOR_FRONTEND_VERSION;
+
+    badge.classList.remove('ok','mismatch','error');
+    badge.classList.add(same ? 'ok' : 'mismatch');
+
+    if(same){
+      text.textContent = `ИИгорь ${backendVersion}${commit && commit !== 'local' ? ' · ' + commit : ''}`;
+      badge.title = `Frontend и backend совпадают. Сборка: ${buildDate || '—'}${commit ? '\\nКоммит: ' + commit : ''}`;
+    } else {
+      text.textContent = `⚠️ UI ${IGOR_FRONTEND_VERSION} / сервер ${backendVersion}`;
+      badge.title = 'Версии frontend и backend не совпадают. Сделайте жёсткое обновление страницы.';
+    }
+  }catch(e){
+    badge.classList.remove('ok','mismatch');
+    badge.classList.add('error');
+    text.textContent = `ИИгорь ${IGOR_FRONTEND_VERSION} · сервер?`;
+    badge.title = 'Не удалось получить версию backend: ' + (e?.message || e);
+  }
+}
+
 // Автозапуск — открываем ИИгорь Оформитель сразу
 document.addEventListener('DOMContentLoaded', () => {
+  igorLoadVersion();
   const aiItem = document.querySelector('.sb-item[data-page="ai"]');
   if(aiItem) nav('ai', aiItem);
 
