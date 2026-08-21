@@ -53,31 +53,31 @@ def _esc(s) -> str:
 
 
 def _xml_plain_text(fragment: str) -> str:
-    parts = re.findall(r'<w:t(?:\s[^>]*)?>(.*?)</w:t>', fragment, flags=re.S)
+    parts = re.findall(r'<(?:w|a):t(?:\s[^>]*)?>(.*?)</(?:w|a):t>', fragment, flags=re.S)
     text = ''.join(re.sub(r'<[^>]+>', '', p) for p in parts)
     return (text.replace('&amp;', '&').replace('&quot;', '"')
                 .replace('&lt;', '<').replace('&gt;', '>'))
 
 
 def _replace_para_text(para_xml: str, new_text: str) -> str:
-    """Replace visible text of a paragraph while preserving its paragraph/run style."""
-    runs = list(re.finditer(r'<w:r(?:\s[^>]*)?>.*?</w:r>', para_xml, flags=re.S))
-    if not runs:
-        return para_xml
-    first = runs[0].group(0)
-    # keep the first run's rPr if any
-    m = re.match(r'(<w:r(?:\s[^>]*)?>)(.*?)(</w:r>)$', first, flags=re.S)
-    if not m:
-        return para_xml
-    open_run, body, close_run = m.groups()
-    rpr = ''
-    rpr_m = re.search(r'<w:rPr(?:\s[^>]*)?>.*?</w:rPr>', body, flags=re.S)
-    if rpr_m:
-        rpr = rpr_m.group(0)
-    new_run = f'{open_run}{rpr}<w:t xml:space="preserve">{_esc(new_text)}</w:t>{close_run}'
-    start = runs[0].start()
-    end = runs[-1].end()
-    return para_xml[:start] + new_run + para_xml[end:]
+    """Replace visible text while preserving the first Word/DrawingML run style."""
+    for prefix in ('w', 'a'):
+        runs = list(re.finditer(rf'<{prefix}:r(?:\s[^>]*)?>.*?</{prefix}:r>', para_xml, flags=re.S))
+        if not runs:
+            continue
+        first = runs[0].group(0)
+        m = re.match(rf'(<{prefix}:r(?:\s[^>]*)?>)(.*?)(</{prefix}:r>)$', first, flags=re.S)
+        if not m:
+            continue
+        open_run, body, close_run = m.groups()
+        rpr = ''
+        rpr_m = re.search(rf'<{prefix}:rPr(?:\s[^>]*)?>.*?</{prefix}:rPr>', body, flags=re.S)
+        if rpr_m:
+            rpr = rpr_m.group(0)
+        tag = f'{prefix}:t'
+        new_run = f'{open_run}{rpr}<{tag} xml:space="preserve">{_esc(new_text)}</{tag}>{close_run}'
+        return para_xml[:runs[0].start()] + new_run + para_xml[runs[-1].end():]
+    return para_xml
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +343,7 @@ def render_generic(template_file: str, company_old: dict, company_new: dict,
             return _replace_para_text(para, new_visible) if new_visible != visible else para
 
         xml = re.sub(r'<w:p(?:\s[^>]*)?>.*?</w:p>', repl_para, xml, flags=re.S)
+        xml = re.sub(r'<a:p(?:\s[^>]*)?>.*?</a:p>', repl_para, xml, flags=re.S)
         parts[part_name] = xml.encode('utf-8')
 
     return _rebuild(parts)
@@ -739,6 +740,7 @@ def _apply_text_replacements_to_docx(data: bytes, replacements: list[tuple[str, 
             return _replace_para_text(para, changed) if changed != visible else para
 
         xml = re.sub(r'<w:p(?:\s[^>]*)?>.*?</w:p>', repl_para, xml, flags=re.S)
+        xml = re.sub(r'<a:p(?:\s[^>]*)?>.*?</a:p>', repl_para, xml, flags=re.S)
         parts[part_name] = xml.encode('utf-8')
     return _rebuild(parts)
 

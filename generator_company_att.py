@@ -537,6 +537,14 @@ def _parse_exact_work_date(value):
 
 
 def _confidence_is_low(record: dict, field: str = '') -> bool:
+    """Check confidence without turning one doubtful OCR field into a yellow whole row.
+
+    Earlier versions fell back from a field check (for example ``start`` or
+    ``trudovaya_number``) to the *whole record* confidence. One blurred stamp could
+    therefore make every exact date, diploma and labour-book number yellow.
+    Field checks are now strictly field-specific; overall confidence is used only
+    when the caller explicitly asks about the whole record.
+    """
     if not isinstance(record, dict):
         return False
     uncertain = record.get('uncertain_fields') or []
@@ -545,19 +553,23 @@ def _confidence_is_low(record: dict, field: str = '') -> bool:
     uncertain_norm = {_norm_text(x) for x in uncertain}
     if field and (_norm_text(field) in uncertain_norm or any(_norm_text(field).endswith(x) for x in uncertain_norm if x)):
         return True
-    confidence = None
+
     field_conf = record.get('field_confidence')
-    if isinstance(field_conf, dict) and field in field_conf:
-        confidence = field_conf.get(field)
+    confidence = field_conf.get(field) if isinstance(field_conf, dict) and field in field_conf else None
     if confidence is None and field:
         confidence = record.get(f'{field}_confidence')
+
+    # Important: for a named field do NOT inherit the generic OCR confidence or
+    # generic needs_review flag. Those may relate to a different word on the page.
+    if field and confidence is None:
+        return False
     if confidence is None:
         confidence = record.get('confidence')
     if isinstance(confidence, (int, float)):
         return float(confidence) < 0.85
     if isinstance(confidence, str):
         return _norm_text(confidence) in ('low', 'низкая', 'низкий', 'uncertain', 'не уверен', 'сомнительно')
-    return bool(record.get('needs_review')) and (not field or not uncertain_norm)
+    return bool(record.get('needs_review')) if not field else False
 
 
 def _looks_uncertain_text(value) -> bool:
@@ -655,6 +667,24 @@ def _employer_match_status(person: dict, period: dict) -> tuple[bool, bool, str]
         markers = ('строител', 'смр', 'монтаж', 'генподряд', 'подряд')
     if activity and any(x in activity for x in markers):
         return True, _confidence_is_low(period, 'employer_activity'), ''
+
+    # A construction-specific job title in the labour book is itself sufficient
+    # evidence that the period belongs to the declared professional activity unless
+    # another field explicitly says the employer/activity is unrelated. Requiring
+    # the model to additionally invent/fill employer_activity made almost every real
+    # labour-book period yellow even when "прораб"/"главный инженер" was clear.
+    position = _norm_text(period.get('position') or period.get('job_title'))
+    if family == 'management' and any(x in position for x in _MANAGEMENT_POSITION_MARKERS):
+        return True, False, ''
+    if family == 'design' and any(x in position for x in _DESIGN_POSITION_MARKERS):
+        return True, False, ''
+    if family == 'estimate' and any(x in position for x in _ESTIMATE_POSITION_MARKERS):
+        return True, False, ''
+    if family == 'director' and ('директор' in position or any(x in position for x in _MANAGEMENT_POSITION_MARKERS)):
+        return True, False, ''
+    if family == 'construction' and (any(x in position for x in _MANAGEMENT_POSITION_MARKERS) or 'инженер' in position):
+        return True, _confidence_is_low(period, 'position'), ''
+
     if period.get('relevant') is True:
         return True, True, 'строительная деятельность работодателя указана неявно'
     return False, True, 'не подтверждена деятельность работодателя'
@@ -707,7 +737,13 @@ def assess_relevant_periods(person: dict, periods: list) -> dict:
             continue
         period['start'] = start.strftime('%d.%m.%Y')
         period['end'] = end.strftime('%d.%m.%Y') if end else None
-        period['_period_uncertain'] = bool(role_uncertain or employer_uncertain or _confidence_is_low(period))
+        period['_period_uncertain'] = bool(
+            role_uncertain or employer_uncertain
+            or _confidence_is_low(period, 'start')
+            or _confidence_is_low(period, 'end')
+            or _confidence_is_low(period, 'position')
+            or _confidence_is_low(period, 'employer')
+        )
         confirmed.append(period)
         if period['_period_uncertain']:
             uncertain.append({'period': period, 'reason': 'период включён, но часть реквизитов требует проверки'})

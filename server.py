@@ -620,6 +620,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
         "premises": [{"address":"","area":"","ownership":"","document":""}],
         "measurement_tools": [{"name":"","model":"","factory_number":"","range":"","quantity":1}],
         "verification_documents": [{"tool":"","number":"","date":"","valid_until":""}],
+        "calibration_documents": [{"tool":"","number":"","date":"","valid_until":""}],
         "ttk": [{"code":"","name":"","developer":"","valid_until":"","work_type":""}],
         "machinery": [{"name":"","model":"","quantity":1,"ownership":""}],
         "laboratories": [{"name":"","contract":"","scope":""}],

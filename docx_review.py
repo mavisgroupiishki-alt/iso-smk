@@ -18,28 +18,28 @@ YELLOW_TAG = '<w:highlight w:val="yellow"/>'
 # Only explicit review markers are highlighted. A normal signature line made of
 # underscores is deliberately not considered missing data.
 EXPLICIT_MARKERS = (
+    # Only explicit review markers inserted by the parser/generator.  Ordinary
+    # narrative phrases such as “нет данных” or “не указано” may legitimately
+    # occur in regulations and must not paint a whole paragraph yellow.
     'требует уточнения',
     'требуется уточнение',
-    'не заполнено',
-    'не указано',
-    'нет данных',
-    'неразборчиво',
-    'не распознано',
-    'не удалось определить',
+    '[не заполнено]',
+    '[нет данных]',
+    '[не указано]',
+    '[неразборчиво]',
+    '[не распознано]',
     'проверьте по оригиналу',
-    'нужно проверить',
-    'сомнительно',
-    'предположительно',
-    'данные отсутствуют',
-    'unknown',
-    'n/a',
+    'нужно проверить:',
+    'сомнительно:',
+    'предположительно:',
+    '[ошибка',
 )
 
 EXACT_PLACEHOLDERS = {
-    '—', '–', '-', '?',
     '[пусто]', '[нет данных]', '[не указано]', '[не заполнено]',
     'требует уточнения', 'требуется уточнение',
 }
+
 
 _METADATA_KEYS = {
     'uncertain_fields', 'needs_review', 'confidence', 'source', 'sources',
@@ -98,23 +98,32 @@ def _get_field(obj: Dict[str, Any], field: str) -> Any:
     return current
 
 
-def collect_review_tokens_and_items(data: Dict[str, Any]) -> Tuple[List[str], List[Dict[str, str]]]:
-    """Collect exact values marked uncertain by the AI/source parser.
+def collect_review_tokens_and_items(data: Dict[str, Any]) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Collect only field-level uncertainty for inline highlighting.
 
-    ``uncertain_fields`` is preferred because it allows highlighting only the
-    doubtful cell instead of an entire person. If a record has low confidence but
-    no field list, all its non-metadata scalar values are conservatively marked.
+    A generic low OCR confidence on a whole source page is *not* enough to colour
+    every value from that page.  Inline yellow is reserved for a concrete field
+    listed in ``uncertain_fields`` or for a value that explicitly contains an
+    uncertainty marker.  General/source-document conflicts stay as warnings but
+    are not painted across generated documents unless the doubtful value is later
+    propagated into a concrete package field.
     """
     tokens: List[str] = []
-    items: List[Dict[str, str]] = []
+    items: List[Dict[str, Any]] = []
 
-    def add_item(path: str, value: Any, reason: str) -> None:
+    def add_item(path: str, value: Any, reason: str, *, inline: bool = True, missing: bool = False) -> None:
         text = str(value or '').strip()
-        item = {'field': path or 'данные', 'value': text or 'НЕ ЗАПОЛНЕНО', 'reason': reason}
+        item: Dict[str, Any] = {
+            'field': path or 'данные',
+            'value': text or 'НЕ ЗАПОЛНЕНО',
+            'reason': reason,
+            '_inline': bool(inline),
+            '_inline_missing': bool(missing and inline),
+        }
         signature = (_norm(item['field']), _norm(item['value']), _norm(item['reason']))
         if not any((_norm(x['field']), _norm(x['value']), _norm(x['reason'])) == signature for x in items):
             items.append(item)
-        if text and len(text) >= 2 and text not in tokens:
+        if inline and text and len(text) >= 2 and text not in tokens:
             tokens.append(text)
 
     def walk(value: Any, path: str = '') -> None:
@@ -139,20 +148,16 @@ def collect_review_tokens_and_items(data: Dict[str, Any]) -> Tuple[List[str], Li
                     field_value = _get_field(value, str(field))
                     field_path = f'{path}.{field}'.strip('.')
                     if field_value in (None, '', [], {}):
-                        add_item(field_path, '', default_reason)
+                        add_item(field_path, '', default_reason, inline=True, missing=True)
                     else:
                         for token in _iter_scalar_values(field_value):
-                            add_item(field_path, token, default_reason)
+                            add_item(field_path, token, default_reason, inline=True)
             elif needs_review:
-                found = False
-                for key, child in value.items():
-                    if key in _METADATA_KEYS:
-                        continue
-                    for token in _iter_scalar_values(child):
-                        found = True
-                        add_item(f'{path}.{key}'.strip('.'), token, default_reason)
-                if not found:
-                    add_item(path, '', default_reason)
+                # Keep a general warning for the operator, but do not turn every
+                # exact value from this record yellow.  This is especially important
+                # for source_documents and OCR pages where one doubtful word used to
+                # colour names, dates, roles and entire tables.
+                add_item(path, 'ТРЕБУЕТ ПРОВЕРКИ ИСТОЧНИКА', default_reason, inline=False)
 
             for key, child in value.items():
                 if key not in _METADATA_KEYS:
@@ -161,26 +166,36 @@ def collect_review_tokens_and_items(data: Dict[str, Any]) -> Tuple[List[str], Li
             for idx, child in enumerate(value):
                 walk(child, f'{path}[{idx}]')
         elif _looks_uncertain_text(value):
-            add_item(path, value, 'значение содержит пометку неуверенного распознавания')
+            add_item(path, value, 'значение содержит пометку неуверенного распознавания', inline=True)
 
     walk(data)
-    # Top-level review_items are produced for cross-document conflicts where the
-    # doubtful value may not belong to one nested record.
+
+    # Cross-document conflicts are useful warnings.  Source-file metadata itself
+    # must not paint the generated package.  Concrete company/staff/SPK fields may.
     for item in data.get('review_items') or []:
         if not isinstance(item, dict):
             continue
+        field = str(item.get('field') or 'данные')
+        inline = not field.startswith(('source_documents', 'source_files', 'archive', 'raw_'))
         add_item(
-            str(item.get('field') or 'данные'),
+            field,
             item.get('value') or '',
             str(item.get('reason') or 'требует сверки с оригиналом'),
+            inline=inline,
+            missing=inline and item.get('value') in (None, ''),
         )
+
     # Longer tokens first prevents a surname from shadowing a full doubtful value.
     tokens.sort(key=len, reverse=True)
     return tokens, items
 
-
-def _missing(path: str, label: str, items: List[Dict[str, str]]) -> None:
-    items.append({'field': path, 'value': 'НЕ ЗАПОЛНЕНО', 'reason': f'обязательное поле: {label}'})
+def _missing(path: str, label: str, items: List[Dict[str, Any]]) -> None:
+    # Missing required data is marked *inside the generated document*, but only at
+    # the first concrete field that matches the label.  _inject_missing_items is
+    # intentionally conservative, so this does not paint narrative mentions or
+    # whole tables yellow.
+    items.append({'field': path, 'value': 'НЕ ЗАПОЛНЕНО', 'reason': f'обязательное поле: {label}',
+                  '_inline': True, '_inline_missing': True})
 
 
 def collect_required_items(data: Dict[str, Any], product: str) -> List[Dict[str, str]]:
@@ -261,7 +276,7 @@ def collect_required_items(data: Dict[str, Any], product: str) -> List[Dict[str,
 
 
 def _extract_text(xml_fragment: str) -> str:
-    parts = re.findall(r'<w:t(?:\s[^>]*)?>(.*?)</w:t>', xml_fragment, flags=re.S)
+    parts = re.findall(r'<(?:w|a):t(?:\s[^>]*)?>(.*?)</(?:w|a):t>', xml_fragment, flags=re.S)
     return html.unescape(''.join(re.sub(r'<[^>]+>', '', p) for p in parts))
 
 
@@ -279,21 +294,44 @@ def _add_highlight_to_run(run_xml: str) -> str:
     return run_xml[:opening.end()] + '<w:rPr>' + YELLOW_TAG + '</w:rPr>' + run_xml[opening.end():]
 
 
+_COMMON_REVIEW_TOKENS = {
+    'директор', 'работник', 'рабочий', 'прораб', 'инженер', 'главный инженер',
+    'итр', 'ооо', 'суот', 'исо', 'iso', 'спк', 'организация', 'сотрудник',
+}
+
+
+def _token_is_specific(token: str) -> bool:
+    token = _norm(token)
+    if not token or token in _COMMON_REVIEW_TOKENS:
+        return False
+    if len(token) < 5 and not any(ch.isdigit() for ch in token):
+        return False
+    # Prefer identifiers, dates, full names and multi-word values.  A single common
+    # noun should never colour every occurrence throughout a 60-document package.
+    return bool(any(ch.isdigit() for ch in token) or ' ' in token or len(token) >= 10)
+
+
+def _contains_specific_token(text: str, token: str) -> bool:
+    text_n = _norm(text)
+    token_n = _norm(token)
+    if not _token_is_specific(token_n):
+        return False
+    if text_n == token_n:
+        return True
+    return bool(re.search(rf'(?<!\w){re.escape(token_n)}(?!\w)', text_n, flags=re.I))
+
+
 def _text_needs_highlight(text: str, token_norms: Sequence[str]) -> bool:
     normalized = _norm(text)
     if not normalized:
         return False
     if normalized in {_norm(x) for x in EXACT_PLACEHOLDERS}:
         return True
-    # Typical generated field placeholders: «УНП: —», «выдан —», «от —».
-    if re.search(r'(?:^|[:;]|\b(?:выдан|от|номер|дата|стаж|адрес|унп))\s*[—–-]\s*$', normalized):
-        return True
     if any(marker in normalized for marker in EXPLICIT_MARKERS):
         return True
     if re.search(r'\[[^\]]+\s+или\s+[^\]]+\]', normalized):
         return True
-    return any(token and token in normalized for token in token_norms)
-
+    return any(_contains_specific_token(normalized, token) for token in token_norms)
 
 def _highlight_xml(xml_text: str, review_tokens: Sequence[str]) -> str:
     token_norms = [_norm(t) for t in review_tokens if len(_norm(t)) >= 2]
@@ -306,22 +344,70 @@ def _highlight_xml(xml_text: str, review_tokens: Sequence[str]) -> str:
 
     result = re.sub(r'<w:r(?:\s[^>]*)?>.*?</w:r>', run_repl, xml_text, flags=re.S)
 
-    # Second pass: a value may be split across several Word runs. If a paragraph or
-    # table cell contains the token but no individual run did, highlight the runs
-    # carrying actual text in that block.
+    # Second pass: a doubtful value can be split across several Word runs.  Older
+    # code highlighted the *whole paragraph/table cell* in that case, which created
+    # huge yellow areas.  Locate the exact character span and colour only the runs
+    # that actually contain the doubtful value.
     def block_repl(match: re.Match) -> str:
         block = match.group(0)
-        text = _extract_text(block)
-        if not _text_needs_highlight(text, token_norms):
+        run_matches = list(re.finditer(r'<w:r(?:\s[^>]*)?>.*?</w:r>', block, flags=re.S))
+        if not run_matches:
             return block
-        return re.sub(
-            r'<w:r(?:\s[^>]*)?>.*?</w:r>',
-            lambda m: _add_highlight_to_run(m.group(0)) if _extract_text(m.group(0)).strip() else m.group(0),
-            block,
-            flags=re.S,
-        )
 
-    result = re.sub(r'<w:tc(?:\s[^>]*)?>.*?</w:tc>', block_repl, result, flags=re.S)
+        # If the first pass already highlighted a concrete run, there is no reason
+        # to broaden the highlight to the surrounding label/paragraph.
+        if any(re.search(r'<w:highlight\b[^>]*w:val=["\']yellow["\']', rm.group(0), flags=re.I)
+               for rm in run_matches):
+            return block
+
+        run_texts = [_extract_text(rm.group(0)) for rm in run_matches]
+        joined = ''.join(run_texts)
+        if not joined.strip():
+            return block
+
+        # Candidates are exact doubtful values plus explicit review markers.  Use
+        # flexible whitespace because Word often splits a value around spaces.
+        candidates = [t for t in token_norms if _token_is_specific(t)]
+        candidates.extend(m for m in EXPLICIT_MARKERS if len(_norm(m)) >= 5)
+        spans = []
+        for candidate in candidates:
+            cand = str(candidate or '').strip()
+            if not cand:
+                continue
+            pattern = re.escape(cand).replace(r'\ ', r'\s+')
+            for found in re.finditer(rf'(?<!\w){pattern}(?!\w)', joined, flags=re.I):
+                spans.append((found.start(), found.end()))
+        if not spans:
+            return block
+
+        offsets = []
+        cursor = 0
+        for txt in run_texts:
+            offsets.append((cursor, cursor + len(txt)))
+            cursor += len(txt)
+
+        highlight_idx = set()
+        for start, end in spans:
+            for idx, (rs, re_) in enumerate(offsets):
+                if re_ > start and rs < end and run_texts[idx].strip():
+                    highlight_idx.add(idx)
+
+        if not highlight_idx:
+            return block
+
+        pieces = []
+        last = 0
+        for idx, rm in enumerate(run_matches):
+            pieces.append(block[last:rm.start()])
+            run = rm.group(0)
+            pieces.append(_add_highlight_to_run(run) if idx in highlight_idx else run)
+            last = rm.end()
+        pieces.append(block[last:])
+        return ''.join(pieces)
+
+    # Paragraph pass is enough for normal text and table cells because every table
+    # cell contains paragraphs.  Avoid a second cell-level pass that can expand one
+    # doubtful value to neighbouring labels.
     result = re.sub(r'<w:p(?:\s[^>]*)?>.*?</w:p>', block_repl, result, flags=re.S)
     return result
 
@@ -508,6 +594,22 @@ def _inject_missing_items(xml_text: str, missing_items: Sequence[Dict[str, str]]
             break
     return result
 
+def _strip_existing_yellow_highlight(xml_text: str) -> str:
+    """Remove yellow text highlighting inherited from source templates.
+
+    Legacy ISO/SUOT templates contain hundreds of manually highlighted runs.  They
+    are authoring marks, not current review findings.  Every generated document is
+    normalised first, then only the uncertainty detected for the current company is
+    highlighted again below.  Table/cell design colours are intentionally preserved.
+    """
+    return re.sub(
+        r'<w:highlight(?:\s[^>]*)?w:val=["\']yellow["\'](?:\s[^>]*)?/>',
+        '',
+        xml_text,
+        flags=re.I,
+    )
+
+
 def highlight_docx(
     docx_bytes: bytes,
     review_tokens: Sequence[str],
@@ -529,6 +631,7 @@ def highlight_docx(
                     any(part in info.filename for part in ('document.xml', 'header', 'footer', 'footnotes', 'endnotes'))):
                 try:
                     xml = payload.decode('utf-8')
+                    xml = _strip_existing_yellow_highlight(xml)
                     xml = _inject_missing_items(xml, missing_items or [])
                     payload = _highlight_xml(xml, review_tokens).encode('utf-8')
                 except Exception:
@@ -598,23 +701,40 @@ def _full_company_name(data: Dict[str, Any]) -> str:
 
 
 def _replace_paragraph_visible_text(paragraph_xml: str, new_text: str) -> str:
-    """Replace paragraph text across split Word runs while preserving first run style."""
-    runs = list(re.finditer(r'<w:r(?:\s[^>]*)?>.*?</w:r>', paragraph_xml, flags=re.S))
-    if not runs:
-        return paragraph_xml
-    first = runs[0].group(0)
-    match = re.match(r'(<w:r(?:\s[^>]*)?>)(.*?)(</w:r>)$', first, flags=re.S)
-    if not match:
-        return paragraph_xml
-    open_run, body, close_run = match.groups()
-    rpr = ''
-    rpr_match = re.search(r'<w:rPr(?:\s[^>]*)?>.*?</w:rPr>', body, flags=re.S)
-    if rpr_match:
-        rpr = rpr_match.group(0)
-    safe = html.escape(str(new_text or ''), quote=False)
-    new_run = f'{open_run}{rpr}<w:t xml:space="preserve">{safe}</w:t>{close_run}'
-    return paragraph_xml[:runs[0].start()] + new_run + paragraph_xml[runs[-1].end():]
+    """Replace visible text across Word or DrawingML runs.
 
+    Some legacy headers/text boxes store text in ``a:r/a:t`` rather than
+    ``w:r/w:t``.  Supporting both is required to reliably remove sample-company
+    names such as «Варта» from every visible header/footer.
+    """
+    for prefix in ('w', 'a'):
+        runs = list(re.finditer(rf'<{prefix}:r(?:\s[^>]*)?>.*?</{prefix}:r>', paragraph_xml, flags=re.S))
+        if not runs:
+            continue
+        first = runs[0].group(0)
+        match = re.match(rf'(<{prefix}:r(?:\s[^>]*)?>)(.*?)(</{prefix}:r>)$', first, flags=re.S)
+        if not match:
+            continue
+        open_run, body, close_run = match.groups()
+        rpr = ''
+        rpr_match = re.search(rf'<{prefix}:rPr(?:\s[^>]*)?>.*?</{prefix}:rPr>', body, flags=re.S)
+        if rpr_match:
+            rpr = rpr_match.group(0)
+        safe = html.escape(str(new_text or ''), quote=False)
+        text_tag = f'{prefix}:t'
+        new_run = f'{open_run}{rpr}<{text_tag} xml:space="preserve">{safe}</{text_tag}>{close_run}'
+        return paragraph_xml[:runs[0].start()] + new_run + paragraph_xml[runs[-1].end():]
+
+    # Fallback for rare text boxes that contain text nodes without explicit runs.
+    text_nodes = list(re.finditer(r'<(?:w|a):t(?:\s[^>]*)?>.*?</(?:w|a):t>', paragraph_xml, flags=re.S))
+    if text_nodes:
+        first = text_nodes[0].group(0)
+        m = re.match(r'(<(?P<prefix>w|a):t(?:\s[^>]*)?>)(.*?)(</(?P=prefix):t>)$', first, flags=re.S)
+        if m:
+            safe = html.escape(str(new_text or ''), quote=False)
+            replacement = m.group(1) + safe + m.group(4)
+            return paragraph_xml[:text_nodes[0].start()] + replacement + paragraph_xml[text_nodes[-1].end():]
+    return paragraph_xml
 
 def _replace_stale_names_in_text(text: str, data: Dict[str, Any]) -> str:
     current_clean = _clean_company_name(data)
@@ -693,6 +813,7 @@ def sanitize_stale_template_names(docx_bytes: bytes, data: Dict[str, Any]) -> by
                         return _replace_paragraph_visible_text(paragraph, changed) if changed != visible else paragraph
 
                     xml = re.sub(r'<w:p(?:\s[^>]*)?>.*?</w:p>', para_repl, xml, flags=re.S)
+                    xml = re.sub(r'<a:p(?:\s[^>]*)?>.*?</a:p>', para_repl, xml, flags=re.S)
                     payload = xml.encode('utf-8')
                 except Exception:
                     pass
@@ -782,7 +903,7 @@ def apply_package_review(
     items.extend(rendered_items)
     for warning in generator_warnings or []:
         if warning:
-            items.append({'field': 'генератор', 'value': str(warning), 'reason': 'предупреждение формирования'})
+            items.append({'field': 'генератор', 'value': str(warning), 'reason': 'предупреждение формирования', '_inline': False, '_inline_missing': False})
 
     # De-duplicate items.
     unique: List[Dict[str, str]] = []
@@ -797,7 +918,8 @@ def apply_package_review(
     # Values from review items are also exact tokens when they are not generic placeholders.
     for item in items:
         value = str(item.get('value') or '').strip()
-        if value and _norm(value) not in {_norm(x) for x in EXACT_PLACEHOLDERS} and value != 'НЕ ЗАПОЛНЕНО':
+        if (item.get('_inline', True) and value and
+                _norm(value) not in {_norm(x) for x in EXACT_PLACEHOLDERS} and value != 'НЕ ЗАПОЛНЕНО'):
             review_tokens.append(value)
 
     processed: List[Dict[str, Any]] = []
@@ -805,7 +927,8 @@ def apply_package_review(
         copy = dict(doc)
         name = str(copy.get('name') or '')
         if name.lower().endswith('.docx') and isinstance(copy.get('bytes'), (bytes, bytearray)):
-            copy['bytes'] = highlight_docx(bytes(copy['bytes']), review_tokens, items)
+            inline_missing_items = [x for x in items if x.get('_inline_missing')]
+            copy['bytes'] = highlight_docx(bytes(copy['bytes']), review_tokens, inline_missing_items)
         processed.append(copy)
 
     # Review information is embedded in the original documents themselves.
@@ -815,4 +938,8 @@ def apply_package_review(
         f"{item['field']}: {item['value']} ({item['reason']})"
         for item in items
     ]
-    return processed, warnings, items
+    public_items = [
+        {k: v for k, v in item.items() if not str(k).startswith('_')}
+        for item in items
+    ]
+    return processed, warnings, public_items

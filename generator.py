@@ -812,6 +812,31 @@ def _merge_company_att_itr_from_staff(att_data: dict, staff: list) -> dict:
         return re.sub(r'[^а-яa-z0-9]+', '', str(value or '').lower().replace('ё', 'е'))
 
     staff_by_fio = {key(p.get('fio')): p for p in (staff or []) if isinstance(p, dict) and key(p.get('fio'))}
+
+    def fio_parts(value):
+        words = re.findall(r'[а-яa-z]+', str(value or '').lower().replace('ё', 'е'))
+        if not words:
+            return ('', '')
+        surname = words[0]
+        initials = ''.join(w[0] for w in words[1:3] if w)
+        return surname, initials
+
+    def find_staff_person(fio):
+        exact = staff_by_fio.get(key(fio))
+        if exact:
+            return exact
+        surname, initials = fio_parts(fio)
+        if not surname:
+            return {}
+        candidates = []
+        for candidate in (staff or []):
+            if not isinstance(candidate, dict):
+                continue
+            cs, ci = fio_parts(candidate.get('fio'))
+            if cs == surname and (not initials or not ci or initials == ci):
+                candidates.append(candidate)
+        return candidates[0] if len(candidates) == 1 else {}
+
     current = [p for p in (out.get('itr') or []) if isinstance(p, dict)]
 
     # If the attestation branch has not received an ITR list yet, use all non-worker
@@ -821,10 +846,10 @@ def _merge_company_att_itr_from_staff(att_data: dict, staff: list) -> dict:
     else:
         merged = []
         for person in current:
-            base = copy.deepcopy(staff_by_fio.get(key(person.get('fio'))) or {})
+            base = copy.deepcopy(find_staff_person(person.get('fio')) or {})
             base.update(copy.deepcopy(person))  # product-specific values have priority
             # Preserve list-valued evidence instead of accidentally replacing it with []
-            src = staff_by_fio.get(key(person.get('fio'))) or {}
+            src = find_staff_person(person.get('fio')) or {}
             for field in ('diplomas','trudovye_numbers','trudovaya_form2_text','employment_periods',
                           'attestations','uncertain_fields'):
                 if not base.get(field) and src.get(field):
@@ -1073,9 +1098,23 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
 
     if product in ('spk_stroy', 'spk_bisp'):
         try:
+            # СПК uses the same labour-book chronology as company attestation.
+            # Calculate it deterministically before filling the ITR certificate.
+            try:
+                from generator_company_att import calculate_person_experience
+                spk_as_of = dates.get('audit') or dates.get('goals') or dates.get('develop') or ''
+                for person in itr:
+                    if isinstance(person, dict) and person.get('employment_periods'):
+                        calculate_person_experience(person, company, as_of_date=spk_as_of or None)
+            except Exception as stage_exc:
+                print(f"  ⚠️ СПК: не удалось пересчитать стаж части ИТР: {stage_exc}")
+
             from generator_spk_templates import generate_spk_package_v2
-            result_spk = generate_spk_package_v2(company, itr, workers, dates, resp, variant=product,
-                                                   progress_cb=lambda i, t, m: p(m))
+            result_spk = generate_spk_package_v2(
+                company, itr, workers, dates, resp, variant=product,
+                progress_cb=lambda i, t, m: p(m),
+                spk_data=company_data.get('spk') or {},
+            )
             docs.extend(result_spk['docs'])
             warnings.extend(result_spk.get('warnings', []))
         except Exception as e:

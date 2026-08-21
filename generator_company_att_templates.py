@@ -115,7 +115,9 @@ def _field_needs_review(record: dict, field: str, value=None) -> bool:
         return True
     if isinstance(confidence, str) and confidence.lower() in ('low', 'uncertain', 'низкая', 'низкий', 'сомнительно'):
         return True
-    return bool(record.get('needs_review')) and not normalized
+    # Generic needs_review may refer to another field in the same scanned page.
+    # It must not colour every populated Form №2/3/4/5 cell yellow.
+    return False
 
 
 def _mark_field(record: dict, field: str, value, force: bool = False):

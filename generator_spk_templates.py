@@ -592,6 +592,101 @@ def render_spravka_si(company: dict, director_fio: str, si_list: list) -> bytes:
 
 
 
+def _norm_si_text(value):
+    return re.sub(r'[^а-яa-z0-9]+', ' ', str(value or '').lower().replace('ё', 'е')).strip()
+
+
+def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
+    """Build SPK SI rows only from client measurement/verification/calibration data.
+
+    Returns (rows, warnings). Missing verification never deletes the instrument: the
+    row is still created and its verification cell receives an explicit review token
+    which the universal DOCX review layer highlights yellow.
+    """
+    spk_data = spk_data or {}
+    tools = [dict(x) for x in (spk_data.get('measurement_tools') or []) if isinstance(x, dict)]
+    verifications = [dict(x) for x in (spk_data.get('verification_documents') or []) if isinstance(x, dict)]
+    calibrations = [dict(x) for x in (spk_data.get('calibration_documents') or []) if isinstance(x, dict)]
+    docs = verifications + calibrations
+    warnings = []
+
+    def doc_text(d):
+        bits = []
+        number = d.get('number') or d.get('certificate_number') or ''
+        date = d.get('date') or d.get('verification_date') or d.get('calibration_date') or ''
+        valid = d.get('valid_until') or d.get('expiry_date') or ''
+        kind = d.get('type') or ('Калибровка' if d in calibrations else 'Поверка')
+        if number:
+            bits.append(f'{kind} № {number}')
+        elif date or valid:
+            bits.append(kind)
+        if date:
+            bits.append(f'от {date}')
+        if valid:
+            bits.append(f'действует до {valid}')
+        return ' '.join(bits).strip()
+
+    def matches(tool, d):
+        factory = _norm_si_text(tool.get('factory_number') or tool.get('number'))
+        d_factory = _norm_si_text(d.get('factory_number') or d.get('tool_number'))
+        if factory and d_factory and factory == d_factory:
+            return True
+        tn = _norm_si_text(' '.join(str(tool.get(k) or '') for k in ('name','model')))
+        dn = _norm_si_text(' '.join(str(d.get(k) or '') for k in ('tool','name','model')))
+        if not tn or not dn:
+            return False
+        return tn in dn or dn in tn or any(len(w) >= 5 and w in dn for w in tn.split())
+
+    rows = []
+    used_docs = set()
+    for tool in tools:
+        related = []
+        for idx, d in enumerate(docs):
+            if matches(tool, d):
+                text = doc_text(d)
+                if text:
+                    related.append(text)
+                used_docs.add(idx)
+        characteristics = '; '.join(x for x in [tool.get('model',''), tool.get('range',''), tool.get('characteristics','')] if x)
+        verification = '; '.join(dict.fromkeys(related)) or 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
+        if not related:
+            warnings.append(f"Для СИ «{tool.get('name') or tool.get('model') or 'без названия'}» не найден документ поверки/калибровки.")
+        rows.append({
+            'name': tool.get('name') or tool.get('model') or 'ТРЕБУЕТ УТОЧНЕНИЯ: наименование СИ',
+            'characteristics': characteristics or 'ТРЕБУЕТ УТОЧНЕНИЯ: характеристики',
+            'count': tool.get('quantity') or tool.get('count') or 1,
+            'number': tool.get('factory_number') or tool.get('number') or 'ТРЕБУЕТ УТОЧНЕНИЯ: заводской номер',
+            'verification': verification,
+        })
+
+    # A verification document may be present even when the equipment register was not
+    # separately parsed. Keep the evidence instead of losing the entire SI certificate.
+    for idx, d in enumerate(docs):
+        if idx in used_docs:
+            continue
+        tool_name = d.get('tool') or d.get('name') or d.get('model')
+        if not tool_name:
+            continue
+        rows.append({
+            'name': tool_name,
+            'characteristics': d.get('model') or 'ТРЕБУЕТ УТОЧНЕНИЯ: характеристики',
+            'count': 1,
+            'number': d.get('factory_number') or d.get('tool_number') or 'ТРЕБУЕТ УТОЧНЕНИЯ: заводской номер',
+            'verification': doc_text(d) or 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка',
+        })
+
+    if not rows:
+        rows = [{
+            'name': 'ТРЕБУЕТ УТОЧНЕНИЯ: средства измерений',
+            'characteristics': 'ТРЕБУЕТ УТОЧНЕНИЯ',
+            'count': 1,
+            'number': 'ТРЕБУЕТ УТОЧНЕНИЯ',
+            'verification': 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка',
+        }]
+        warnings.append('Не распознан перечень средств измерений для Справки СИ.')
+    return rows, list(dict.fromkeys(warnings))
+
+
 # ═══════════════════ Адаптер для реального пайплайна (generator.py) ═══════════════════
 def _find_person(itr, *keywords):
     for p in itr:
@@ -602,7 +697,7 @@ def _find_person(itr, *keywords):
 
 
 def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict, resp: dict,
-                             variant: str = 'spk_stroy', progress_cb=None) -> dict:
+                             variant: str = 'spk_stroy', progress_cb=None, spk_data: dict = None) -> dict:
     """
     company: {name, form, unp, address, city, director_fio, director_position, phone, bisp_org}
     itr: список [{fio, position}] — сотрудники (используем чтобы найти гл.инженера/прорабов)
@@ -612,7 +707,7 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     """
     org = company.get('name', 'company')
     director_fio = company.get('director_fio', '') or (resp.get('director') or {}).get('fio', '')
-    gl_person = _find_person(itr, 'главный инженер', 'гл. инженер') or resp.get('process_resp')
+    gl_person = _find_person(itr, 'главный инженер', 'гл. инженер')
     gl_inzhener_fio = (gl_person or {}).get('fio', '') if gl_person != resp.get('director') else ''
     foremen = [p.get('fio', '') for p in itr
                if any(k in (p.get('position') or '').lower() for k in ('прораб', 'производитель работ'))
@@ -621,19 +716,43 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
         alt = _find_person(itr, 'мастер')
         if alt and alt.get('fio') != director_fio:
             foremen = [alt.get('fio', '')]
-    if not foremen:
-        foremen = [gl_inzhener_fio] if gl_inzhener_fio else ['']
 
-    all_people = [{'fio': director_fio, 'position': company.get('director_position', 'Директор'),
-                   'role_key': 'директор'}]
-    if gl_inzhener_fio:
-        all_people.append({'fio': gl_inzhener_fio, 'position': (gl_person or {}).get('position', 'Главный инженер'),
-                           'role_key': 'главный инженер'})
+    def _person_copy(source, role_key, fallback_fio='', fallback_position=''):
+        item = dict(source or {})
+        item['fio'] = item.get('fio') or fallback_fio
+        item['position'] = item.get('position') or fallback_position
+        item['role_key'] = role_key
+        # Compatibility aliases used by the SPK Word template.
+        diplomas = item.get('diplomas') or []
+        if diplomas and isinstance(diplomas[0], dict):
+            d = diplomas[0]
+            item.setdefault('diploma_number', d.get('number', ''))
+            item.setdefault('diploma_date', d.get('date', ''))
+            item.setdefault('diploma_institution', d.get('institution', ''))
+            item.setdefault('diploma_speciality', d.get('speciality', ''))
+            item.setdefault('diploma_qualification', d.get('qualification', ''))
+        item.setdefault('trudovaya_number', (item.get('trudovye_numbers') or [''])[0] if item.get('trudovye_numbers') else '')
+        return item
+
+    all_people = []
+    seen_people = set()
+    director_person = next((p for p in itr if p.get('fio') == director_fio), None)
+    for source, role_key, fallback_fio, fallback_pos in [
+        (director_person, 'директор', director_fio, company.get('director_position', 'Директор')),
+        (gl_person, 'главный инженер', gl_inzhener_fio, 'Главный инженер'),
+    ]:
+        person = _person_copy(source, role_key, fallback_fio, fallback_pos)
+        fio_key = (person.get('fio') or '').strip().lower()
+        if fio_key and fio_key not in seen_people:
+            seen_people.add(fio_key)
+            all_people.append(person)
     for f in foremen:
-        if f:
-            fp = next((p for p in itr if p.get('fio') == f), {})
-            all_people.append({'fio': f, 'position': fp.get('position', 'Производитель работ'),
-                               'role_key': 'производитель работ'})
+        fp = next((p for p in itr if p.get('fio') == f), {})
+        person = _person_copy(fp, 'производитель работ', f, 'Производитель работ')
+        fio_key = (person.get('fio') or '').strip().lower()
+        if fio_key and fio_key not in seen_people:
+            seen_people.add(fio_key)
+            all_people.append(person)
 
     order_date = dates.get('goals', '')
     city = company.get('city', 'Минск')
@@ -672,7 +791,12 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
         render_prikaz_mashiny(company, '4/СПК', order_date, city, director_fio, resp_si))
 
     p("6. Справка ИТР")
-    people_itr = [dict(pp, protocol_number='1', protocol_date=order_date) for pp in all_people]
+    people_itr = []
+    for pp in all_people:
+        item = dict(pp)
+        item.setdefault('protocol_number', '1')
+        item.setdefault('protocol_date', order_date)
+        people_itr.append(item)
     add(f"{org} СПК - 2 Справка ИТР.docx", render_spravka_itr(company, people_itr))
 
     p("7. Организационная структура")
@@ -697,13 +821,10 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     add(f"{org} СПК - 7 Справка ТТК.docx", render_spravka_ttk(company, director_fio, ttk_list))
 
     p("12. Справка СИ")
-    si_list = [
-        {'name': 'Рулетка измерительная', 'characteristics': '(0-3000) мм', 'count': 1, 'number': '—', 'verification': f'Свидетельство о поверке {year} г.'},
-        {'name': 'Уровень строительный', 'characteristics': 'ГОСТ 9416, I группа точности', 'count': 1, 'number': '—', 'verification': f'Свидетельство о поверке {year} г.'},
-    ]
+    si_list, si_warnings = _build_real_si_list(spk_data or {})
     add(f"{org} СПК - 8 Справка СИ.docx", render_spravka_si(company, director_fio, si_list))
 
-    warnings = []
+    warnings = list(si_warnings)
 
     if variant == 'spk_bisp':
         try:
