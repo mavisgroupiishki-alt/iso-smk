@@ -846,12 +846,29 @@ def _merge_company_att_itr_from_staff(att_data: dict, staff: list) -> dict:
     else:
         merged = []
         for person in current:
-            base = copy.deepcopy(find_staff_person(person.get('fio')) or {})
-            base.update(copy.deepcopy(person))  # product-specific values have priority
-            # Preserve list-valued evidence instead of accidentally replacing it with []
             src = find_staff_person(person.get('fio')) or {}
-            for field in ('diplomas','trudovye_numbers','trudovaya_form2_text','employment_periods',
-                          'attestations','uncertain_fields'):
+            base = copy.deepcopy(src)
+
+            # Product-specific attestation data wins only when it is meaningful.
+            # Previously empty strings from a partial AI reply overwrote diploma,
+            # labour-book and experience facts already stored in the common staff card.
+            for field, value in copy.deepcopy(person).items():
+                meaningful = value not in (None, '', '—', '-', '–')
+                if isinstance(value, (list, dict)):
+                    meaningful = bool(value)
+                if meaningful or field not in base:
+                    base[field] = value
+
+            # Preserve evidence collections and aliases used by Form No.2/3/4/5.
+            for field in (
+                'diplomas','trudovye_numbers','trudovaya_form2_text','employment_periods',
+                'attestations','uncertain_fields','field_confidence',
+                'education_full_text','education_level','diploma_number','diploma_date',
+                'diploma_institution','diploma_speciality','diploma_qualification',
+                'trudovaya_number','order_number','hire_date',
+                'attestat_number','attestat_date_from','attestat_date_to',
+                'attestat_specialization','attestat_form2_text','attestat_form5_text',
+            ):
                 if not base.get(field) and src.get(field):
                     base[field] = copy.deepcopy(src.get(field))
             merged.append(base)

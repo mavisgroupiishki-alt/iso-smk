@@ -2613,7 +2613,14 @@ function aiMergeEntityArray(previous, incoming, keyFn) {
     const key = keyFn(row);
     if(key && index.has(key) && row && typeof row === 'object' && !Array.isArray(row)) {
       const pos = index.get(key);
-      out[pos] = aiDeepMergeDefined(out[pos], row);
+      const previous = out[pos] || {};
+      const safePatch = {};
+      Object.entries(row).forEach(([field,value]) => {
+        // A partial AI answer must never erase already extracted evidence with an
+        // empty string/list. Explicit non-empty corrections still replace old values.
+        if(aiHasMeaningfulValue(value) || !aiHasMeaningfulValue(previous[field])) safePatch[field] = value;
+      });
+      out[pos] = aiDeepMergeDefined(previous, safePatch);
     } else if(key && index.has(key)) {
       out[index.get(key)] = row;
     } else {
@@ -2684,7 +2691,31 @@ function aiRenderCard(data) {
     row => aiNormIdentity(`${row?.field || ''}|${row?.value || ''}|${row?.reason || ''}`)
   );
   if(data.iso_suot !== undefined) aiCurrentData.iso_suot = aiDeepMergeDefined(aiCurrentData.iso_suot, data.iso_suot);
-  if(data.spk !== undefined) aiCurrentData.spk = aiDeepMergeDefined(aiCurrentData.spk, data.spk);
+  if(data.spk !== undefined) {
+    const previousSpk = aiCurrentData.spk || {};
+    const incomingSpk = data.spk || {};
+    const spkCollections = {
+      premises: x => aiNormIdentity(`${x?.address||''}|${x?.document||''}`),
+      measurement_tools: x => aiNormIdentity(x?.factory_number || `${x?.name||''}|${x?.model||''}`),
+      verification_documents: x => aiNormIdentity(x?.number || `${x?.tool||''}|${x?.date||''}`),
+      calibration_documents: x => aiNormIdentity(x?.number || `${x?.tool||''}|${x?.date||''}`),
+      ttk: x => aiNormIdentity(x?.code || x?.name),
+      machinery: x => aiNormIdentity(`${x?.name||''}|${x?.model||''}`),
+      laboratories: x => aiNormIdentity(x?.name || x?.contract),
+      rental_documents: x => aiNormIdentity(x?.number || x?.subject),
+      incoming_control_products: x => aiNormIdentity(`${x?.name||''}|${x?.supplier||''}`),
+    };
+    const scalarPatch = {};
+    Object.entries(incomingSpk).forEach(([k,v]) => { if(!(k in spkCollections)) scalarPatch[k]=v; });
+    aiCurrentData.spk = aiDeepMergeDefined(previousSpk, scalarPatch);
+    Object.entries(spkCollections).forEach(([k,keyFn]) => {
+      if(incomingSpk[k] !== undefined) {
+        aiCurrentData.spk[k] = aiMergeEntityArray(previousSpk[k], incomingSpk[k], keyFn);
+      } else if(previousSpk[k] !== undefined) {
+        aiCurrentData.spk[k] = previousSpk[k];
+      }
+    });
+  }
   if(data.readiness !== undefined) aiCurrentData.readiness = data.readiness;
   if(data.attestation !== undefined) {
     const previousAtt = aiCurrentData.attestation || {};
@@ -2982,7 +3013,10 @@ function aiMergeItrRecords(baseList, patchList, sourceAuthoritative=false) {
     Object.entries(person).forEach(([field, value]) => {
       if(value === undefined) return;
       const meaningful = aiHasMeaningfulValue(value);
-      let accept = sourceAuthoritative && isPatch ? meaningful : true;
+      // Blank values in a partial reply are never allowed to erase a value that
+      // was already extracted from the labour book, diploma or staff schedule.
+      let accept = meaningful || !aiHasMeaningfulValue(merged[field]);
+      if(sourceAuthoritative && isPatch) accept = meaningful || !aiHasMeaningfulValue(merged[field]);
 
       // Заполненные Формы №2–5 — источник истины. Неполный ответ модели не должен
       // стирать стаж, трудовые книжки, вкладыши, дипломы или аттестаты пустой строкой.

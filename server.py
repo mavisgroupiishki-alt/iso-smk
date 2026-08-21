@@ -598,6 +598,12 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 - За ДИ = директор или кадровик или бухгалтер
 - За ФНПА = главный инженер или зам директора
 - 2 удостоверения ОТ у одного = берём более свежее
+- ДЛЯ СПК: из каждого перечня/паспорта/свидетельства отдельно извлекай средства измерений в spk.measurement_tools,
+  документы ПОВЕРКИ в spk.verification_documents и документы КАЛИБРОВКИ в spk.calibration_documents.
+  Сопоставляй документ с прибором прежде всего по заводскому номеру, затем по модели/наименованию. Не оставляй
+  эти сведения только в message/source_documents: они обязаны попасть в структурированные поля для Справки СИ.
+- ДЛЯ СПК И АТТЕСТАЦИИ: ФИО, должность, диплом, трудовая, аттестат и employment_periods одного человека должны
+  храниться в одной записи staff/ИТР. Частичный последующий ответ не должен обнулять ранее распознанные сведения.
 
 ФЛАГИ:
 - Строительство в области + нет аттестата = критическая ошибка
@@ -2644,6 +2650,9 @@ class H(http.server.BaseHTTPRequestHandler):
                     matched = None
                 else:
                     text, matched = vision_extract_verified(file_bytes, filename, api_key)
+                    if ext == 'pdf' and not str(text or '').strip():
+                        text = vision_extract(file_bytes, filename, api_key)
+                        matched = None
                 thumbnail = make_thumbnail_b64(file_bytes, filename)
                 payload = {'success': True, 'text': text, 'method': 'vision',
                            'thumbnail_b64': thumbnail}

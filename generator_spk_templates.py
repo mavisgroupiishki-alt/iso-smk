@@ -794,8 +794,12 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     people_itr = []
     for pp in all_people:
         item = dict(pp)
-        item.setdefault('protocol_number', '1')
-        item.setdefault('protocol_date', order_date)
+        # Protocol details are personal facts. Never invent "№1" and the package date.
+        # Use only a real OT/training protocol extracted from the employee documents.
+        if not item.get('protocol_number'):
+            item['protocol_number'] = item.get('ot_protocol_number') or item.get('training_protocol_number') or ''
+        if not item.get('protocol_date'):
+            item['protocol_date'] = item.get('ot_protocol_date') or item.get('training_protocol_date') or ''
         people_itr.append(item)
     add(f"{org} СПК - 2 Справка ИТР.docx", render_spravka_itr(company, people_itr))
 
@@ -815,9 +819,21 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
         render_pasport(company, director_fio, company.get('phone', ''), company.get('address', ''), all_people))
 
     p("11. Справка ТТК")
-    work_types = company.get('work_types', [company.get('scope', 'Общестроительные работы')])
-    ttk_list = [{'code': f'ТТК-{i+1:03d}', 'name': f'ТК на {wt}', 'organization': 'РУП «Стройтехнорм»',
-                 'validity': str(int(year) + 2) if year else ''} for i, wt in enumerate(work_types[:6])]
+    real_ttk = [dict(x) for x in ((spk_data or {}).get('ttk') or []) if isinstance(x, dict)]
+    if real_ttk:
+        ttk_list = [{
+            'code': x.get('code') or 'ТРЕБУЕТ УТОЧНЕНИЯ: шифр ТТК',
+            'name': x.get('name') or x.get('work_type') or 'ТРЕБУЕТ УТОЧНЕНИЯ: наименование ТТК',
+            'organization': x.get('developer') or x.get('organization') or 'ТРЕБУЕТ УТОЧНЕНИЯ: разработчик',
+            'validity': x.get('valid_until') or x.get('validity') or 'ТРЕБУЕТ УТОЧНЕНИЯ: срок действия',
+        } for x in real_ttk]
+    else:
+        ttk_list = [{
+            'code': 'ТРЕБУЕТ УТОЧНЕНИЯ: шифр ТТК',
+            'name': 'ТРЕБУЕТ УТОЧНЕНИЯ: ТТК',
+            'organization': 'ТРЕБУЕТ УТОЧНЕНИЯ: разработчик',
+            'validity': 'ТРЕБУЕТ УТОЧНЕНИЯ: срок действия',
+        }]
     add(f"{org} СПК - 7 Справка ТТК.docx", render_spravka_ttk(company, director_fio, ttk_list))
 
     p("12. Справка СИ")

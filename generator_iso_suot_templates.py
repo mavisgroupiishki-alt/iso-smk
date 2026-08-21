@@ -897,15 +897,119 @@ def _supplier_card_doc(company: dict, supplier: dict, dates: dict, index: int) -
         if any_score:
             actual[9].text = str(total).replace('.', ',')
 
-    # One review marker is enough; do not paint every empty score cell yellow.
-    if not scores:
+    # Always show what is actually known about the supplier evaluation.
+    status = str(supplier.get('status') or '').strip()
+    decision = str(supplier.get('decision') or supplier.get('applicability') or '').strip()
+    p = doc.add_paragraph(); p.add_run('Сведения об оценке поставщика').bold = True
+    doc.add_paragraph(f'Статус в перечне: {status or "действующий поставщик по предоставленному перечню"}.')
+    if scores:
+        if actual[9].text.strip(): doc.add_paragraph(f'Суммарная балльная оценка: {actual[9].text.strip()}.')
+        doc.add_paragraph(f'Решение о применимости: {decision or "ТРЕБУЕТ УТОЧНЕНИЯ"}.')
+    else:
         note = doc.add_paragraph()
         note.add_run(
-            'ТРЕБУЕТ УТОЧНЕНИЯ: балльную оценку критериев заполнить по фактическим '
-            'условиям работы с поставщиком.'
+            'ТРЕБУЕТ УТОЧНЕНИЯ: отсутствуют фактические баллы по цене, качеству, срокам, '
+            'условиям оплаты и опыту работы. Заполните оценку по фактическим условиям сотрудничества.'
         )
 
     return _doc_bytes(doc)
+
+
+
+def _person_order_label(person: dict) -> str:
+    if not person:
+        return 'ТРЕБУЕТ УТОЧНЕНИЯ'
+    pos = str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
+    fio = str(person.get('fio') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
+    return f'{pos} — {fio}'
+
+
+def _unique_people(people) -> list[dict]:
+    out, seen = [], set()
+    for p in people or []:
+        if not isinstance(p, dict):
+            continue
+        key = _norm(p.get('fio'))
+        if not key or key in seen:
+            continue
+        seen.add(key); out.append(p)
+    return out
+
+
+def _appointment_order_doc(company: dict, dates: dict, number: str, title: str,
+                           clauses: list[str], acquainted: list[dict] | None = None) -> bytes:
+    doc = _new_doc(company, f'ПРИКАЗ № {number}', dates, 'goals')
+    p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p.add_run(title.upper()); r.bold = True
+    p = doc.add_paragraph(); p.add_run('ПРИКАЗЫВАЮ:').bold = True
+    for i, clause in enumerate(clauses, 1):
+        doc.add_paragraph(f'{i}. {clause}')
+    if acquainted:
+        p = doc.add_paragraph(); p.add_run('С приказом ознакомлены:').bold = True
+        for person in _unique_people(acquainted):
+            doc.add_paragraph(f'{_person_order_label(person)} __________________')
+    return _doc_bytes(doc)
+
+
+def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
+                         wanted_categories: set[str]) -> list[dict]:
+    """Orders that mention employees are rebuilt from the current staff card.
+
+    Sample names/job titles from Varta are never reused, so FIO and position cannot
+    become cross-wired when the new company has a different staffing structure.
+    """
+    docs = []
+    director = (resp.get('director') or {}) if isinstance(resp, dict) else {}
+    auditors = _unique_people((resp.get('auditors') or []) if isinstance(resp, dict) else [])
+    if not auditors:
+        auditors = _unique_people(([director] if director else []) + list(itr or []))[:3]
+    risk_group = _unique_people((resp.get('risk_group') or auditors) if isinstance(resp, dict) else auditors)
+    council = _unique_people((resp.get('coord_council') or auditors) if isinstance(resp, dict) else auditors)
+    process_person = (resp.get('process_resp') or {}) if isinstance(resp, dict) else {}
+    fnpa_person = (resp.get('fnpa_resp') or {}) if isinstance(resp, dict) else {}
+    di_person = (resp.get('di_resp') or {}) if isinstance(resp, dict) else {}
+
+    def labels(people): return '; '.join(_person_order_label(p) for p in _unique_people(people)) or 'ТРЕБУЕТ УТОЧНЕНИЯ'
+    org = _clean_org_name(company)
+
+    if 'iso' in wanted_categories:
+        items = [
+            ('3-СМК', 'О назначении аудиторов для проведения внутреннего аудита',
+             [f'Назначить внутренними аудиторами: {labels(auditors)}.', 'Контроль за исполнением приказа оставляю за директором.'], auditors),
+            ('5-СМК', 'О проведении оценки и анализа рисков',
+             [f'Создать рабочую группу по идентификации и оценке рисков в составе: {labels(risk_group)}.', 'Рабочей группе провести идентификацию и оценку рисков по действующим процессам организации.'], risk_group),
+            ('6-СМК', 'О назначении владельца процесса',
+             [f'Назначить владельцем основного процесса: {_person_order_label(process_person)}.', 'Владельцу процесса обеспечить мониторинг показателей и управление рисками процесса.'], [process_person]),
+            ('7-СМК', 'О назначении ответственного за фонд ТНПА, НПА и документов СМК',
+             [f'Назначить ответственным за актуализацию и управление фондом документов: {_person_order_label(fnpa_person)}.'], [fnpa_person]),
+            ('8-СМК', 'О создании Координационного совета',
+             [f'Создать Координационный совет в составе: {labels(council)}.', 'Совету осуществлять мониторинг результативности СМК и мероприятий по улучшению.'], council),
+            ('9-СМК', 'О проведении внутреннего обучения специалистов',
+             [f'Провести внутреннее обучение специалистов: {labels(auditors)}.', 'Тематика обучения: документированная информация СМК и внутренний аудит.'], auditors),
+            ('10-СМК', 'О назначении ответственного за входной контроль',
+             [f'Назначить ответственным за организацию входного контроля: {_person_order_label(process_person)}.'], [process_person]),
+            ('11-СМК', 'О технических осмотрах средств измерений',
+             [f'Назначить ответственным за учёт, технический осмотр и своевременную поверку средств измерений: {_person_order_label(process_person or fnpa_person)}.'], [process_person or fnpa_person]),
+        ]
+        for number,title,clauses,people in items:
+            docs.append({'name': f'{org} - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people)})
+
+    if 'suot' in wanted_categories:
+        ot_people = _unique_people(auditors)
+        items = [
+            ('4-OH&S', 'О назначении ответственных лиц СУОТ',
+             [f'Назначить ответственными за организацию работы по охране труда: {labels(ot_people)}.',
+              f'Ответственным за учёт и ведение инструкций по охране труда назначить: {_person_order_label(di_person or director)}.'], ot_people),
+            ('5-OH&S', 'О назначении аудиторов СУОТ',
+             [f'Назначить внутренними аудиторами СУОТ: {labels(ot_people)}.'], ot_people),
+            ('6-OH&S', 'О пересмотре и разработке карт оценки рисков',
+             [f'Создать рабочую группу по идентификации опасностей и оценке рисков в составе: {labels(risk_group)}.'], risk_group),
+            ('7-OH&S', 'О назначении ответственного за инструкции по охране труда',
+             [f'Назначить ответственным за учёт, актуализацию и выдачу инструкций по охране труда: {_person_order_label(di_person or director)}.'], [di_person or director]),
+        ]
+        for number,title,clauses,people in items:
+            docs.append({'name': f'{org} СУОТ - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people)})
+    return docs
 
 
 def _matching_template(position: str, rules: dict) -> str | None:
@@ -1118,10 +1222,15 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             applicable_worker_template_keys.add(tpl)
 
     filtered_keys = []
+    _DYNAMIC_ROLE_ORDER_KEYS = {
+        'prikaz_smk_3.docx','prikaz_smk_5.docx','prikaz_smk_6.docx','prikaz_smk_7.docx',
+        'prikaz_smk_8.docx','prikaz_smk_9.docx','prikaz_smk_10.docx','prikaz_smk_11.docx',
+        'suot_prikaz_7.docx','suot_prikaz_8.docx','suot_prikaz_9.docx','suot_prikaz_10.docx',
+    }
     for key in keys:
         if key == 'converted_1.docx':  # known corrupt pseudo-docx
             continue
-        if key in _DYNAMIC_KEYS:
+        if key in _DYNAMIC_KEYS or key in _DYNAMIC_ROLE_ORDER_KEYS:
             continue
         if key in _ITR_TEMPLATE_RULES and key not in applicable_itr_template_keys:
             continue
@@ -1229,6 +1338,12 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 continue
             prog(f'Инструкция ОТ: {profession}')
             docs.append({'name': f'{org} СУОТ - ИОТ {profession}.docx', 'bytes': _generic_worker_instruction(company, profession, dates)})
+
+    # Staff-dependent orders are rebuilt from the current card so each FIO keeps
+    # its real current position. This eliminates the old Varta role/name cross-wiring.
+    for order_doc in _dynamic_role_orders(company, itr, dates, resp, wanted_categories):
+        prog(order_doc['name'][:50])
+        docs.append(order_doc)
 
     # Execute the safe subset of active learned rules directly in generated Word
     # files.  This makes training observable: explicit text replacements and rules
