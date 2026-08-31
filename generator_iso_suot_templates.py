@@ -382,13 +382,37 @@ def _doc_bytes(doc: Document) -> bytes:
 
 
 def _ensure_scope_in_report(data: bytes, scope: str) -> bytes:
-    """Make the current certification scope explicit in every report.
+    """Keep the report's scope exactly equal to the scope of THIS package.
 
-    Some legacy SUOT reports never had a scope field at all, so simple replacement
-    cannot update them. Insert one directly below the report heading.
+    Do not allow a legacy/template phrase such as ``разработка проектной документации``
+    to be appended unless it is explicitly present in the selected current scope.
     """
     scope = str(scope or '').strip() or 'ТРЕБУЕТ УТОЧНЕНИЯ'
     doc = Document(io.BytesIO(data))
+
+    # Project design is not implied by construction/installation work.  If the
+    # current package scope does not explicitly request it, remove common variants
+    # that old templates/models append on their own.
+    scope_has_design = bool(re.search(r'проектн(?:ая|ой|ые|ых)\s+документац', scope, re.I))
+    design_re = re.compile(
+        r'(?:[,;:/\-–—]\s*)?(?:и\s+)?разработк(?:а|и|у|ой|е)\s+проектн(?:ой|ую|ая|ых|ыми)\s+документац(?:ии|ию|ией|иях)\b',
+        re.I,
+    )
+    if not scope_has_design:
+        for para in doc.paragraphs:
+            if para.text and re.search(r'проектн(?:ая|ой|ые|ых)\s+документац', para.text, re.I):
+                cleaned = design_re.sub('', para.text)
+                cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+                cleaned = re.sub(r'\s+([,.;])', r'\1', cleaned)
+                cleaned = re.sub(r'([:;])\s*$', r'\1', cleaned)
+                if cleaned != para.text:
+                    for run in para.runs:
+                        run.text = ''
+                    if para.runs:
+                        para.runs[0].text = cleaned
+                    else:
+                        para.add_run(cleaned)
+
     all_text = '\n'.join(p.text for p in doc.paragraphs)
     if scope.lower() not in all_text.lower():
         inserted = False
@@ -1020,6 +1044,57 @@ def _matching_template(position: str, rules: dict) -> str | None:
     return None
 
 
+def _order_identity(name: str) -> str | None:
+    """Return a stable identity for ISO/SUOT appointment orders.
+
+    The same order can arrive once from the legacy detailed template and once from
+    the dynamic current-staff generator. They are one document for the user.
+    """
+    n = str(name or '').lower().replace('ё', 'е')
+    if 'приказ' not in n:
+        return None
+    if 'суот' in n or 'oh&s' in n:
+        m = re.search(r'(?:приказ\s+|приказ\s+№\s*)?(\d+)(?:[\.\-]|\s)', n)
+        return f'suot:{m.group(1)}' if m else None
+    if 'смк' in n or 'приказ' in n:
+        m = re.search(r'(?:приказ\s+|приказ\s+№\s*)?(\d+)(?:[\.\-]|\s)', n)
+        return f'iso:{m.group(1)}' if m else None
+    return None
+
+
+def _dedupe_order_docs(docs: list[dict]) -> list[dict]:
+    """Keep one variant of each ISO/SUOT order, preferring the fuller document.
+
+    The legacy approved templates usually contain the more detailed wording. When
+    two variants have the same order identity, keep the larger DOCX payload, which
+    is a deterministic proxy for the fuller template, and otherwise keep the first.
+    """
+    chosen: dict[str, dict] = {}
+    order: list[str] = []
+    for doc in docs:
+        name = str(doc.get('name') or '')
+        key = _order_identity(name)
+        if not key:
+            continue
+        if key not in chosen:
+            chosen[key] = doc
+            order.append(key)
+            continue
+        old = chosen[key]
+        if len(doc.get('bytes') or b'') > len(old.get('bytes') or b''):
+            chosen[key] = doc
+    keep_ids = {id(v) for v in chosen.values()}
+    out = []
+    emitted = set()
+    for doc in docs:
+        key = _order_identity(str(doc.get('name') or ''))
+        if not key:
+            out.append(doc)
+        elif id(doc) in keep_ids and key not in emitted:
+            out.append(doc); emitted.add(key)
+    return out
+
+
 def _actual_worker_rows(workers: list) -> list[dict]:
     result = []
     seen = set()
@@ -1344,6 +1419,10 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
     for order_doc in _dynamic_role_orders(company, itr, dates, resp, wanted_categories):
         prog(order_doc['name'][:50])
         docs.append(order_doc)
+
+    # A legacy detailed order and a newer dynamic order can otherwise appear side by
+    # side. Collapse them before the final package is returned.
+    docs = _dedupe_order_docs(docs)
 
     # Execute the safe subset of active learned rules directly in generated Word
     # files.  This makes training observable: explicit text replacements and rules
