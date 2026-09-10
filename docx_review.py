@@ -267,9 +267,15 @@ def collect_required_items(data: Dict[str, Any], product: str) -> List[Dict[str,
     # Explicit warning/error flags are review items for every product.
     for idx, flag in enumerate(data.get('flags') or []):
         if str(flag.get('type', '')).lower() in ('warning', 'error'):
+            flag_text = str(flag.get('text') or '')
+            # A missing-date warning from archive recognition becomes stale as soon
+            # as the user supplies the expert visit date in the dialog.
+            if ('дата выезда эксперта' in flag_text.lower()
+                    and (dates.get('audit_date') or cert.get('audit_date'))):
+                continue
             items.append({
                 'field': f'flags[{idx}]',
-                'value': str(flag.get('text') or 'ТРЕБУЕТ ПРОВЕРКИ'),
+                'value': flag_text or 'ТРЕБУЕТ ПРОВЕРКИ',
                 'reason': 'предупреждение проверки данных',
             })
     return items

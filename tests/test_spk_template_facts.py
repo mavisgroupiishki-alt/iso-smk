@@ -2,6 +2,7 @@ import io
 import zipfile
 
 import generator
+from docx_review import collect_required_items
 from generator_spk_templates import generate_spk_package_v2
 
 
@@ -60,3 +61,13 @@ def test_spk_bisp_static_templates_use_package_dates_and_never_keep_sample_certi
     assert 'Теодолит оптический' not in schedule
     assert 'Плотномер динамический Д-51А' not in schedule
     assert 'ТРЕБУЕТ УТОЧНЕНИЯ: свидетельство о технической компетентности' in documents[next(name for name in documents if '6 Паспорт СПК' in name)]
+
+
+def test_expert_date_flag_is_removed_after_the_user_supplies_the_date():
+    data = {
+        'certification': {'audit_date': '17.09.2026'},
+        'flags': [{'type': 'warning', 'text': 'Дата выезда эксперта в исходных материалах не найдена'}],
+    }
+    items = collect_required_items(data, 'spk_bisp')
+
+    assert not any(item['field'].startswith('flags[') for item in items)
