@@ -897,7 +897,7 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
 
             p("18. График поверки СИ")
             add(f"{org} СПК БИСП - График поверки СИ.docx",
-                render_grafik_poverki(company, director_fio, year, order_date))
+                render_grafik_poverki(company, director_fio, year, order_date, si_list))
 
             p("19. Перечень продукции входного контроля")
             add(f"{org} СПК БИСП - Перечень продукции входного контроля.docx",

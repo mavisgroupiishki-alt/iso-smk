@@ -256,7 +256,7 @@ def render_polozhenie_vhod(company: dict, director_fio: str, approval_date: str 
 
 # ═══════════════════ Документ 6: План-график поверки СИ ═══════════════════
 def render_grafik_poverki(company: dict, director_fio: str, year: str = None,
-                          approval_date: str = '') -> bytes:
+                          approval_date: str = '', si_list: list = None) -> bytes:
     """Стандартный справочный график поверки средств измерений (313 абзацев,
     21 строка таблиц) — компания нигде не упоминается напрямую, меняется только
     подпись директора."""
@@ -278,6 +278,32 @@ def render_grafik_poverki(company: dict, director_fio: str, year: str = None,
             xml = xml.replace(paras[idx_year], _replace_para_text(paras[idx_year], new_t), 1)
     if approval_date:
         xml = xml.replace('27.05.2026', approval_date)
+
+    # График не должен переносить из образца чужие приборы. Включаем только
+    # средства измерений, для которых во входных данных есть поверка/калибровка.
+    if si_list is not None:
+        rows = _rows(xml)
+        template_row = rows[5]
+        schedule_rows = []
+        for item in si_list:
+            verification = str(item.get('verification') or '')
+            if 'ТРЕБУЕТ УТОЧНЕНИЯ' in verification or not verification:
+                continue
+            month_match = re.search(r'\b\d{2}\.(\d{2})\.\d{4}\b', verification)
+            month = int(month_match.group(1)) if month_match else 1
+            month_cells = [''] * 12
+            if 1 <= month <= 12:
+                month_cells[month - 1] = '1'
+            characteristics = str(item.get('characteristics') or '').strip()
+            name_lines = [str(item.get('name') or '')]
+            if characteristics and 'ТРЕБУЕТ УТОЧНЕНИЯ' not in characteristics:
+                name_lines.append(characteristics)
+            schedule_rows.append(_build_row(
+                template_row,
+                [name_lines, [str(year or ''), '12'], str(item.get('count') or 1)] + month_cells,
+            ))
+        if schedule_rows:
+            xml = _splice_rows(xml, rows[5:], schedule_rows)
 
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
