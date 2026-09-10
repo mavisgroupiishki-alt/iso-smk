@@ -2155,6 +2155,13 @@ def _rar_to_zip_bytes(file_bytes, filename):
         return output.getvalue()
 
 
+def _archive_vision_batches(entries):
+    """Keep PDF rendering serial; each rendered page can occupy far more RAM than its file."""
+    pdf_entries = [entry for entry in entries if entry[3] == 'pdf']
+    image_entries = [entry for entry in entries if entry[3] == 'image']
+    return [(pdf_entries, 1), (image_entries, 2)]
+
+
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all"):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
@@ -2267,8 +2274,9 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             except Exception as e:
                 texts.append(f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n[{type(e).__name__}: {e}]")
 
-        # PDF и фото — медленно (vision), поэтому по 2 одновременно вместо строго по одному.
-        # VISION_SEMAPHORE всё равно не даст больше 2 разом на весь сервер.
+        # PDF рендерятся строго по одному: даже небольшой PDF может развернуться в
+        # десятки мегабайт страниц в памяти. Фото идут по два, как и раньше.
+        # VISION_SEMAPHORE всё равно не даст больше 2 запросов на весь сервер.
         # Каждый файл читаем из архива только в момент обработки (не грузим все фото
         # в память разом — на 121-мегабайтном архиве это была бы лишняя сотня МБ).
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -2316,10 +2324,11 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 return f"--- {folder + '/' if folder else ''}{short} ---\n" + txt
             return f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ПУСТОЙ РЕЗУЛЬТАТ (короче 10 символов)"
 
-        if image_entries:
-            heavy_pdf = any(e[3] == 'pdf' and e[2] > 12 * 1024 * 1024 for e in image_entries)
-            with ThreadPoolExecutor(max_workers=(1 if heavy_pdf else 2)) as ex:
-                futures = {ex.submit(process_image, e): e for e in image_entries}
+        for batch, workers in _archive_vision_batches(image_entries):
+            if not batch:
+                continue
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futures = {ex.submit(process_image, e): e for e in batch}
                 for fut in as_completed(futures):
                     e = futures[fut]
                     done_count[0] += 1
