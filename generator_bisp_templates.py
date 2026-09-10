@@ -284,6 +284,45 @@ def render_grafik_poverki(company: dict, director_fio: str, year: str = None,
     if si_list is not None:
         rows = _rows(xml)
         template_row = rows[5]
+        template_cells = _cells(template_row)
+
+        def schedule_cell(cell_xml: str, value: str, keep_blank: bool = False) -> str:
+            if keep_blank:
+                # The source row has a pre-filled May marker. A non-breaking space
+                # removes it while keeping the cell visually empty.
+                value = '\xa0'
+            rendered = _replace_cell_content(cell_xml, [value])
+            if rendered != cell_xml:
+                return rendered
+            # Most month cells in the Word source are self-closing <w:p/> nodes,
+            # so the generic table helper intentionally leaves them unchanged.
+            # Insert a minimal paragraph only for the one scheduled month.
+            tc_pr_end = cell_xml.find('</w:tcPr>') + len('</w:tcPr>')
+            if tc_pr_end <= len('</w:tcPr>') - 1:
+                tc_pr_end = cell_xml.find('<w:p')
+            return (
+                f'{cell_xml[:tc_pr_end]}'
+                f'<w:p><w:r><w:t xml:space="preserve">{_esc(value)}</w:t></w:r></w:p></w:tc>'
+            )
+
+        def build_schedule_row(name_lines: list, count: str, month: int) -> str:
+            new_cells = []
+            for index, cell in enumerate(template_cells):
+                if index == 0:
+                    new_cells.append(_replace_cell_content(cell, name_lines))
+                elif index == 1:
+                    new_cells.append(_replace_cell_content(cell, [str(year or ''), '12']))
+                elif index == 2:
+                    new_cells.append(_replace_cell_content(cell, [count]))
+                elif index == month + 2:
+                    new_cells.append(schedule_cell(cell, '1'))
+                else:
+                    new_cells.append(schedule_cell(cell, '', keep_blank=True))
+            tr_open_end = template_row.find('>', template_row.find('<w:tr')) + 1
+            tr_pr_match = re.search(r'<w:tr\b[^>]*>(<w:trPr>.*?</w:trPr>)?', template_row, re.DOTALL)
+            tr_open = template_row[:tr_open_end] + (tr_pr_match.group(1) or '' if tr_pr_match else '')
+            return tr_open + ''.join(new_cells) + '</w:tr>'
+
         schedule_rows = []
         for item in si_list:
             verification = str(item.get('verification') or '')
@@ -291,17 +330,12 @@ def render_grafik_poverki(company: dict, director_fio: str, year: str = None,
                 continue
             month_match = re.search(r'\b\d{2}\.(\d{2})\.\d{4}\b', verification)
             month = int(month_match.group(1)) if month_match else 1
-            month_cells = [''] * 12
-            if 1 <= month <= 12:
-                month_cells[month - 1] = '1'
+            month = month if 1 <= month <= 12 else 1
             characteristics = str(item.get('characteristics') or '').strip()
             name_lines = [str(item.get('name') or '')]
             if characteristics and 'ТРЕБУЕТ УТОЧНЕНИЯ' not in characteristics:
                 name_lines.append(characteristics)
-            schedule_rows.append(_build_row(
-                template_row,
-                [name_lines, [str(year or ''), '12'], str(item.get('count') or 1)] + month_cells,
-            ))
+            schedule_rows.append(build_schedule_row(name_lines, str(item.get('count') or 1), month))
         if schedule_rows:
             xml = _splice_rows(xml, rows[5:], schedule_rows)
 
