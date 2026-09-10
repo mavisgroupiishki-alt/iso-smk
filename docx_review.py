@@ -172,10 +172,15 @@ def collect_review_tokens_and_items(data: Dict[str, Any]) -> Tuple[List[str], Li
 
     # Cross-document conflicts are useful warnings.  Source-file metadata itself
     # must not paint the generated package.  Concrete company/staff/SPK fields may.
+    certification = data.get('certification') or {}
+    dates = data.get('dates') or {}
     for item in data.get('review_items') or []:
         if not isinstance(item, dict):
             continue
         field = str(item.get('field') or 'данные')
+        if (field in ('certification.audit_date', 'dates.audit_date')
+                and (certification.get('audit_date') or dates.get('audit_date'))):
+            continue
         inline = not field.startswith(('source_documents', 'source_files', 'archive', 'raw_'))
         add_item(
             field,
