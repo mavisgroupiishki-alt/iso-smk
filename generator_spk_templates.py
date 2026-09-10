@@ -466,7 +466,7 @@ def render_protokol_obuchenie(company: dict, protocol_number: str, protocol_date
 
 
 # ═══════════════════ Документ 9: Положение о системе производственного контроля ═══════════════════
-def render_polozhenie(company: dict, director_fio: str) -> bytes:
+def render_polozhenie(company: dict, director_fio: str, approval_date: str = '') -> bytes:
     """Стандартный регламентный документ (337 абзацев), почти без переменных данных —
     только название компании (7 упоминаний) и подпись директора (1). Меняем глобально."""
     parts = _load_parts('9_polozhenie.docx')
@@ -483,6 +483,8 @@ def render_polozhenie(company: dict, director_fio: str) -> bytes:
         old_t = re.sub(r'<[^>]+>', '', paras[idx_sig]).strip().replace('\xa0', ' ')
         new_t = re.sub(r'[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.[А-ЯЁ]\.\s*$', dir_init, old_t)
         xml = xml.replace(paras[idx_sig], _replace_para_text(paras[idx_sig], new_t), 1)
+    if approval_date:
+        xml = xml.replace('12.06.2026', approval_date)
 
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
@@ -490,7 +492,8 @@ def render_polozhenie(company: dict, director_fio: str) -> bytes:
 
 # ═══════════════════ Документ 10: Паспорт системы производственного контроля ═══════════════════
 def render_pasport(company: dict, director_fio: str, director_phone: str, address: str,
-                    people: list, cert_number: str = '', cert_date: str = '') -> bytes:
+                    people: list, cert_number: str = '', cert_date: str = '',
+                    approval_date: str = '') -> bytes:
     """people: [{fio, position}] — все, кто в СПК (директор первым)."""
     parts = _load_parts('10_pasport.docx')
     xml = parts['word/document.xml'].decode('utf-8')
@@ -507,6 +510,8 @@ def render_pasport(company: dict, director_fio: str, director_phone: str, addres
         new_t = re.sub(r'[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.[А-ЯЁ]\.\s*$', dir_init, old_t)
         xml = xml.replace(paras0[idx_approve_sig], _replace_para_text(paras0[idx_approve_sig], new_t), 1)
     xml = xml.replace('Пеганов В.Н.', dir_init)  # если попадётся цельным куском где-то ещё
+    if approval_date:
+        xml = xml.replace('12.06.2026', approval_date)
 
     paras = _paragraphs(xml)
     idx_addr = _find_para_index(paras, lambda t: t.startswith(': 220') or ': ' in t and t.startswith(':'))
@@ -541,6 +546,18 @@ def render_pasport(company: dict, director_fio: str, director_phone: str, addres
             new_lines = ''.join(_replace_para_text(style_line, f"{p.get('fio','')}, {p.get('position','')}") for p in people)
             xml = xml.replace(old_block, new_lines, 1)
 
+    # Номер свидетельства — факт заявителя. Старый номер из Word-образца нельзя
+    # переносить в новый пакет, если он не был подтверждён во входных данных.
+    paras = _paragraphs(xml)
+    idx_cert = _find_para_index(paras, lambda t: 'Свидетельство о технической компетентности' in t)
+    if idx_cert >= 0 and paras[idx_cert] in xml:
+        cert_text = (
+            f"Свидетельство о технической компетентности № {cert_number} от {cert_date} г."
+            if cert_number and cert_date
+            else 'ТРЕБУЕТ УТОЧНЕНИЯ: свидетельство о технической компетентности'
+        )
+        xml = xml.replace(paras[idx_cert], _replace_para_text(paras[idx_cert], cert_text), 1)
+
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
 
@@ -569,7 +586,7 @@ def render_spravka_ttk(company: dict, director_fio: str, ttk_list: list) -> byte
 
 
 # ═══════════════════ Документ 12: Справка о наличии СИ ═══════════════════
-def render_spravka_si(company: dict, director_fio: str, si_list: list) -> bytes:
+def render_spravka_si(company: dict, director_fio: str, si_list: list, as_of_date: str = '') -> bytes:
     """si_list: [{name, characteristics, count, number, verification}] — реальный
     перечень средств измерений компании (полностью от клиента)."""
     parts = _load_parts('12_spravka_si.docx')
@@ -587,6 +604,8 @@ def render_spravka_si(company: dict, director_fio: str, si_list: list) -> bytes:
 
     paras = _paragraphs(xml)
     xml = _replace_director_signature(xml, paras, _dir_initials(director_fio))
+    if as_of_date:
+        xml = xml.replace('12.06.2026', as_of_date)
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
 
@@ -755,6 +774,8 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
             all_people.append(person)
 
     order_date = dates.get('goals', '')
+    policy_date = dates.get('policy', order_date)
+    report_date = dates.get('reports', order_date)
     city = company.get('city', 'Минск')
     year = dates.get('year', '')
     docs = []
@@ -812,11 +833,15 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
         render_protokol_obuchenie(company, '1', order_date, city, order_date, '2/СПК', all_people))
 
     p("9. Положение о СПК")
-    add(f"{org} СПК - 5 Положение о СПК.docx", render_polozhenie(company, director_fio))
+    add(f"{org} СПК - 5 Положение о СПК.docx", render_polozhenie(company, director_fio, policy_date))
 
     p("10. Паспорт СПК")
+    competence = (spk_data or {}).get('technical_competence') or {}
+    cert_number = competence.get('number') or competence.get('certificate_number') or ''
+    cert_date = competence.get('date') or competence.get('certificate_date') or ''
     add(f"{org} СПК - 6 Паспорт СПК.docx",
-        render_pasport(company, director_fio, company.get('phone', ''), company.get('address', ''), all_people))
+        render_pasport(company, director_fio, company.get('phone', ''), company.get('address', ''), all_people,
+                       cert_number, cert_date, order_date))
 
     p("11. Справка ТТК")
     real_ttk = [dict(x) for x in ((spk_data or {}).get('ttk') or []) if isinstance(x, dict)]
@@ -838,7 +863,7 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
 
     p("12. Справка СИ")
     si_list, si_warnings = _build_real_si_list(spk_data or {})
-    add(f"{org} СПК - 8 Справка СИ.docx", render_spravka_si(company, director_fio, si_list))
+    add(f"{org} СПК - 8 Справка СИ.docx", render_spravka_si(company, director_fio, si_list, report_date))
 
     warnings = list(si_warnings)
 
@@ -864,19 +889,19 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
 
             p("16. План внутреннего аудита")
             add(f"{org} СПК БИСП - План внутреннего аудита.docx",
-                render_plan_audita(company, director_fio, year))
+                render_plan_audita(company, director_fio, year, approval_date=order_date))
 
             p("17. Положение о входном контроле")
             add(f"{org} СПК БИСП - 5.2 Положение о входном контроле.docx",
-                render_polozhenie_vhod(company, director_fio))
+                render_polozhenie_vhod(company, director_fio, policy_date))
 
             p("18. График поверки СИ")
             add(f"{org} СПК БИСП - График поверки СИ.docx",
-                render_grafik_poverki(company, director_fio, year))
+                render_grafik_poverki(company, director_fio, year, order_date))
 
             p("19. Перечень продукции входного контроля")
             add(f"{org} СПК БИСП - Перечень продукции входного контроля.docx",
-                render_perechen_produkcii(company, director_fio))
+                render_perechen_produkcii(company, director_fio, order_date))
         except Exception as e:
             message = f"Часть документов БИСП не сформирована: {type(e).__name__}: {e}"
             warnings.append(message)

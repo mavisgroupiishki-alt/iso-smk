@@ -181,7 +181,8 @@ def _splice_rows(xml: str, old_rows_slice: list, new_rows: list) -> str:
 
 
 # ═══════════════════ Документ 4: План внутреннего аудита ═══════════════════
-def render_plan_audita(company: dict, director_fio: str, year: str, audit_dates: list = None) -> bytes:
+def render_plan_audita(company: dict, director_fio: str, year: str, audit_dates: list = None,
+                       approval_date: str = '') -> bytes:
     """
     7 стандартных пунктов аудита (фиксированные темы, не меняются от компании к
     компании) — руководитель группы по аудиту всегда директор. audit_dates:
@@ -203,6 +204,8 @@ def render_plan_audita(company: dict, director_fio: str, year: str, audit_dates:
         xml = xml.replace(paras[idx_sig], _replace_para_text(paras[idx_sig], f"______________ {dir_init}"), 1)
     if idx_year >= 0 and paras[idx_year] in xml:
         xml = xml.replace(paras[idx_year], _replace_para_text(paras[idx_year], f"на {year} г."), 1)
+    if approval_date:
+        xml = xml.replace('27.05.2026', approval_date)
 
     rows = _rows(xml)
     template_row = rows[1]
@@ -227,7 +230,7 @@ def render_plan_audita(company: dict, director_fio: str, year: str, audit_dates:
 
 
 # ═══════════════════ Документ 5: Положение о входном контроле ═══════════════════
-def render_polozhenie_vhod(company: dict, director_fio: str) -> bytes:
+def render_polozhenie_vhod(company: dict, director_fio: str, approval_date: str = '') -> bytes:
     """Стандартный регламентный документ (189 абзацев) — почти без переменных
     данных, только название компании (3 упоминания) и подпись директора (1)."""
     parts = _load_parts('5_polozhenie_vhod.docx')
@@ -244,13 +247,16 @@ def render_polozhenie_vhod(company: dict, director_fio: str) -> bytes:
         old_t = re.sub(r'<[^>]+>', '', paras[idx_sig]).strip().replace('\xa0', ' ')
         new_t = re.sub(r'[А-ЯЁ]\.\s*[А-ЯЁ]\.\s*[А-ЯЁ][а-яё]+\s*$', dir_init, old_t)
         xml = xml.replace(paras[idx_sig], _replace_para_text(paras[idx_sig], new_t), 1)
+    if approval_date:
+        xml = xml.replace('27.05.2026', approval_date)
 
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
 
 
 # ═══════════════════ Документ 6: План-график поверки СИ ═══════════════════
-def render_grafik_poverki(company: dict, director_fio: str, year: str = None) -> bytes:
+def render_grafik_poverki(company: dict, director_fio: str, year: str = None,
+                          approval_date: str = '') -> bytes:
     """Стандартный справочный график поверки средств измерений (313 абзацев,
     21 строка таблиц) — компания нигде не упоминается напрямую, меняется только
     подпись директора."""
@@ -270,13 +276,15 @@ def render_grafik_poverki(company: dict, director_fio: str, year: str = None) ->
             old_t = re.sub(r'<[^>]+>', '', paras[idx_year]).strip().replace('\xa0', ' ')
             new_t = re.sub(r'20\d\d', year, old_t, count=1)
             xml = xml.replace(paras[idx_year], _replace_para_text(paras[idx_year], new_t), 1)
+    if approval_date:
+        xml = xml.replace('27.05.2026', approval_date)
 
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
 
 
 # ═══════════════════ Документ 7: Перечень продукции, подлежащей входному контролю ═══════════════════
-def render_perechen_produkcii(company: dict, director_fio: str) -> bytes:
+def render_perechen_produkcii(company: dict, director_fio: str, approval_date: str = '') -> bytes:
     """Стандартный отраслевой перечень (399 абзацев, 38 строк таблиц) — минимум
     переменных данных: название компании (1 упоминание) и подпись директора (1)."""
     parts = _load_parts('7_perechen_produkcii.docx')
@@ -293,6 +301,8 @@ def render_perechen_produkcii(company: dict, director_fio: str) -> bytes:
         old_t = re.sub(r'<[^>]+>', '', paras[idx_sig]).strip().replace('\xa0', ' ')
         new_t = re.sub(r'[А-ЯЁ]\.\s*[А-ЯЁ]\.\s*[А-ЯЁ][а-яё]+\s*$', dir_init, old_t)
         xml = xml.replace(paras[idx_sig], _replace_para_text(paras[idx_sig], new_t), 1)
+    if approval_date:
+        xml = xml.replace('27.05.2026', approval_date)
 
     parts['word/document.xml'] = xml.encode('utf-8')
     return _rebuild(parts)
