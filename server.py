@@ -652,6 +652,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
     },
     "spk": {
         "premises": [{"address":"","area":"","ownership":"","document":""}],
+        "technical_competence": {"number":"","date":"","valid_until":""},
         "measurement_tools": [{"name":"","model":"","factory_number":"","range":"","quantity":1}],
         "verification_documents": [{"tool":"","number":"","date":"","valid_until":""}],
         "calibration_documents": [{"tool":"","number":"","date":"","valid_until":""}],
@@ -761,6 +762,7 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
     "suppliers":[{"name":"","type":""}],
     "iso_suot":{"ot_certificates":[{"fio":"","number":"","date":"","organization":"","confidence":1.0,"needs_review":false}],"instructions":[],"responsible_persons":[]},
     "source_documents":[{"filename":"","document_type":"","status":"read|error|needs_review","summary":"","needs_review":false,"review_reason":""}],
+    "spk":{"premises":[{"address":"","area":"","ownership":"","document":""}],"technical_competence":{"number":"","date":"","valid_until":""},"ttk":[{"code":"","name":"","developer":"","valid_until":"","work_type":""}]},
     "review_items":[{"field":"","value":"","reason":"","confidence":0.0}],
     "flags":[],
     "readiness":"waiting|partial|review|ready"
@@ -879,6 +881,41 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
                 message_raw += (' Инструкции по должностям и рабочим профессиям сформируются автоматически '
                                 'по фактическому штатному расписанию.')
             payload['message'] = message_raw
+
+    if str(product or '').lower() in ('spk_stroy', 'spk_bisp'):
+        # These are required facts for the SPK package. Ask before generation,
+        # instead of waiting until the DOCX review turns them into yellow notes.
+        data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
+        payload['data'] = data
+        certification = data.get('certification') if isinstance(data.get('certification'), dict) else {}
+        dates = data.get('dates') if isinstance(data.get('dates'), dict) else {}
+        has_audit_date = bool(certification.get('audit_date') or dates.get('audit_date'))
+        spk = data.get('spk') if isinstance(data.get('spk'), dict) else {}
+        data['spk'] = spk
+        competence = spk.get('technical_competence') if isinstance(spk.get('technical_competence'), dict) else {}
+        ttk = [item for item in (spk.get('ttk') or []) if isinstance(item, dict)]
+
+        questions = list(payload.get('questions') or []) if isinstance(payload.get('questions'), list) else []
+        if not spk.get('premises'):
+            questions.append('Уточните производственное помещение: адрес, площадь и основание пользования (собственность или аренда, реквизиты документа).')
+        if not competence.get('number'):
+            questions.append('Уточните номер, дату и срок действия свидетельства о технической компетентности СПК.')
+        if ttk and any(not item.get('valid_until') for item in ttk):
+            questions.append('Уточните срок действия применяемой ТТК.')
+        payload['questions'] = questions
+
+        if has_audit_date:
+            data['review_items'] = [
+                item for item in (data.get('review_items') or [])
+                if not (isinstance(item, dict) and item.get('field') in ('certification.audit_date', 'dates.audit_date'))
+            ]
+            data['flags'] = [
+                item for item in (data.get('flags') or [])
+                if not (
+                    isinstance(item, dict)
+                    and 'дата выезда эксперта' in str(item.get('text') or '').lower()
+                )
+            ]
 
     # Final user-language firewall: no developer jargon in chat, even if the model ignored instructions.
     payload['message'] = _humanize_user_visible_text(payload.get('message') or '')

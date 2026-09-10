@@ -1,9 +1,11 @@
 import io
+import json
 import zipfile
 
 import generator
 from docx_review import collect_required_items, collect_review_tokens_and_items
 from generator_spk_templates import generate_spk_package_v2
+import server
 
 
 def _xml_text(doc_bytes):
@@ -74,3 +76,25 @@ def test_expert_date_flag_is_removed_after_the_user_supplies_the_date():
 
     assert not any(item['field'].startswith('flags[') for item in items)
     assert not any(item['field'] == 'certification.audit_date' for item in review_items)
+
+
+def test_spk_chat_asks_for_missing_facts_before_generation():
+    raw = json.dumps({
+        'message': 'Карточка обновлена.',
+        'questions': [],
+        'data': {
+            'certification': {'audit_date': '17.09.2026'},
+            'spk': {'ttk': [{'code': 'ТТК-1', 'valid_until': ''}]},
+            'review_items': [{'field': 'certification.audit_date', 'value': '', 'reason': 'дата не найдена'}],
+            'flags': [{'type': 'warning', 'text': 'Дата выезда эксперта не найдена'}],
+        },
+    }, ensure_ascii=False)
+
+    payload = json.loads(server._sanitize_ai_visible_response(raw, 'spk_bisp'))
+
+    questions = ' '.join(payload['questions']).lower()
+    assert 'помещен' in questions
+    assert 'технической компетентности' in questions
+    assert 'ттк' in questions
+    assert payload['data']['review_items'] == []
+    assert payload['data']['flags'] == []
