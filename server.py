@@ -2089,6 +2089,35 @@ def _rar_to_zip_bytes(file_bytes, filename):
             shutil.rmtree(extracted)
 
         if not extracted_ok:
+            # Native Render services already ship libarchive even when command-line
+            # extractors (bsdtar/unrar/7z) are absent.  Use its Python wrapper as a
+            # fallback, keeping the rest of the ZIP + Vision pipeline unchanged.
+            try:
+                import libarchive
+                extracted.mkdir(exist_ok=True)
+                extracted_root = extracted.resolve()
+                extracted_files = 0
+                with libarchive.file_reader(str(source)) as rar_archive:
+                    for entry in rar_archive:
+                        raw_name = str(getattr(entry, 'pathname', '') or '').replace('\\', '/')
+                        if (not raw_name or raw_name.endswith('/')
+                                or getattr(entry, 'isdir', False)):
+                            continue
+                        target = extracted / raw_name
+                        try:
+                            target.resolve().relative_to(extracted_root)
+                        except ValueError:
+                            continue
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with target.open('wb') as output_file:
+                            for block in entry.get_blocks():
+                                output_file.write(block)
+                        extracted_files += 1
+                extracted_ok = extracted_files > 0
+            except Exception as exc:
+                print(f'  ⚠️ RAR {filename}: libarchive fallback failed ({type(exc).__name__})')
+
+        if not extracted_ok:
             print(f'  ⚠️ RAR {filename}: no supported extractor succeeded')
             return None
 

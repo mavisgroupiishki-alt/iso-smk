@@ -1,7 +1,9 @@
 import io
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import server
 
@@ -71,6 +73,39 @@ def test_rar_converter_preserves_nested_pdf_and_jpg_paths(monkeypatch):
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(server.subprocess, 'run', fake_extract)
+
+    converted = server._rar_to_zip_bytes(b'not-a-real-rar', 'СПК.rar')
+
+    assert converted is not None
+    with zipfile.ZipFile(io.BytesIO(converted)) as archive:
+        assert sorted(archive.namelist()) == [
+            'ИК СПК инфа/Люди/трудовая.jpg',
+            'ИК СПК инфа/СИ/свидетельство.pdf',
+        ]
+
+
+def test_rar_converter_uses_libarchive_when_no_system_extractor_exists(monkeypatch):
+    class FakeEntry:
+        def __init__(self, pathname, data):
+            self.pathname = pathname
+            self._data = data
+
+        def get_blocks(self):
+            yield self._data
+
+    class FakeReader:
+        def __enter__(self):
+            return [
+                FakeEntry('ИК СПК инфа/СИ/свидетельство.pdf', b'pdf'),
+                FakeEntry('ИК СПК инфа/Люди/трудовая.jpg', b'jpg'),
+            ]
+
+        def __exit__(self, *_args):
+            return False
+
+    fake_libarchive = SimpleNamespace(file_reader=lambda _path: FakeReader())
+    monkeypatch.setitem(sys.modules, 'libarchive', fake_libarchive)
+    monkeypatch.setattr(server.shutil, 'which', lambda _command: None)
 
     converted = server._rar_to_zip_bytes(b'not-a-real-rar', 'СПК.rar')
 
