@@ -23,6 +23,17 @@ def _zip_with_scans() -> bytes:
     return buffer.getvalue()
 
 
+def test_archive_processing_slot_rejects_parallel_jobs():
+    server.release_archive_processing()
+
+    assert server.reserve_archive_processing() is True
+    assert server.reserve_archive_processing() is False
+
+    server.release_archive_processing()
+    assert server.reserve_archive_processing() is True
+    server.release_archive_processing()
+
+
 def test_rar_upload_uses_the_existing_zip_recognition_pipeline(monkeypatch):
     monkeypatch.setattr(server, '_rar_to_zip_bytes', lambda *_: _zip_with_text_file())
     monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)

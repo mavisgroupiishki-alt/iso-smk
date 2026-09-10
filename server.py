@@ -338,7 +338,27 @@ GENERATION_IN_PROGRESS = {'active': False}
 # Не более 2 одновременных vision-запросов — на Render Free (512 МБ) 4+ параллельных
 # тяжёлых запроса к медленной модели гарантированно роняют инстанс.
 VISION_SEMAPHORE = threading.Semaphore(2)
+# Один большой архив держит в памяти исходный контейнер, распакованный ZIP и
+# результаты vision. Два таких задания одновременно на Render Free могут
+# перезапустить процесс и потерять оба задания, поэтому очередь здесь
+# намеренно однозадачная.
+ARCHIVE_PROCESSING_LOCK = threading.Lock()
+ARCHIVE_PROCESSING_IN_PROGRESS = {'active': False}
 TASKS = {}  # task_id -> {status, progress, result, error}
+
+
+def reserve_archive_processing():
+    """Reserve the single archive-processing slot without a race."""
+    with ARCHIVE_PROCESSING_LOCK:
+        if ARCHIVE_PROCESSING_IN_PROGRESS['active']:
+            return False
+        ARCHIVE_PROCESSING_IN_PROGRESS['active'] = True
+        return True
+
+
+def release_archive_processing():
+    with ARCHIVE_PROCESSING_LOCK:
+        ARCHIVE_PROCESSING_IN_PROGRESS['active'] = False
 
 def _prune_tasks(keep=2):
     """
@@ -2891,14 +2911,23 @@ class H(http.server.BaseHTTPRequestHandler):
                     return
 
                 import uuid as _uuid
+                if not reserve_archive_processing():
+                    self._json({
+                        'success': False,
+                        'error': ('Сейчас уже разбирается другой архив. Дождитесь завершения: '
+                                  'одновременная обработка больших архивов может перезапустить сервис.')
+                    }, 429)
+                    return
                 task_id = str(_uuid.uuid4())[:8]
                 TASKS[task_id] = {'status':'running','kind':'archive','progress':[],'step':0,'total':100}
+                save_task(task_id, TASKS[task_id])
                 _prune_tasks()
 
                 def run_archive(_tid=task_id, _bytes=file_bytes, _fn=filename, _key=api_key, _product=archive_product):
                     try:
                         def on_prog(msg):
                             TASKS[_tid]['progress'] = (TASKS[_tid].get('progress') or [])[-30:] + [msg]
+                            save_task(_tid, TASKS[_tid])
                             print(f"  [archive {_tid}] {msg}")
                         result_bundle = extract_archive_with_vision(_bytes, _fn, _key, progress_cb=on_prog, product=_product)
                         if isinstance(result_bundle, dict):
@@ -2914,10 +2943,14 @@ class H(http.server.BaseHTTPRequestHandler):
                         TASKS[_tid].update({'status':'done','kind':'archive','text':result_text,
                                             'summary': result_summary, 'analysis_text': result_analysis,
                                             'structured_data': structured_data,'filename':_fn, 'product': _product})
+                        save_task(_tid, TASKS[_tid])
                         _prune_tasks()
                     except Exception as _ex:
                         import traceback; traceback.print_exc()
                         TASKS[_tid].update({'status':'error','kind':'archive','error':str(_ex)})
+                        save_task(_tid, TASKS[_tid])
+                    finally:
+                        release_archive_processing()
 
                 threading.Thread(target=run_archive, daemon=True).start()
                 self._json({'success': True, 'async': True, 'task_id': task_id})
