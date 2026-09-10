@@ -1,0 +1,19 @@
+.git
+.gitignore
+.DS_Store
+.env
+.env.*
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tests/_output/
+_data/
+data/
+output/
+outputs/
+generated/
+tmp/
+*.log
+# Legacy source templates are not used by the current generators; the active
+# template sets above remain in the build context.
+templates/

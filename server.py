@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ИСО/СМК Генератор с ИИ-оформителем. Запуск: python server.py → http://localhost:8766"""
-import sys,json,os,shutil,tempfile,base64,zipfile,re,requests as req_lib
+import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,requests as req_lib
 import http.server,socketserver
 from pathlib import Path
 from datetime import datetime,timedelta
@@ -2048,6 +2048,64 @@ def _compact_product_analysis_text(full_text, product):
     return compact
 
 
+def _rar_to_zip_bytes(file_bytes, filename):
+    """Extract a RAR with an available system utility and rebuild it as ZIP.
+
+    The normal archive pipeline is ZIP-based and contains the vision path for PDF
+    scans and photos.  Converting here keeps RAR uploads on that same path instead
+    of sending them through the legacy text-only RAR reader.
+    """
+    with tempfile.TemporaryDirectory(prefix='igor-rar-') as temp_dir:
+        root = Path(temp_dir)
+        source = root / 'source.rar'
+        extracted = root / 'extracted'
+        source.write_bytes(file_bytes)
+
+        command_builders = (
+            lambda: ['bsdtar', '-xf', str(source), '-C', str(extracted)],
+            lambda: ['unrar', 'x', '-y', '-o+', str(source), str(extracted)],
+            lambda: ['7z', 'x', '-y', f'-o{extracted}', str(source)],
+        )
+        extracted_ok = False
+        for build_command in command_builders:
+            extracted.mkdir()
+            command = build_command()
+            if not shutil.which(command[0]):
+                extracted.rmdir()
+                continue
+            try:
+                completed = subprocess.run(
+                    command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=60,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                completed = None
+            if completed and completed.returncode == 0:
+                extracted_ok = True
+                break
+            shutil.rmtree(extracted)
+
+        if not extracted_ok:
+            print(f'  ⚠️ RAR {filename}: no supported extractor succeeded')
+            return None
+
+        extracted_root = extracted.resolve()
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(extracted.rglob('*')):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                try:
+                    relative = path.resolve().relative_to(extracted_root)
+                except ValueError:
+                    continue
+                archive.write(path, relative.as_posix())
+        return output.getvalue()
+
+
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all"):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
@@ -2058,6 +2116,19 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     это и была причина, почему данные людей с одними фото (не PDF) не попадали в карточку.
     """
     import io
+    archive_ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if archive_ext == 'rar':
+        file_bytes = _rar_to_zip_bytes(file_bytes, filename)
+        if file_bytes is None:
+            message = ('[RAR: архив не удалось открыть. Загрузите тот же набор файлов в ZIP — '
+                       'после этого ИИгорь прочитает PDF и фотографии.]')
+            return {'text': message, 'analysis_text': message, 'summary': message,
+                    'structured_data': {}}
+        filename = str(Path(filename).with_suffix('.zip'))
+    elif archive_ext != 'zip':
+        message = '[Архив: поддерживаются ZIP и RAR.]'
+        return {'text': message, 'analysis_text': message, 'summary': message,
+                'structured_data': {}}
     TEXT_EXTS = ('docx', 'doc', 'txt', 'csv', 'xlsx', 'xls')  # без pdf — у него своя ветка ниже
     IMAGE_EXTS = ('jpg', 'jpeg', 'png', 'webp')
     TEXT_INNER_LIMIT = 4 * 1024 * 1024     # текстовые файлы — как раньше, 4 МБ

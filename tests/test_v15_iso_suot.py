@@ -94,6 +94,35 @@ def test_suot_report_has_current_scope_and_current_staff_count():
     assert '17 человек' not in source_xml
 
 
+def test_nonstandard_scope_is_visible_in_smk_orders_and_customer_report():
+    data = sample_data()
+    scope = 'Производство металлоконструкций и разработка проектной документации'
+    data['company']['scope'] = scope
+    data['objects'] = [
+        {'name': 'Цех металлоконструкций «Север»', 'year': '2026', 'customer': 'ООО «Заказчик 1»'},
+        {'name': 'Проект склада № 7', 'year': '2026', 'customer': 'ОДО «Заказчик 2»'},
+    ]
+    itr = [x for x in data['staff'] if not x['is_worker']]
+    workers = [x for x in data['staff'] if x['is_worker']]
+    result = generate_iso_suot_package_v2(
+        data['company'], itr, generator.calculate_dates('20.08.2026'), generator.select_responsible(itr),
+        product='iso', workers=workers, suppliers=data['suppliers'], objects=data['objects']
+    )
+
+    order = next(d for d in result['docs'] if 'Приказ 3-СМК' in d['name'])
+    report = next(d for d in result['docs'] if 'оценке удовлетворенности заказчиков' in d['name'].lower())
+    order_text = xml_text(order['bytes'])
+    report_text = xml_text(report['bytes'])
+    assert scope in order_text
+    assert 'В ОБЛАСТИ:' in order_text
+    assert scope in report_text
+    assert 'Цех металлоконструкций «Север»' in report_text
+    assert 'Проект склада № 7' in report_text
+    assert 'ООО «Заказчик 1»' in report_text
+    assert 'ОДО «Заказчик 2»' in report_text
+    assert 'Устройство системы адресной пожарной сигнализации' not in report_text
+
+
 def test_company_att_itr_is_enriched_from_staff():
     att = {'itr': [{'fio':'Иванов Иван Иванович','position':'Главный инженер'}]}
     staff = [{

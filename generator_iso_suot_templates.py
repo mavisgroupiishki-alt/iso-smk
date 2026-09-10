@@ -419,14 +419,74 @@ def _ensure_scope_in_report(data: bytes, scope: str) -> bytes:
         for para in doc.paragraphs:
             upper = para.text.upper().replace('Ё','Е')
             if 'ОТЧЕТ' in upper or 'ОТЧЁТ' in para.text.upper():
-                new_p = doc.add_paragraph(f'Область применения: {scope}')
+                # Scope is a visible part of the report heading, rather than a
+                # footnote at the end.  This matters when one company has, for
+                # example, CMR plus design work, or manufactures steel structures.
+                new_p = doc.add_paragraph(f'В ОБЛАСТИ: {scope}')
                 para._p.addnext(new_p._p)
                 inserted = True
                 break
         if not inserted:
-            new_p = doc.add_paragraph(f'Область применения: {scope}')
+            new_p = doc.add_paragraph(f'В ОБЛАСТИ: {scope}')
             if doc.paragraphs:
                 doc.paragraphs[0]._p.addnext(new_p._p)
+    return _doc_bytes(doc)
+
+
+def _ensure_satisfaction_objects(data: bytes, objects: list | None) -> bytes:
+    """Put the supplied project names into the customer-satisfaction report.
+
+    The source template has a generic customer table.  Reusing or guessing its
+    sample rows is unsafe: the report must identify the exact projects recorded in
+    the company card.  Customers are shown only when supplied; a missing customer is
+    deliberately marked for review instead of fabricated.
+    """
+    rows = []
+    seen = set()
+    for item in objects or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('name') or '').strip()
+        if not name:
+            continue
+        key = (name, str(item.get('customer') or '').strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append((name, key[1] or 'ТРЕБУЕТ УТОЧНЕНИЯ'))
+
+    if not rows:
+        return data
+
+    doc = Document(io.BytesIO(data))
+    table = next(
+        (
+            candidate for candidate in doc.tables
+            if candidate.rows and candidate.columns
+            and 'заказчик' in candidate.rows[0].cells[0].text.lower()
+            and any('рекламац' in cell.text.lower() for cell in candidate.rows[0].cells[1:])
+        ),
+        None,
+    )
+    if table is None:
+        # A future template may omit the standard table.  In that case add a
+        # compact one rather than silently losing the supplied project list.
+        table = doc.add_table(rows=1, cols=3)
+        table.style = 'Table Grid'
+        for cell, label in zip(table.rows[0].cells, ('Объект / заказчик', 'Рекламации', 'Оценка')):
+            cell.text = label
+    else:
+        table.rows[0].cells[0].text = 'Объект / заказчик'
+        # The template's rows belong to its sample company.  Remove them all
+        # before inserting current objects, so no stale project can remain.
+        for row in list(table.rows[1:]):
+            row._tr.getparent().remove(row._tr)
+
+    for name, customer in rows:
+        cells = table.add_row().cells
+        cells[0].text = f'{name}\n{customer}'
+        cells[1].text = '—'
+        cells[2].text = '5'
     return _doc_bytes(doc)
 
 
@@ -961,10 +1021,14 @@ def _unique_people(people) -> list[dict]:
 
 
 def _appointment_order_doc(company: dict, dates: dict, number: str, title: str,
-                           clauses: list[str], acquainted: list[dict] | None = None) -> bytes:
+                           clauses: list[str], acquainted: list[dict] | None = None,
+                           scope: str = '') -> bytes:
     doc = _new_doc(company, f'ПРИКАЗ № {number}', dates, 'goals')
     p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r = p.add_run(title.upper()); r.bold = True
+    if scope:
+        p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.add_run(f'В ОБЛАСТИ: {scope}').bold = True
     p = doc.add_paragraph(); p.add_run('ПРИКАЗЫВАЮ:').bold = True
     for i, clause in enumerate(clauses, 1):
         doc.add_paragraph(f'{i}. {clause}')
@@ -995,28 +1059,29 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
 
     def labels(people): return '; '.join(_person_order_label(p) for p in _unique_people(people)) or 'ТРЕБУЕТ УТОЧНЕНИЯ'
     org = _clean_org_name(company)
+    scope = str(company.get('scope') or '').strip() or 'ТРЕБУЕТ УТОЧНЕНИЯ'
 
     if 'iso' in wanted_categories:
         items = [
             ('3-СМК', 'О назначении аудиторов для проведения внутреннего аудита',
-             [f'Назначить внутренними аудиторами: {labels(auditors)}.', 'Контроль за исполнением приказа оставляю за директором.'], auditors),
+             [f'Область применения СМК: {scope}.', f'Назначить внутренними аудиторами: {labels(auditors)}.', 'Контроль за исполнением приказа оставляю за директором.'], auditors),
             ('5-СМК', 'О проведении оценки и анализа рисков',
-             [f'Создать рабочую группу по идентификации и оценке рисков в составе: {labels(risk_group)}.', 'Рабочей группе провести идентификацию и оценку рисков по действующим процессам организации.'], risk_group),
+             [f'Область применения СМК: {scope}.', f'Создать рабочую группу по идентификации и оценке рисков в составе: {labels(risk_group)}.', 'Рабочей группе провести идентификацию и оценку рисков по действующим процессам организации.'], risk_group),
             ('6-СМК', 'О назначении владельца процесса',
-             [f'Назначить владельцем основного процесса: {_person_order_label(process_person)}.', 'Владельцу процесса обеспечить мониторинг показателей и управление рисками процесса.'], [process_person]),
+             [f'Назначить владельцем процесса «{scope}»: {_person_order_label(process_person)}.', 'Владельцу процесса обеспечить мониторинг показателей и управление рисками процесса.'], [process_person]),
             ('7-СМК', 'О назначении ответственного за фонд ТНПА, НПА и документов СМК',
-             [f'Назначить ответственным за актуализацию и управление фондом документов: {_person_order_label(fnpa_person)}.'], [fnpa_person]),
+             [f'Область применения СМК: {scope}.', f'Назначить ответственным за актуализацию и управление фондом документов: {_person_order_label(fnpa_person)}.'], [fnpa_person]),
             ('8-СМК', 'О создании Координационного совета',
-             [f'Создать Координационный совет в составе: {labels(council)}.', 'Совету осуществлять мониторинг результативности СМК и мероприятий по улучшению.'], council),
+             [f'Область применения СМК: {scope}.', f'Создать Координационный совет в составе: {labels(council)}.', 'Совету осуществлять мониторинг результативности СМК и мероприятий по улучшению.'], council),
             ('9-СМК', 'О проведении внутреннего обучения специалистов',
-             [f'Провести внутреннее обучение специалистов: {labels(auditors)}.', 'Тематика обучения: документированная информация СМК и внутренний аудит.'], auditors),
+             [f'Провести внутреннее обучение специалистов для области «{scope}»: {labels(auditors)}.', 'Тематика обучения: документированная информация СМК и внутренний аудит.'], auditors),
             ('10-СМК', 'О назначении ответственного за входной контроль',
-             [f'Назначить ответственным за организацию входного контроля: {_person_order_label(process_person)}.'], [process_person]),
+             [f'Для области «{scope}» назначить ответственным за организацию входного контроля: {_person_order_label(process_person)}.'], [process_person]),
             ('11-СМК', 'О технических осмотрах средств измерений',
-             [f'Назначить ответственным за учёт, технический осмотр и своевременную поверку средств измерений: {_person_order_label(process_person or fnpa_person)}.'], [process_person or fnpa_person]),
+             [f'Для области «{scope}» назначить ответственным за учёт, технический осмотр и своевременную поверку средств измерений: {_person_order_label(process_person or fnpa_person)}.'], [process_person or fnpa_person]),
         ]
         for number,title,clauses,people in items:
-            docs.append({'name': f'{org} - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people)})
+            docs.append({'name': f'{org} - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people,scope)})
 
     if 'suot' in wanted_categories:
         ot_people = _unique_people(auditors)
@@ -1342,6 +1407,8 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             )
             if 'отчет' in friendly.lower().replace('ё','е'):
                 data = _ensure_scope_in_report(data, scope)
+            if key == 'smk_doc_14.docx':
+                data = _ensure_satisfaction_objects(data, objects)
             docs.append({'name': out_name, 'bytes': data})
         except Exception as e:
             message = f"Не сформирован документ «{friendly}» ({key}): {type(e).__name__}: {e}"
