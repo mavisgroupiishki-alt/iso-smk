@@ -349,6 +349,71 @@ ROLE_RESPONSIBILITIES = {
 
 
 # ═══════════════════ Документ 6: Справка ИТР ═══════════════════
+def _is_ptu_diploma(diploma: dict) -> bool:
+    """ПТУ в СПК-справку не включается по правилу оформителя."""
+    text = ' '.join(str(diploma.get(key) or '') for key in (
+        'number', 'institution', 'speciality', 'qualification', 'education_level',
+    )).lower().replace('ё', 'е')
+    return bool(re.search(r'\bпту\b|профессионально[ -]техническ', text))
+
+
+def _itr_diploma_lines(person: dict) -> list:
+    """Возвращает все подтверждённые непрофессионально-технические дипломы."""
+    values = person.get('diplomas') or []
+    if not values:
+        values = [{
+            'number': person.get('diploma_number', ''),
+            'date': person.get('diploma_date', ''),
+            'institution': person.get('diploma_institution', ''),
+            'speciality': person.get('diploma_speciality', ''),
+            'qualification': person.get('diploma_qualification', ''),
+            'education_level': person.get('education_level', ''),
+        }]
+
+    lines, seen = [], set()
+    for value in values:
+        diploma = dict(value) if isinstance(value, dict) else {'number': str(value)}
+        if _is_ptu_diploma(diploma):
+            continue
+        key = tuple(str(diploma.get(field) or '').strip().lower() for field in (
+            'number', 'date', 'institution', 'speciality', 'qualification', 'education_level',
+        ))
+        if key in seen or not any(key):
+            continue
+        seen.add(key)
+        parts = []
+        if diploma.get('education_level'):
+            parts.append(str(diploma['education_level']))
+        parts.append(f"Диплом {diploma.get('number') or 'ТРЕБУЕТ УТОЧНЕНИЯ: номер'}")
+        if diploma.get('date'):
+            parts.append(f"выдан {diploma['date']}")
+        if diploma.get('institution'):
+            parts.append(str(diploma['institution']))
+        if diploma.get('speciality'):
+            parts.append(str(diploma['speciality']))
+        if diploma.get('qualification'):
+            parts.append(str(diploma['qualification']))
+        lines.append(' '.join(parts))
+    return lines or ['ТРЕБУЕТ УТОЧНЕНИЯ: данные диплома']
+
+
+def _itr_workbook_lines(person: dict) -> list:
+    """Не теряет вкладыши и несколько трудовых книжек одного специалиста."""
+    values = list(person.get('trudovye_numbers') or [])
+    if person.get('trudovaya_number'):
+        values.append(person['trudovaya_number'])
+    unique, seen = [], set()
+    for value in values:
+        text = str(value or '').strip()
+        key = text.lower()
+        if text and key not in seen:
+            seen.add(key)
+            unique.append(text)
+    return [f"Трудовые книжки: {'; '.join(unique)}"] if unique else [
+        'ТРЕБУЕТ УТОЧНЕНИЯ: номер трудовой книжки'
+    ]
+
+
 def render_spravka_itr(company: dict, people: list) -> bytes:
     """
     people: [{fio, position, education_level, diploma_number, diploma_date,
@@ -364,13 +429,11 @@ def render_spravka_itr(company: dict, people: list) -> bytes:
 
     new_rows = []
     for p in people:
-        edu = (f"{p.get('education_level','')} Диплом {p.get('diploma_number') or '—'} "
-               f"выдан {p.get('diploma_date') or '—'} {p.get('diploma_institution','')} "
-               f"{p.get('diploma_speciality','')} {p.get('diploma_qualification','')}")
+        edu = _itr_diploma_lines(p)
         role_key = (p.get('role_key') or '').lower()
         responsibility = ROLE_RESPONSIBILITIES.get(role_key, p.get('responsibility', ''))
         protocol = f"Протокол №{p.get('protocol_number','')} от {p.get('protocol_date','')} г." if p.get('protocol_number') else '—'
-        extra = f"Стаж – {p.get('stage_years','—')} Трудовая книжка {p.get('trudovaya_number','—')}"
+        extra = [f"Стаж – {p.get('stage_years','—')}", *_itr_workbook_lines(p)]
         cell_values = [p.get('fio', ''), p.get('position', ''), edu, responsibility, protocol, extra]
         new_rows.append(_build_row(template_row, cell_values))
 

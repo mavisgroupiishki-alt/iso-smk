@@ -4,7 +4,7 @@ import zipfile
 
 import generator
 from docx_review import collect_required_items, collect_review_tokens_and_items
-from generator_spk_templates import generate_spk_package_v2
+from generator_spk_templates import _build_real_si_list, generate_spk_package_v2
 import server
 
 
@@ -98,3 +98,81 @@ def test_spk_chat_asks_for_missing_facts_before_generation():
     assert 'ттк' in questions
     assert payload['data']['review_items'] == []
     assert payload['data']['flags'] == []
+
+
+def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    itr = [
+        {
+            'fio': 'Иванов Иван Иванович', 'position': 'Директор',
+            'diplomas': [
+                {'number': 'В-100', 'institution': 'БГТУ', 'speciality': 'ПГС'},
+                {'number': 'ПТУ-200', 'institution': 'ПТУ № 15', 'speciality': 'каменщик'},
+                {'number': 'С-300', 'institution': 'БНТУ', 'speciality': 'строительство'},
+            ],
+            'trudovye_numbers': ['ПК № 1111111', 'Вкладыш № 2222222'],
+        },
+        {'fio': 'Петров Петр Петрович', 'position': 'Главный инженер'},
+        {'fio': 'Сидоров Сидор Сидорович', 'position': 'Производитель работ'},
+    ]
+    result = generate_spk_package_v2(
+        company, itr, [], dates, generator.select_responsible(itr), variant='spk_stroy',
+    )
+    text = _xml_text(_document(result, '2 Справка ИТР')['bytes'])
+
+    assert 'В-100' in text
+    assert 'С-300' in text
+    assert 'ПТУ-200' not in text
+    assert 'ПК № 1111111' in text
+    assert 'Вкладыш № 2222222' in text
+
+
+def test_spk_copy_list_is_preserved_as_measurement_tools():
+    source = '''
+    ПЕРЕЧЕНЬ КОПИЙ СПК
+    Сведения по инструментам:
+    - Нивелир (возможна аренда)
+    - Рейка нивелирная
+    - Плотномер динамический (возможна аренда)
+    - Рулетка измерительная
+    - Линейка измерительная
+    - Уровень электронный строительный
+    - Рейка контрольная
+    - Штангенциркуль ШЦ
+    - Угольник поверочный
+    - Термометр (-35 +50)
+    - Теодолит (возможна аренда)
+    '''
+    tools = server._extract_spk_tools_from_copy_list(source)
+    names = [tool['name'] for tool in tools]
+
+    assert len(names) == 11
+    assert 'Нивелир' in names
+    assert 'Теодолит' in names
+
+
+def test_person_archive_folder_can_be_a_surname_or_role():
+    personal_blocks = ['--- диплом.pdf ---\nДиплом', '--- трудовая.pdf ---\nТрудовая книжка']
+
+    assert server._looks_like_person_folder('Белько', personal_blocks)
+    assert server._looks_like_person_folder('Директор', personal_blocks)
+    assert not server._looks_like_person_folder('Уставные', personal_blocks)
+
+
+def test_spk_si_includes_copy_list_tools_without_inventing_verification():
+    source = 'СВЕДЕНИЯ ПО ИНСТРУМЕНТАМ: Нивелир; Рейка нивелирная; Теодолит'
+    rows, warnings = _build_real_si_list({
+        'measurement_tools': server._extract_spk_tools_from_copy_list(source),
+        'verification_documents': [],
+        'calibration_documents': [],
+    })
+    by_name = {row['name']: row for row in rows}
+
+    assert set(by_name) == {'Нивелир', 'Рейка нивелирная', 'Теодолит'}
+    assert by_name['Теодолит']['verification'] == 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
+    assert len(warnings) == 3

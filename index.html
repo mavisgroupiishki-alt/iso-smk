@@ -2995,6 +2995,22 @@ function aiNormalizeFioKey(fio) {
   return String(fio || '').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/gi,' ').trim().replace(/\s+/g,' ');
 }
 
+function aiSpkToolIdentity(tool) {
+  const name = String(tool?.name || '').toLowerCase().replace(/ё/g, 'е');
+  if(/нивелир/.test(name) && /рейк/.test(name)) return 'рейка-нивелирная';
+  if(/плотномер/.test(name)) return 'плотномер-динамический';
+  if(/рулетк/.test(name)) return 'рулетка-измерительная';
+  if(/линейк/.test(name)) return 'линейка-измерительная';
+  if(/уров(?:ень|ня)/.test(name) && /электрон/.test(name)) return 'уровень-электронный';
+  if(/рейк/.test(name) && /контроль/.test(name)) return 'рейка-контрольная';
+  if(/штангенциркул/.test(name)) return 'штангенциркуль';
+  if(/угольник/.test(name)) return 'угольник-поверочный';
+  if(/термометр/.test(name)) return 'термометр';
+  if(/теодолит/.test(name)) return 'теодолит';
+  if(/нивелир/.test(name)) return 'нивелир';
+  return aiNormalizeFioKey(name);
+}
+
 function aiMergeItrRecords(baseList, patchList, sourceAuthoritative=false) {
   const order = [];
   const map = new Map();
@@ -3056,6 +3072,29 @@ function aiMergeStructuredSource(baseData, sourceData) {
       }
     });
     base.company_attestation = bca;
+  }
+  if(source.spk) {
+    const bspk = {...(base.spk || {})};
+    const sourceTools = Array.isArray(source.spk.measurement_tools) ? source.spk.measurement_tools : [];
+    if(sourceTools.length) {
+      const mergedTools = [...(Array.isArray(bspk.measurement_tools) ? bspk.measurement_tools : [])];
+      const seen = new Set(mergedTools.map(aiSpkToolIdentity));
+      sourceTools.forEach(tool => {
+        if(!tool || typeof tool !== 'object') return;
+        const key = aiSpkToolIdentity(tool);
+        if(!seen.has(key)) {
+          mergedTools.push(JSON.parse(JSON.stringify(tool)));
+          seen.add(key);
+        }
+      });
+      bspk.measurement_tools = mergedTools;
+    }
+    Object.entries(source.spk).forEach(([key, value]) => {
+      if(key !== 'measurement_tools' && aiHasMeaningfulValue(value)) {
+        bspk[key] = JSON.parse(JSON.stringify(value));
+      }
+    });
+    base.spk = bspk;
   }
   if(Array.isArray(source._source_forms)) {
     base._source_forms = [...new Set([...(base._source_forms || []), ...source._source_forms])];

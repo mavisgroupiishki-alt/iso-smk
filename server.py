@@ -1834,15 +1834,20 @@ def _looks_like_person_folder(folder_name, blocks):
         'документ', 'реквизит', 'договор', 'аренд', 'сертификат', 'аттестат',
         'удостоверен', 'инструкц', 'охрана труда', 'суот', 'исо', 'спк', 'бисп',
         'стройкомплекс', 'форма', 'заявлен', 'дипломы', 'трудовые', 'паспорта',
-        'прочее', 'разное', 'архив', 'сканы', 'фото', 'проект', 'ппр', 'журнал'
+        'прочее', 'разное', 'архив', 'сканы', 'фото', 'проект', 'ппр', 'журнал',
+        'устав', 'учред', 'регистрац'
     )
     if any(keyword in normalized for keyword in category_keywords):
         return False
 
-    # A person folder is normally 2–4 Cyrillic name tokens or initials.
+    # A person folder is normally 2–4 Cyrillic name tokens or initials. Some
+    # real archives use just a surname ("Белько") or a role ("Директор");
+    # accept that narrow case only when the folder holds several personal files.
     tokens = [t for t in re.split(r'\s+', normalized) if t]
     token_re = re.compile(r'^[а-я-]+$|^[а-я]\.?[а-я]\.?$', re.I)
     name_like = 2 <= len(tokens) <= 4 and all(token_re.match(t) for t in tokens)
+    if not name_like:
+        name_like = (len(tokens) == 1 and bool(token_re.match(tokens[0])) and len(blocks or []) >= 2)
     if not name_like:
         return False
 
@@ -2199,6 +2204,41 @@ def _archive_vision_batches(entries):
     return [(pdf_entries, 1), (image_entries, 2)]
 
 
+_SPK_COPY_LIST_TOOLS = (
+    ('Нивелир', r'\bнивелир\w*\b'),
+    ('Рейка нивелирная', r'\bрейк\w*\s+нивелир\w*\b'),
+    ('Плотномер динамический', r'\bплотномер\w*\s+динамическ\w*\b'),
+    ('Рулетка измерительная', r'\bрулетк\w*\s+измерительн\w*\b'),
+    ('Линейка измерительная', r'\bлинейк\w*\s+измерительн\w*\b'),
+    ('Уровень электронный строительный', r'\bуров(?:ень|ня)\s+электронн\w*(?:\s+строительн\w*)?\b'),
+    ('Рейка контрольная', r'\bрейк\w*\s+контрольн\w*\b'),
+    ('Штангенциркуль ШЦ', r'\bштангенциркул\w*(?:\s+шц)?\b'),
+    ('Угольник поверочный', r'\bугольник\w*\s+поверочн\w*\b'),
+    ('Термометр', r'\bтермометр\w*\b'),
+    ('Теодолит', r'\bтеодолит\w*\b'),
+)
+
+
+def _extract_spk_tools_from_copy_list(text: str) -> list:
+    """Извлекает именно обязательный перечень СИ из «Перечня копий СПК».
+
+    У такого списка часто нет заводских номеров и поверок. Это не причина терять
+    прибор: Справка СИ выводит его с жёлтой отметкой для последующего дополнения.
+    """
+    value = str(text or '').replace('\xa0', ' ').lower().replace('ё', 'е')
+    anchor = re.search(r'(?:перечень\s+коп(?:ий|ии)[\s\S]{0,240})?сведени\w*\s+по\s+(?:инструмент|средств\w*\s+измер)', value)
+    if not anchor:
+        return []
+    # После заголовка расположен сам список. Ограничение защищает от случайного
+    # попадания слов из несвязанной части архива с дипломами и трудовыми.
+    section = value[anchor.start():anchor.start() + 5000]
+    tools = []
+    for name, pattern in _SPK_COPY_LIST_TOOLS:
+        if re.search(pattern, section, re.IGNORECASE):
+            tools.append({'name': name, 'quantity': 1, 'source': 'copy_list'})
+    return tools
+
+
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all"):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
@@ -2459,6 +2499,12 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         except Exception as merge_error:
             print(f"  ⚠️ Не удалось объединить структурированные Формы 1–5: {merge_error}")
     final_text = result or '[Архив: читаемых данных не найдено]'
+    copy_list_tools = _extract_spk_tools_from_copy_list(final_text)
+    if copy_list_tools:
+        structured_data['spk'] = {
+            **(structured_data.get('spk') or {}),
+            'measurement_tools': copy_list_tools,
+        }
     return {
         'text': final_text,
         'analysis_text': _compact_product_analysis_text(final_text, product),
