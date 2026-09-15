@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ИСО/СМК Генератор с ИИ-оформителем. Запуск: python server.py → http://localhost:8766"""
-import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,hmac,hashlib,secrets,time,requests as req_lib
+import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,requests as req_lib
 import http.server,socketserver
 from pathlib import Path
 from datetime import datetime,timedelta
@@ -69,12 +69,9 @@ OUT_DIR     = _DATA/'output'
 KV_DIR      = _DATA/'kv'
 TASKS_DIR   = _DATA/'tasks'
 KNOWLEDGE_DIR = _DATA/'knowledge'
-AUTH_DIR = _DATA/'auth'
-USERS_FILE = AUTH_DIR/'users.json'
-SESSIONS_FILE = AUTH_DIR/'sessions.json'
 PORT = int(os.environ.get("PORT", 8766))
 
-for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR, KNOWLEDGE_DIR, AUTH_DIR]:
+for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR, KNOWLEDGE_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 _STORAGE_LOCK = __import__('threading').RLock()
@@ -125,200 +122,6 @@ def kv_list(prefix: str = ''):
         except Exception:
             continue
     return keys
-
-
-# ── Доступ сотрудников ─────────────────────────────────────────────────
-# Авторизация намеренно не использует внешний сервис: на Persistent Disk
-# лежат только scrypt-хеши паролей и случайные сессионные идентификаторы.
-_AUTH_SESSION_SECONDS = 60 * 60 * 12
-_AUTH_OPERATOR_ROUTES = {
-    ('POST', '/api/analyze-image'), ('POST', '/api/extract-text'),
-    ('POST', '/api/extract-archive-async'), ('POST', '/api/ai/chat'),
-    ('POST', '/api/generate'),
-}
-
-
-def _auth_read(path: Path, default):
-    try:
-        return json.loads(path.read_text('utf-8'))
-    except Exception:
-        return default
-
-
-def _auth_write(path: Path, value):
-    _atomic_write_text(path, json.dumps(value, ensure_ascii=False, indent=2))
-
-
-def _auth_username(value: str) -> str:
-    username = str(value or '').strip().lower()
-    if not re.fullmatch(r'[a-z0-9][a-z0-9._-]{2,63}', username):
-        raise ValueError('Логин: 3–64 символа, только латинские буквы, цифры, точка, дефис или подчёркивание.')
-    return username
-
-
-def _auth_password_hash(password: str, salt: bytes | None = None) -> str:
-    password = str(password or '')
-    if len(password) < 12:
-        raise ValueError('Пароль должен содержать не менее 12 символов.')
-    salt = salt or secrets.token_bytes(16)
-    derived = hashlib.scrypt(password.encode('utf-8'), salt=salt, n=2**14, r=8, p=1, dklen=32)
-    return f'scrypt$16384$8$1${salt.hex()}${derived.hex()}'
-
-
-def _auth_password_matches(password: str, encoded: str) -> bool:
-    try:
-        kind, n, r, p, salt_hex, hash_hex = str(encoded).split('$', 5)
-        if kind != 'scrypt':
-            return False
-        derived = hashlib.scrypt(str(password or '').encode('utf-8'), salt=bytes.fromhex(salt_hex),
-                                 n=int(n), r=int(r), p=int(p), dklen=len(bytes.fromhex(hash_hex)))
-        return hmac.compare_digest(derived, bytes.fromhex(hash_hex))
-    except Exception:
-        return False
-
-
-def _auth_users() -> dict:
-    data = _auth_read(USERS_FILE, {'users': {}})
-    return data if isinstance(data, dict) and isinstance(data.get('users'), dict) else {'users': {}}
-
-
-def _auth_public_user(user: dict) -> dict:
-    return {'username': user['username'], 'role': user['role'], 'active': bool(user.get('active', True))}
-
-
-def auth_bootstrap_owner():
-    """Create the first owner once. The plaintext is only read from Render env."""
-    data = _auth_users()
-    users = data['users']
-    owners = [row for row in users.values() if row.get('role') == 'owner']
-    if owners:
-        return _auth_public_user(owners[0])
-    password = os.environ.get('IGOR_OWNER_PASSWORD', '')
-    if not password:
-        raise RuntimeError('Не задан пароль владельца приложения.')
-    username = _auth_username(os.environ.get('IGOR_OWNER_USERNAME', 'owner'))
-    users[username] = {
-        'id': username, 'username': username, 'role': 'owner', 'active': True,
-        'password_hash': _auth_password_hash(password),
-        'created_at': datetime.now().isoformat(timespec='seconds'),
-    }
-    _auth_write(USERS_FILE, data)
-    return _auth_public_user(users[username])
-
-
-def auth_setup_required() -> bool:
-    has_owner = any(row.get('role') == 'owner' for row in _auth_users()['users'].values())
-    configured_password = os.environ.get('IGOR_OWNER_PASSWORD', '')
-    return not has_owner and len(configured_password) < 12
-
-
-def auth_login(username: str, password: str):
-    auth_bootstrap_owner()
-    key = _auth_username(username)
-    user = _auth_users()['users'].get(key)
-    if not user or not user.get('active') or not _auth_password_matches(password, user.get('password_hash', '')):
-        return None
-    sessions = _auth_read(SESSIONS_FILE, {'sessions': {}})
-    now = int(time.time())
-    sessions['sessions'] = {
-        sid: row for sid, row in (sessions.get('sessions') or {}).items()
-        if isinstance(row, dict) and int(row.get('expires_at', 0)) > now
-    }
-    session_id = secrets.token_urlsafe(32)
-    sessions['sessions'][session_id] = {'user_id': user['id'], 'expires_at': now + _AUTH_SESSION_SECONDS}
-    _auth_write(SESSIONS_FILE, sessions)
-    return {'session_id': session_id, 'user': _auth_public_user(user)}
-
-
-def auth_logout(session_id: str):
-    if not session_id:
-        return
-    sessions = _auth_read(SESSIONS_FILE, {'sessions': {}})
-    if session_id in (sessions.get('sessions') or {}):
-        sessions['sessions'].pop(session_id, None)
-        _auth_write(SESSIONS_FILE, sessions)
-
-
-def auth_current_user(session_id: str):
-    if not session_id:
-        return None
-    sessions = _auth_read(SESSIONS_FILE, {'sessions': {}})
-    row = (sessions.get('sessions') or {}).get(session_id)
-    if not isinstance(row, dict) or int(row.get('expires_at', 0)) <= int(time.time()):
-        return None
-    user = _auth_users()['users'].get(str(row.get('user_id') or ''))
-    if not user or not user.get('active'):
-        return None
-    return {'id': user['id'], **_auth_public_user(user)}
-
-
-def auth_list_users(actor: dict) -> list:
-    if not actor or actor.get('role') != 'owner':
-        raise PermissionError('Недостаточно прав.')
-    return sorted((_auth_public_user(row) for row in _auth_users()['users'].values()), key=lambda row: row['username'])
-
-
-def auth_create_user(actor: dict, username: str, password: str, role: str = 'operator') -> dict:
-    if not actor or actor.get('role') != 'owner':
-        raise PermissionError('Недостаточно прав.')
-    if role != 'operator':
-        raise ValueError('Можно создать только учётную запись сотрудника.')
-    key = _auth_username(username)
-    data = _auth_users()
-    if key in data['users']:
-        raise ValueError('Такой логин уже существует.')
-    data['users'][key] = {
-        'id': key, 'username': key, 'role': 'operator', 'active': True,
-        'password_hash': _auth_password_hash(password),
-        'created_at': datetime.now().isoformat(timespec='seconds'),
-    }
-    _auth_write(USERS_FILE, data)
-    return _auth_public_user(data['users'][key])
-
-
-def auth_update_user(actor: dict, username: str, password: str | None = None, active: bool | None = None) -> dict:
-    if not actor or actor.get('role') != 'owner':
-        raise PermissionError('Недостаточно прав.')
-    key = _auth_username(username)
-    data = _auth_users()
-    user = data['users'].get(key)
-    if not user or user.get('role') != 'operator':
-        raise KeyError('Учётная запись сотрудника не найдена.')
-    if password is not None:
-        user['password_hash'] = _auth_password_hash(password)
-    if active is not None:
-        user['active'] = bool(active)
-    _auth_write(USERS_FILE, data)
-    return _auth_public_user(user)
-
-
-def auth_delete_user(actor: dict, username: str) -> bool:
-    if not actor or actor.get('role') != 'owner':
-        raise PermissionError('Недостаточно прав.')
-    key = _auth_username(username)
-    data = _auth_users()
-    user = data['users'].get(key)
-    if not user or user.get('role') != 'operator':
-        return False
-    data['users'].pop(key, None)
-    _auth_write(USERS_FILE, data)
-    return True
-
-
-def auth_route_allowed(role: str, method: str, path: str) -> bool:
-    if role == 'owner':
-        return True
-    if role != 'operator':
-        return False
-    return (method, path) in _AUTH_OPERATOR_ROUTES or (method == 'GET' and path.startswith('/api/task/')) or (method == 'GET' and path.startswith('/api/download/'))
-
-
-def auth_owns_record(actor: dict, record: dict) -> bool:
-    if not actor:
-        return False
-    if actor.get('role') == 'owner':
-        return True
-    return bool(record.get('owner_user_id')) and record.get('owner_user_id') == actor.get('id')
 
 
 # ── База знаний ИИгоря ───────────────────────────────────────────────
@@ -1239,19 +1042,13 @@ def save_journal(entry):
     _atomic_write_text(JOURNAL_DIR/f'{eid}.json', json.dumps(entry,ensure_ascii=False,indent=2))
     return eid
 
-def get_journal_entry(eid):
+def get_zip(eid):
     for f in JOURNAL_DIR.glob('*.json'):
         try:
             e=json.loads(f.read_text('utf-8'))
-            if e.get('id') == eid:
-                return e
+            if e.get('id')==eid:
+                zp=e.get('zipPath'); return zp if zp and os.path.exists(zp) else None
         except: pass
-    return None
-
-def get_zip(eid):
-    entry = get_journal_entry(eid)
-    zp = entry.get('zipPath') if entry else None
-    return zp if zp and os.path.exists(zp) else None
 
 
 
@@ -2902,45 +2699,6 @@ INDEX = (BASE_DIR/'index.html').read_text('utf-8')
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
 
-    def _session_id(self):
-        from http.cookies import SimpleCookie
-        try:
-            cookies = SimpleCookie(self.headers.get('Cookie', ''))
-            return cookies.get('igor_session').value if cookies.get('igor_session') else ''
-        except Exception:
-            return ''
-
-    def _current_user(self):
-        return auth_current_user(self._session_id())
-
-    def _require_user(self):
-        if auth_setup_required():
-            self._json({'success': False, 'error': 'Доступ ещё не настроен владельцем приложения.'}, 503)
-            return None
-        user = self._current_user()
-        if not user:
-            self._json({'success': False, 'error': 'Требуется вход в приложение.'}, 401)
-            return None
-        return user
-
-    def _same_origin(self):
-        origin = self.headers.get('Origin', '').strip()
-        if not origin:
-            return True
-        try:
-            from urllib.parse import urlsplit
-            return urlsplit(origin).netloc == self.headers.get('Host', '')
-        except Exception:
-            return False
-
-    def _auth_cookie(self, session_id='', clear=False):
-        secure = bool(RENDER_GIT_COMMIT) or self.headers.get('X-Forwarded-Proto', '').lower() == 'https'
-        parts = [f'igor_session={session_id}', 'Path=/', 'HttpOnly', 'SameSite=Strict']
-        parts.append('Max-Age=0' if clear else f'Max-Age={_AUTH_SESSION_SECONDS}')
-        if secure:
-            parts.append('Secure')
-        return '; '.join(parts)
-
     def do_HEAD(self):
         """UptimeRobot и браузеры шлют HEAD — отвечаем 200"""
         self.send_response(200)
@@ -2949,22 +2707,6 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         p=self.path.split('?')[0]
-        if p == '/api/auth/session':
-            user = self._current_user()
-            self._json({'authenticated': bool(user), 'user': _auth_public_user(user) if user else None,
-                        'setup_required': auth_setup_required()})
-            return
-        if p not in ('/', '//index.html', '/api/version'):
-            user = self._require_user()
-            if not user:
-                return
-            if not auth_route_allowed(user['role'], 'GET', p):
-                self._json({'success': False, 'error': 'Недостаточно прав.'}, 403)
-                return
-            if p == '/api/users':
-                self._json({'users': auth_list_users(user)})
-                return
-            self._request_user = user
         if p in('/','//index.html'):          self._html(INDEX)
         elif p=='/api/version':
             self._json({
@@ -2996,7 +2738,7 @@ class H(http.server.BaseHTTPRequestHandler):
         elif p.startswith('/api/task/'):
             task_id = p.split('/')[-1]
             task = TASKS.get(task_id) or load_task(task_id)
-            if task and auth_owns_record(self._request_user, task):
+            if task:
                 TASKS[task_id] = task
                 _prune_tasks()
                 self._json({
@@ -3018,8 +2760,7 @@ class H(http.server.BaseHTTPRequestHandler):
             else:
                 self._json({'status':'not_found'})
         elif p.startswith('/api/download/'):
-            entry = get_journal_entry(p.split('/')[-1])
-            zp=get_zip(p.split('/')[-1]) if entry and auth_owns_record(self._request_user, entry) else None
+            zp=get_zip(p.split('/')[-1])
             if zp:
                 d=open(zp,'rb').read()
                 self.send_response(200)
@@ -3031,55 +2772,9 @@ class H(http.server.BaseHTTPRequestHandler):
         else: self.send_response(404); self.end_headers()
 
     def do_POST(self):
-        p=self.path.split('?')[0]
-        if p == '/api/auth/login':
-            body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
-            if auth_setup_required():
-                self._json({'success': False, 'error': 'Владелец ещё не настроил доступ к приложению.'}, 503)
-                return
-            try:
-                payload = json.loads(body.decode('utf-8'))
-                session = auth_login(payload.get('username', ''), payload.get('password', ''))
-            except ValueError:
-                session = None
-            except RuntimeError as exc:
-                self._json({'success': False, 'error': str(exc)}, 503)
-                return
-            if not session:
-                self._json({'success': False, 'error': 'Неверный логин или пароль.'}, 401)
-                return
-            self._json({'success': True, 'user': session['user']}, headers={
-                'Set-Cookie': self._auth_cookie(session['session_id'])
-            })
-            return
-        if p == '/api/auth/logout':
-            auth_logout(self._session_id())
-            self._json({'success': True}, headers={'Set-Cookie': self._auth_cookie(clear=True)})
-            return
-
-        user = self._require_user()
-        if not user:
-            return
-        if not self._same_origin():
-            self._json({'success': False, 'error': 'Недопустимый источник запроса.'}, 403)
-            return
-        if not auth_route_allowed(user['role'], 'POST', p):
-            self._json({'success': False, 'error': 'Недостаточно прав.'}, 403)
-            return
         body=self.rfile.read(int(self.headers.get('Content-Length',0)))
+        p=self.path.split('?')[0]
         try:
-            if p == '/api/users/create':
-                req = json.loads(body)
-                self._json({'success': True, 'user': auth_create_user(user, req.get('username'), req.get('password'), req.get('role', 'operator'))})
-                return
-            if p == '/api/users/update':
-                req = json.loads(body)
-                self._json({'success': True, 'user': auth_update_user(user, req.get('username'), req.get('password') if 'password' in req else None, req.get('active') if 'active' in req else None)})
-                return
-            if p == '/api/users/delete':
-                req = json.loads(body)
-                self._json({'success': auth_delete_user(user, req.get('username'))})
-                return
             if p=='/api/kv/set':
                 data = json.loads(body.decode('utf-8'))
                 key = data.get('key', '')
@@ -3316,10 +3011,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     }, 429)
                     return
                 task_id = str(_uuid.uuid4())[:8]
-                TASKS[task_id] = {
-                    'status':'running', 'kind':'archive', 'progress':[], 'step':0, 'total':100,
-                    'owner_user_id': user['id'],
-                }
+                TASKS[task_id] = {'status':'running','kind':'archive','progress':[],'step':0,'total':100}
                 save_task(task_id, TASKS[task_id])
                 _prune_tasks()
 
@@ -3422,10 +3114,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         return
 
                     task_id = str(_uuid.uuid4())[:8]
-                    TASKS[task_id] = {
-                        'status': 'running', 'progress': [], 'step': 0, 'total': 100,
-                        'owner_user_id': user['id'],
-                    }
+                    TASKS[task_id] = {'status': 'running', 'progress': [], 'step': 0, 'total': 100}
                     _prune_tasks()
                     save_task(task_id, TASKS[task_id])
 
@@ -3440,11 +3129,11 @@ class H(http.server.BaseHTTPRequestHandler):
                                 print(f"  [{step}/{total}] {msg}")
 
                             _data = dict(_data or {})
-                            _data['_knowledge_context'] = knowledge_context(_prod) if user.get('role') == 'owner' else ''
+                            _data['_knowledge_context'] = knowledge_context(_prod)
                             # Передаём генератору и структурированные правила. Это позволяет
                             # исполнять безопасные обученные замены в DOCX, а не только добавлять
                             # текст правила в промпт модели.
-                            _data['_knowledge_rules'] = knowledge_list(active_only=True, scope=_prod) if user.get('role') == 'owner' else []
+                            _data['_knowledge_rules'] = knowledge_list(active_only=True, scope=_prod)
                             result = generate_package(_data, _key, _prod, on_prog)
                             docs = result['docs']
                             if result.get('error') or not docs:
@@ -3457,7 +3146,6 @@ class H(http.server.BaseHTTPRequestHandler):
                                 for doc in docs:
                                     _zf.writestr(doc['name'], doc['bytes'])
                             _eid = save_journal({
-                                'owner_user_id': user['id'],
                                 'orgName': _data.get('company', {}).get('name', ''),
                                 'implDate': result['dates'].get('goals', ''),
                                 'fileCount': len(docs),
@@ -3514,13 +3202,11 @@ class H(http.server.BaseHTTPRequestHandler):
             traceback.print_exc()
             self._json({'success':False,'error':_friendly_public_error(e)},500)
 
-    def _json(self,d,code=200,headers=None):
+    def _json(self,d,code=200):
         b=json.dumps(d,ensure_ascii=False).encode('utf-8')
         self.send_response(code)
         self.send_header('Content-Type','application/json; charset=utf-8')
         self.send_header('Content-Length',str(len(b)))
-        for key, value in (headers or {}).items():
-            self.send_header(key, value)
         self.end_headers(); self.wfile.write(b)
 
     def _html(self,h):
@@ -3528,9 +3214,6 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type','text/html; charset=utf-8')
         self.send_header('Content-Length',str(len(b)))
-        self.send_header('X-Frame-Options', 'DENY')
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Referrer-Policy', 'same-origin')
         # КРИТИЧНО: без этого браузер может показывать старый закэшированный
         # index.html даже после деплоя новой версии — человек тестирует фикс,
         # видит старое поведение, и непонятно, деплой не применился или фикс

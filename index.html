@@ -269,31 +269,10 @@ input::placeholder{color:#CDB8AA}
   .g2,.g3,.g4{grid-template-columns:1fr}
   #content{padding:16px}
 }
-
-#auth-gate{position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;background:linear-gradient(135deg,#4B2730,#8B4A5C);color:#fff}
-#auth-gate[hidden]{display:none}
-.auth-card{width:min(390px,100%);padding:28px;background:#fff;color:#382F2C;border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.3)}
-.auth-card h2{margin:0 0 8px;font-family:'Playfair Display',serif;color:#8B4A5C}.auth-card p{font-size:12px;line-height:1.5;color:#6E5F58}
-.auth-card label{display:block;font-size:11px;font-weight:700;color:#6E5F58;margin:14px 0 5px}.auth-card input{box-sizing:border-box;width:100%;padding:10px;border:1px solid #DCCDC2;border-radius:7px;font:inherit}
-.auth-card button{width:100%;margin-top:16px;padding:11px;border:0;border-radius:7px;background:#8B4A5C;color:#fff;font:inherit;font-weight:700;cursor:pointer}.auth-error{display:none;margin-top:12px;padding:8px;border-radius:6px;background:#FCE9E7;color:#A6503D;font-size:11px}
-#auth-user{font-size:11px;color:#6E5F58;white-space:nowrap}.auth-logout{border:1px solid #DCCDC2;background:#fff;color:#8B4A5C;border-radius:6px;padding:6px 9px;font:inherit;font-size:11px;cursor:pointer}
-body[data-role="operator"] [data-owner-only]{display:none!important}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
-<div id="auth-gate">
-  <form class="auth-card" onsubmit="authLogin(event)">
-    <h2>ИИгорь Оформитель</h2>
-    <p>Войдите под своей учётной записью. Доступ сотрудницы можно отключить у владельца в любой момент.</p>
-    <label for="auth-username">Логин</label>
-    <input id="auth-username" autocomplete="username" required>
-    <label for="auth-password">Пароль</label>
-    <input id="auth-password" type="password" autocomplete="current-password" required>
-    <button type="submit">Войти</button>
-    <div id="auth-error" class="auth-error"></div>
-  </form>
-</div>
 
 <!-- SIDEBAR -->
 <div id="sidebar">
@@ -318,9 +297,6 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
   <div class="sb-item" data-page="journal" onclick="nav('journal',this)">
     <span class="icon">📋</span> Журнал
   </div>
-  <div class="sb-item" data-page="access" data-owner-only onclick="nav('access',this)">
-    <span class="icon">🔐</span> Доступы
-  </div>
 
   <div class="sb-divider"></div>
   <div class="sb-item active" data-page="ai" onclick="nav('ai',this)" style="background:rgba(184,137,26,.15);border:1px solid rgba(184,137,26,.3);margin:4px 8px;border-radius:5px">
@@ -328,7 +304,7 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
   </div>
   <div class="sb-divider"></div>
   <div class="sb-section">Система</div>
-  <div class="sb-item" data-owner-only onclick="openAddTemplate()">
+  <div class="sb-item" onclick="openAddTemplate()">
     <span class="icon">➕</span> Свой шаблон
   </div>
 </div>
@@ -341,8 +317,6 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
       <span class="app-version-dot"></span>
       <span id="app-version-text">проверяю версию…</span>
     </div>
-    <span id="auth-user"></span>
-    <button class="auth-logout" onclick="authLogout()">Выйти</button>
     <button class="tb-btn gold" onclick="openGenModal()" id="btn-gen-top" style="display:none">
       ⚡ Сформировать пакет
     </button>
@@ -458,20 +432,6 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
       <div id="journal-entries"></div>
     </div>
 
-    <div id="page-access" class="page-content" style="display:none" data-owner-only>
-      <div style="max-width:720px">
-        <h3 style="margin:0 0 6px;color:#8B4A5C">Доступ сотрудницы</h3>
-        <p style="font-size:12px;color:var(--muted);line-height:1.5">Сотрудница видит только новый пакет, который оформляет сама. Отключение доступа сразу завершает её сессии.</p>
-        <form onsubmit="accessCreateUser(event)" style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin:18px 0">
-          <input id="access-new-username" placeholder="логин, например anna" autocomplete="off" required>
-          <input id="access-new-password" type="password" placeholder="пароль от 12 символов" autocomplete="new-password" required>
-          <button class="tb-btn navy" type="submit">Создать доступ</button>
-        </form>
-        <div id="access-error" class="alert err"></div>
-        <div id="access-users"></div>
-      </div>
-    </div>
-
     <!-- PAGE: AI ОФОРМИТЕЛЬ -->
     <div id="page-ai" class="page-content" style="display:none;height:calc(100vh - 52px);margin:-24px -28px;flex-direction:column">
 
@@ -488,7 +448,7 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
           <div style="padding:12px 14px 8px;border-bottom:1px solid #EDE1D6;background:#FAF6F0">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
               <div style="font-size:12px;font-weight:700;color:#8B4A5C">Карточка компании</div>
-              <button id="ai-company-switcher" data-owner-only onclick="aiOpenCompanySwitcher()" title="Сохранённые компании"
+              <button onclick="aiOpenCompanySwitcher()" title="Сохранённые компании"
                 style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;color:#A6837D">📂</button>
             </div>
             <div id="ai-card-status" style="font-size:10px;color:#A8938A;margin-top:2px">Данных нет</div>
@@ -526,7 +486,7 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
             <button onclick="aiQuick('Добавь объект: ')" class="ai-qr">🏗 Объект</button>
             <button onclick="aiQuick('Поставщики: ')" class="ai-qr">📦 Поставщики</button>
             <button onclick="aiQuick('Удостоверения ОТ сотрудников: ')" class="ai-qr">🛡 ОТ</button>
-            <button data-owner-only onclick="aiQuick('Обучись: ')" class="ai-qr">🧠 Обучить</button>
+            <button onclick="aiQuick('Обучись: ')" class="ai-qr">🧠 Обучить</button>
           </div>
 
           <!-- INPUT -->
@@ -861,7 +821,7 @@ function nav(page, el) {
   document.getElementById('page-' + page).style.display = page === 'ai' ? 'flex' : 'block';
   currentPage = page;
 
-  const titles = { docs: 'Документы ИСО', companies: 'Компании', experience:'Расчёт стажа', knowledge:'Знания ИИгоря', journal: 'Журнал генераций', access:'Доступы', ai:'ИИгорь Оформитель'};
+  const titles = { docs: 'Документы ИСО', companies: 'Компании', experience:'Расчёт стажа', knowledge:'Знания ИИгоря', journal: 'Журнал генераций', ai:'ИИгорь Оформитель'};
   document.getElementById('page-title').textContent = titles[page] || page;
   document.getElementById('btn-gen-top').style.display = page === 'docs' ? 'flex' : 'none';
 
@@ -869,7 +829,6 @@ function nav(page, el) {
   if (page === 'journal') loadJournal();
   if (page === 'experience') stageReloadCompanies();
   if (page === 'knowledge') knowledgeInitPage();
-  if (page === 'access') accessLoadUsers();
 }
 
 function switchTab(name, el) {
@@ -1456,7 +1415,6 @@ function aiLocalSetCompany(key, payload) {
 }
 
 function aiLocalGetCompany(key) {
-  if(igorAuthUser?.role === 'operator') return null;
   try {
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : null;
@@ -1467,7 +1425,6 @@ function aiLocalGetCompany(key) {
 }
 
 function aiLocalListCompanies() {
-  if(igorAuthUser?.role === 'operator') return [];
   const rows = [];
   try {
     for(let i = 0; i < localStorage.length; i++) {
@@ -1483,7 +1440,6 @@ function aiLocalListCompanies() {
 }
 
 function aiSaveCurrentCompanyLocal() {
-  if(igorAuthUser?.role === 'operator') return false;
   if (!aiCurrentData || !Object.keys(aiCurrentData).length) return false;
   const key = aiEnsureCompanyKey();
   return aiLocalSetCompany(key, aiBuildCompanyPayload());
@@ -1528,7 +1484,6 @@ function aiCompanyStorageKey() {
 }
 
 async function aiSaveCurrentCompany() {
-  if(igorAuthUser?.role === 'operator') return false;
   if (!aiCurrentData || !Object.keys(aiCurrentData).length) return false;
   const key = aiCompanyStorageKey();
   const payload = aiBuildCompanyPayload();
@@ -1619,7 +1574,6 @@ function aiInstallAutosaveGuards() {
 
 // ── Постоянный журнал генераций (свой сервер, переживает перезапуск Render) ──
 async function aiSaveToPersistentJournal(orgName, fileCount, dates, zipB64) {
-  if(igorAuthUser?.role === 'operator') return;
   if (!zipB64) return;
   try {
     const id = 'gen_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
@@ -1797,7 +1751,7 @@ function nav(page, el) {
     p.style.display = 'none';
   });
   document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
-  const titles = {docs:'Документы ИСО', companies:'Компании', experience:'Расчёт стажа', knowledge:'Знания ИИгоря', journal:'Журнал генераций', access:'Доступы', ai:'ИИгорь Оформитель'};
+  const titles = {docs:'Документы ИСО', companies:'Компании', experience:'Расчёт стажа', knowledge:'Знания ИИгоря', journal:'Журнал генераций', ai:'ИИгорь Оформитель'};
   document.getElementById('page-title').textContent = titles[page] || page;
   if(el) el.classList.add('active');
 
@@ -1817,7 +1771,6 @@ function nav(page, el) {
   if(page==='journal') loadJournal && loadJournal();
   if(page==='experience') stageReloadCompanies();
   if(page==='knowledge') knowledgeInitPage();
-  if(page==='access') accessLoadUsers();
   if(page==='docs') loadDocs && loadDocs();
 }
 
@@ -3871,12 +3824,12 @@ async function aiGenerate() {
             if(tr.zipB64) {
               const blob = aiBase64ToBlob(tr.zipB64, 'application/zip');
               const url = URL.createObjectURL(blob);
-              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Пакет готов к скачиванию.<br><br>
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Файл сохранён в журнале.<br><br>
                 <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#E9EFE0;border:1px solid #B8C9A8;border-radius:8px;color:#7D8F6E;font-weight:700;font-size:13px;text-decoration:none">
                   📥 Скачать пакет документов
                 </a>${warnBlock}`);
             } else {
-              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Запустите формирование ещё раз.${warnBlock}`);
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Проверьте журнал.${warnBlock}`);
             }
             btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
           } else {
@@ -3887,15 +3840,13 @@ async function aiGenerate() {
       };
       progDiv.appendChild(checkBtn);
 
-      // Журнал — только у владельца. Сотрудница скачивает результат прямо из текущей задачи.
-      if(igorAuthUser?.role === 'owner') {
-        const journalLink = document.createElement('a');
-        journalLink.href = '/api/journal';
-        journalLink.textContent = '📋 Открыть журнал генераций';
-        journalLink.target = '_blank';
-        journalLink.style = 'display:block;margin-top:6px;font-size:10px;color:#A6837D;text-decoration:underline';
-        progDiv.appendChild(journalLink);
-      }
+      // Ссылка на журнал для ручного скачивания
+      const journalLink = document.createElement('a');
+      journalLink.href = '/api/journal';
+      journalLink.textContent = '📋 Открыть журнал генераций';
+      journalLink.target = '_blank';
+      journalLink.style = 'display:block;margin-top:6px;font-size:10px;color:#A6837D;text-decoration:underline';
+      progDiv.appendChild(journalLink);
 
       const poll = setInterval(async () => {
         pollCount++;
@@ -3942,12 +3893,12 @@ async function aiGenerate() {
             if(tr.zipB64) {
               const blob = aiBase64ToBlob(tr.zipB64, 'application/zip');
               const url = URL.createObjectURL(blob);
-              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Пакет готов к скачиванию.<br><br>
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>. Файл сохранён в журнале.<br><br>
                 <a href="${url}" download="${safeOrg}.zip" style="display:inline-flex;align-items:center;gap:6px;padding:10px 18px;background:#E9EFE0;border:1px solid #B8C9A8;border-radius:8px;color:#7D8F6E;font-weight:700;font-size:13px;text-decoration:none">
                   📥 Скачать пакет документов
                 </a>${warnBlock}`);
             } else {
-              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Запустите формирование ещё раз.${warnBlock}`);
+              aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Проверьте журнал.${warnBlock}`);
             }
             btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
           } else if(tr.status === 'error') {
@@ -4283,129 +4234,24 @@ async function igorLoadVersion(){
   }
 }
 
-let igorAuthUser = null;
-
-async function authJson(path, options = {}) {
-  const response = await fetch(path, options);
-  const payload = await response.json().catch(() => ({}));
-  if(!response.ok || payload.success === false) throw new Error(payload.error || `HTTP ${response.status}`);
-  return payload;
-}
-
-function authShowError(message) {
-  const box = document.getElementById('auth-error');
-  if(!box) return;
-  box.textContent = message || '';
-  box.style.display = message ? 'block' : 'none';
-}
-
-function authApplyUser(user) {
-  igorAuthUser = user || null;
-  document.body.dataset.role = user?.role || '';
-  const gate = document.getElementById('auth-gate');
-  if(gate) gate.hidden = !!user;
-  const label = document.getElementById('auth-user');
-  if(label) label.textContent = user ? `${user.username} · ${user.role === 'owner' ? 'владелец' : 'сотрудница'}` : '';
-  document.querySelectorAll('.sb-item[data-page]').forEach(item => {
-    item.style.display = user?.role === 'operator' && item.dataset.page !== 'ai' ? 'none' : '';
-  });
-  if(user?.role === 'operator') {
-    document.getElementById('btn-gen-top').style.display = 'none';
-    aiCurrentData = {};
-    aiHistory = [];
-    aiCurrentCompanyKey = aiMakeStableCompanyKey();
-  }
-}
-
-async function authLogin(event) {
-  event.preventDefault();
-  authShowError('');
-  try {
-    const result = await authJson('/api/auth/login', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({username: document.getElementById('auth-username').value, password: document.getElementById('auth-password').value}),
-    });
-    document.getElementById('auth-password').value = '';
-    authApplyUser(result.user);
-    await authStartApplication();
-  } catch(error) { authShowError(error.message || 'Не удалось войти.'); }
-}
-
-async function authLogout() {
-  try { await fetch('/api/auth/logout', {method: 'POST'}); } catch(_) {}
-  igorAuthUser = null;
-  document.body.dataset.role = '';
-  document.getElementById('auth-gate').hidden = false;
-  document.getElementById('auth-password').value = '';
-  document.getElementById('auth-username').focus();
-}
-
-function authShowAccessError(error) {
-  const box = document.getElementById('access-error');
-  box.textContent = error?.message || 'Не удалось изменить доступ.';
-  box.style.display = 'block';
-}
-
-async function accessLoadUsers() {
-  if(igorAuthUser?.role !== 'owner') return;
-  try {
-    const data = await authJson('/api/users');
-    const box = document.getElementById('access-users');
-    const operators = (data.users || []).filter(user => user.role === 'operator');
-    box.innerHTML = operators.length ? operators.map(user => `
-      <div style="border:1px solid #E5D7CC;border-radius:8px;padding:11px;margin-top:8px;display:flex;gap:9px;align-items:center;flex-wrap:wrap">
-        <b style="min-width:140px">${aiEscapeHtml(user.username)}</b>
-        <span style="font-size:11px;color:${user.active ? '#58704D' : '#A6503D'}">${user.active ? 'Доступ активен' : 'Доступ отключён'}</span>
-        <input id="access-password-${aiEscapeHtml(user.username)}" type="password" placeholder="новый пароль" style="padding:6px;border:1px solid #DCCDC2;border-radius:5px">
-        <button class="co-btn edit" onclick="accessResetPassword('${aiEscapeHtml(user.username)}')">Сменить пароль</button>
-        <button class="co-btn ${user.active ? 'del' : 'gen'}" onclick="accessToggleUser('${aiEscapeHtml(user.username)}',${!user.active})">${user.active ? 'Отключить' : 'Включить'}</button>
-        <button class="co-btn del" onclick="accessDeleteUser('${aiEscapeHtml(user.username)}')">Удалить</button>
-      </div>`).join('') : '<div class="empty"><p>Учётных записей сотрудниц пока нет.</p></div>';
-  } catch(error) { authShowAccessError(error); }
-}
-
-async function accessCreateUser(event) {
-  event.preventDefault();
-  try {
-    await authJson('/api/users/create', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-      username: document.getElementById('access-new-username').value,
-      password: document.getElementById('access-new-password').value, role: 'operator',
-    })});
-    document.getElementById('access-new-username').value = '';
-    document.getElementById('access-new-password').value = '';
-    await accessLoadUsers();
-  } catch(error) { authShowAccessError(error); }
-}
-
-async function accessToggleUser(username, active) {
-  try { await authJson('/api/users/update', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username, active})}); await accessLoadUsers(); }
-  catch(error) { authShowAccessError(error); }
-}
-
-async function accessResetPassword(username) {
-  const input = document.getElementById('access-password-' + username);
-  if(!input?.value) { authShowAccessError(new Error('Введите новый пароль.')); return; }
-  try { await authJson('/api/users/update', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username, password:input.value})}); input.value = ''; await accessLoadUsers(); }
-  catch(error) { authShowAccessError(error); }
-}
-
-async function accessDeleteUser(username) {
-  if(!confirm(`Удалить доступ «${username}»?`)) return;
-  try { await authJson('/api/users/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username})}); await accessLoadUsers(); }
-  catch(error) { authShowAccessError(error); }
-}
-
-async function authStartApplication() {
+// Автозапуск — открываем ИИгорь Оформитель сразу
+document.addEventListener('DOMContentLoaded', () => {
   igorLoadVersion();
   const aiItem = document.querySelector('.sb-item[data-page="ai"]');
   if(aiItem) nav('ai', aiItem);
+
+  // Вешаем listener на file input здесь — после объявления всех функций
   const fileInput = document.getElementById('ai-file-input');
-  if(fileInput && !fileInput.dataset.authBound) {
-    fileInput.dataset.authBound = '1';
-    fileInput.addEventListener('change', function() { aiHandleFiles(this.files); });
+  if(fileInput) {
+    fileInput.addEventListener('change', function() {
+      console.log('Files selected:', this.files.length);
+      aiHandleFiles(this.files);
+    });
   }
+
   aiInstallAutosaveGuards();
-  if(igorAuthUser?.role === 'operator') return;
+
+  // Восстанавливаем именно последнюю открытую карточку. Если она недоступна — самую свежую.
   aiListSavedCompanies().then(async list => {
     if(list && list.length) {
       let preferredKey = null;
@@ -4418,25 +4264,13 @@ async function authStartApplication() {
         const companyLabel = last.label || (aiCurrentData?.company?.name ? `${aiCurrentData.company.form||'ООО'} «${aiCurrentData.company.name}»` : 'сохранённая компания');
         aiAddMsg('ai', `🔄 Восстановлена предыдущая работа с ${companyLabel}. Все реквизиты, сотрудники, рабочие, объекты, поставщики и продукт загружены из сохранённой карточки.`);
       }
-    } else aiCurrentCompanyKey = aiMakeStableCompanyKey();
-  }).catch(() => { aiCurrentCompanyKey = aiMakeStableCompanyKey(); });
-}
-
-// Автозапуск — сначала проверяем отдельную учётную запись.
-document.addEventListener('DOMContentLoaded', async () => {
-  try {
-    const session = await authJson('/api/auth/session');
-    if(session.authenticated) {
-      authApplyUser(session.user);
-      await authStartApplication();
-    } else if(session.setup_required) {
-      authShowError('Владелец ещё не настроил доступ к приложению.');
     } else {
-      document.getElementById('auth-username').focus();
+      aiCurrentCompanyKey = aiMakeStableCompanyKey();
     }
-  } catch(error) {
-    authShowError('Не удалось проверить доступ к приложению.');
-  }
+  }).catch(e => {
+    console.warn('aiListSavedCompanies failed on startup:', e);
+    aiCurrentCompanyKey = aiMakeStableCompanyKey();
+  });
 });
 </script>
 
