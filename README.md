@@ -34,7 +34,7 @@ MAIL_IMAP_PORT=993
 Перед включением доступа в Render добавьте секреты:
 
 ```
-IGOR_OWNER_USERNAME=owner
+IGOR_OWNER_USERNAME=mavis
 IGOR_OWNER_PASSWORD=<новый пароль длиной от 12 символов>
 ```
 
