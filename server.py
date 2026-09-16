@@ -2480,10 +2480,23 @@ def _rar_to_zip_bytes(file_bytes, filename):
 
 
 def _archive_vision_batches(entries):
-    """Keep PDF rendering serial; each rendered page can occupy far more RAM than its file."""
+    """Protect memory for heavy PDFs without serialising ordinary one-page scans.
+
+    A labour book or a multi-megabyte PDF can expand into dozens of rendered
+    images, so those documents must remain serial on the 512 MB instance.
+    Small non-labour PDFs (the usual diplomas, certificates and verifications)
+    are limited to two concurrent files, matching the global Vision limit.
+    No pages are skipped; this changes scheduling only.
+    """
+    SMALL_PDF_PARALLEL_LIMIT = 2 * 1024 * 1024
     pdf_entries = [entry for entry in entries if entry[3] == 'pdf']
+    serial_pdfs = [
+        entry for entry in pdf_entries
+        if _is_labour_book_filename(entry[1]) or entry[2] > SMALL_PDF_PARALLEL_LIMIT
+    ]
+    small_pdfs = [entry for entry in pdf_entries if entry not in serial_pdfs]
     image_entries = [entry for entry in entries if entry[3] == 'image']
-    return [(pdf_entries, 1), (image_entries, 2)]
+    return [(serial_pdfs, 1), (small_pdfs, 2), (image_entries, 2)]
 
 
 _SPK_COPY_LIST_TOOLS = (

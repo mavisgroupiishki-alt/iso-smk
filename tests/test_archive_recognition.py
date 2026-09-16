@@ -40,16 +40,19 @@ def test_archive_processing_slot_rejects_parallel_jobs():
     server.release_archive_processing()
 
 
-def test_archive_reads_pdfs_serially_but_keeps_photos_parallel():
+def test_archive_keeps_heavy_pdfs_serial_but_reads_small_scans_in_parallel():
     entries = [
         ('one.pdf', 'one.pdf', 5 * 1024 * 1024, 'pdf'),
+        ('work.pdf', 'work трудовая.pdf', 512 * 1024, 'pdf'),
+        ('two.pdf', 'two.pdf', 512 * 1024, 'pdf'),
+        ('three.pdf', 'three.pdf', 1024 * 1024, 'pdf'),
         ('two.jpg', 'two.jpg', 1 * 1024 * 1024, 'image'),
         ('three.jpg', 'three.jpg', 1 * 1024 * 1024, 'image'),
     ]
 
     batches = server._archive_vision_batches(entries)
 
-    assert [(len(batch), workers) for batch, workers in batches] == [(1, 1), (2, 2)]
+    assert [(len(batch), workers) for batch, workers in batches] == [(2, 1), (2, 2), (2, 2)]
 
 
 def test_rar_upload_uses_the_existing_zip_recognition_pipeline(monkeypatch):
