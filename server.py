@@ -1095,7 +1095,18 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
         competence = spk.get('technical_competence') if isinstance(spk.get('technical_competence'), dict) else {}
         ttk = [item for item in (spk.get('ttk') or []) if isinstance(item, dict)]
 
+        def _spk_ot_certificate_request(value):
+            text = str(value or '').lower().replace('ё', 'е')
+            mentions_ot = ('удостоверен' in text or 'охран' in text) and (
+                'труд' in text or 'проверка знаний' in text
+            )
+            asks_for_source = any(word in text for word in (
+                'пришл', 'загруз', 'прикреп', 'предостав', 'не хватает', 'уточнит', 'нужн',
+            ))
+            return mentions_ot and asks_for_source
+
         questions = list(payload.get('questions') or []) if isinstance(payload.get('questions'), list) else []
+        questions = [q for q in questions if not _spk_ot_certificate_request(q)]
         if not spk.get('premises'):
             questions.append('Уточните производственное помещение: адрес, площадь и основание пользования (собственность или аренда, реквизиты документа).')
         if not competence.get('number'):
@@ -1103,6 +1114,16 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
         if ttk and any(not item.get('valid_until') for item in ttk):
             questions.append('Уточните срок действия применяемой ТТК.')
         payload['questions'] = questions
+
+        message_raw = str(payload.get('message') or '')
+        if _spk_ot_certificate_request(message_raw):
+            sentences = re.split(r'(?<=[.!?])\s+|\n+', message_raw)
+            message_raw = ' '.join(
+                sentence for sentence in sentences if sentence.strip() and not _spk_ot_certificate_request(sentence)
+            ).strip()
+            if not message_raw:
+                message_raw = 'Данные по персоналу из дипломов и трудовых книжек будут использованы для СПК.'
+            payload['message'] = message_raw
 
         if has_audit_date:
             data['review_items'] = [

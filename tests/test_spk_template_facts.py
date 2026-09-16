@@ -100,6 +100,23 @@ def test_spk_chat_asks_for_missing_facts_before_generation():
     assert payload['data']['flags'] == []
 
 
+def test_spk_does_not_block_personnel_on_missing_ot_certificates():
+    raw = json.dumps({
+        'message': 'Мне не хватает сведений об удостоверениях по охране труда, чтобы закрыть вопрос с персоналом.',
+        'questions': ['Пришлите фото удостоверений по охране труда сотрудников.'],
+        'data': {
+            'certification': {'standard': 'spk_stroy'},
+            'staff': [{'fio': 'Иванов Иван Иванович', 'position': 'Директор'}],
+            'spk': {'premises': [{'address': 'г. Минск'}], 'technical_competence': {'number': 'СПК-1'}},
+        },
+    }, ensure_ascii=False)
+
+    payload = json.loads(server._sanitize_ai_visible_response(raw, 'spk_stroy'))
+
+    assert not payload['questions']
+    assert 'удостоверен' not in payload['message'].lower()
+
+
 def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
     dates = generator.calculate_dates('17.09.2026')
     company = {
