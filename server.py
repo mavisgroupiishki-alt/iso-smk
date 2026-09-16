@@ -68,13 +68,14 @@ CO_DIR      = _DATA/'companies'
 OUT_DIR     = _DATA/'output'
 KV_DIR      = _DATA/'kv'
 TASKS_DIR   = _DATA/'tasks'
+ARCHIVE_UPLOAD_DIR = _DATA/'archive_uploads'
 KNOWLEDGE_DIR = _DATA/'knowledge'
 AUTH_DIR = _DATA/'auth'
 USERS_FILE = AUTH_DIR/'users.json'
 SESSIONS_FILE = AUTH_DIR/'sessions.json'
 PORT = int(os.environ.get("PORT", 8766))
 
-for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR, KNOWLEDGE_DIR, AUTH_DIR]:
+for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR, ARCHIVE_UPLOAD_DIR, KNOWLEDGE_DIR, AUTH_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 _STORAGE_LOCK = __import__('threading').RLock()
@@ -1931,6 +1932,7 @@ def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
         f"к фразе «стаж с 2007 года». Перепиши КАЖДУЮ запись приёма, перевода и увольнения "
         f"отдельной строкой и сохрани полные даты. Формат ответа:\n\n"
         f"{person_num}) ФИО\n"
+        f"Должность/роль для СПК: точная должность из документа или 'не найдено'\n"
         f"Паспорт: ...\n"
         f"Дипломы: каждый диплом через ; со всеми номером, датой, учреждением, специальностью и квалификацией\n"
         f"Трудовая книжка и вкладыши: все номера документов\n"
@@ -2184,6 +2186,60 @@ def _reconcile_all_people(texts, api_key, fast_mode=False):
     for person in people_order:
         final_parts.append(results.get(person, f"{person}: [ошибка обработки]"))
     return final_parts
+
+
+def _extract_spk_staff_from_person_summaries(text: str) -> list:
+    """Convert existing archive person summaries into safe SPK staff facts.
+
+    The reconciliation call already reads each person's scans.  Keeping its
+    diploma and labour-book lines as source facts avoids a second model call and
+    prevents the main chat response from being the only route into ``staff``.
+    The original wording is deliberately retained in ``full_text`` instead of
+    guessing document fields that are not explicit in the summary.
+    """
+    value = str(text or '').replace('\r\n', '\n')
+    card_re = re.compile(
+        r'(?ms)^\s*\d+\)\s*(?P<fio>[^\n]+)\n(?P<body>.*?)(?=^\s*\d+\)\s*[^\n]+\n|\Z)'
+    )
+    people = []
+    seen = set()
+    for match in card_re.finditer(value):
+        fio = re.sub(r'\s+', ' ', match.group('fio')).strip(' -–—')
+        fio_key = re.sub(r'[^а-яa-z0-9]+', '', fio.lower().replace('ё', 'е'))
+        # A numbered list in a source document is not a person card.
+        if (not fio_key or fio_key in seen or len(re.findall(r'[А-Яа-яЁёA-Za-z]', fio)) < 4
+                or fio.casefold() in ('фио', 'не найдено')):
+            continue
+        body = match.group('body')
+        position_match = re.search(
+            r'(?im)^\s*(?:должность|роль)(?:\s*/\s*роль)?\s*(?:для\s+спк)?\s*:\s*(.+)$',
+            body,
+        )
+        diploma_match = re.search(r'(?im)^\s*дипломы?\s*:\s*(.+)$', body)
+        workbook_match = re.search(
+            r'(?im)^\s*трудов(?:ая|ые)\s+книжк[аи].*?:\s*(.+)$', body,
+        )
+        diplomas = []
+        if diploma_match:
+            for raw in diploma_match.group(1).split(';'):
+                full_text = re.sub(r'\s+', ' ', raw).strip(' ,.;')
+                if full_text and full_text.casefold() not in ('не найдено', 'нет'):
+                    diplomas.append({'full_text': full_text})
+        workbooks = []
+        if workbook_match:
+            for raw in workbook_match.group(1).split(';'):
+                number = re.sub(r'\s+', ' ', raw).strip(' ,.;')
+                if number and number.casefold() not in ('не найдено', 'нет'):
+                    workbooks.append(number)
+        people.append({
+            'fio': fio,
+            'position': re.sub(r'\s+', ' ', position_match.group(1)).strip(' .') if position_match else '',
+            'diplomas': diplomas,
+            'trudovye_numbers': workbooks,
+            'source': 'archive_person_summary',
+        })
+        seen.add(fio_key)
+    return people
 
 
 def _is_extraction_error_text(text):
@@ -2710,6 +2766,10 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             **(structured_data.get('spk') or {}),
             'measurement_tools': copy_list_tools,
         }
+    if str(product) in ('spk_stroy', 'spk_bisp'):
+        summary_staff = _extract_spk_staff_from_person_summaries(final_text)
+        if summary_staff:
+            structured_data['staff'] = summary_staff
     return {
         'text': final_text,
         'analysis_text': _compact_product_analysis_text(final_text, product),
@@ -3014,6 +3074,13 @@ class H(http.server.BaseHTTPRequestHandler):
                     'zipB64':    task.get('zipB64'),
                     'orgName':   task.get('orgName',''),
                     'text':      task.get('text'),
+                    # Archive tasks prepare verified source facts separately from
+                    # their human-readable text. The browser must receive both;
+                    # otherwise it silently loses the deterministic SPK tool list
+                    # before the card and document generator see it.
+                    'analysis_text': task.get('analysis_text'),
+                    'summary': task.get('summary', ''),
+                    'structured_data': task.get('structured_data') or {},
                     'filename':  task.get('filename',''),
                     'warnings': task.get('warnings', [])
                 })
@@ -3318,6 +3385,22 @@ class H(http.server.BaseHTTPRequestHandler):
                     }, 429)
                     return
                 task_id = str(_uuid.uuid4())[:8]
+                # Multipart parsing has already created several copies of the archive
+                # in RAM.  Move the payload to the persistent disk before starting
+                # Vision/RAR work; retaining it in the request closure was enough to
+                # restart a 512 MB Render instance on ordinary 30+ MB RAR files.
+                archive_path = ARCHIVE_UPLOAD_DIR / f'{task_id}.upload'
+                try:
+                    archive_path.write_bytes(file_bytes)
+                except OSError as exc:
+                    release_archive_processing()
+                    self._json({'success': False,
+                                'error': f'Не удалось сохранить архив для фоновой обработки: {exc}'}, 507)
+                    return
+                file_bytes = None
+                body_value = b''
+                parts = []
+                body = b''
                 TASKS[task_id] = {
                     'status':'running', 'kind':'archive', 'progress':[], 'step':0, 'total':100,
                     'owner_user_id': user['id'],
@@ -3325,8 +3408,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 save_task(task_id, TASKS[task_id])
                 _prune_tasks()
 
-                def run_archive(_tid=task_id, _bytes=file_bytes, _fn=filename, _key=api_key, _product=archive_product):
+                def run_archive(_tid=task_id, _path=archive_path, _fn=filename, _key=api_key, _product=archive_product):
                     try:
+                        _bytes = _path.read_bytes()
                         def on_prog(msg):
                             TASKS[_tid]['progress'] = (TASKS[_tid].get('progress') or [])[-30:] + [msg]
                             save_task(_tid, TASKS[_tid])
@@ -3352,6 +3436,10 @@ class H(http.server.BaseHTTPRequestHandler):
                         TASKS[_tid].update({'status':'error','kind':'archive','error':str(_ex)})
                         save_task(_tid, TASKS[_tid])
                     finally:
+                        try:
+                            _path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                         release_archive_processing()
 
                 threading.Thread(target=run_archive, daemon=True).start()

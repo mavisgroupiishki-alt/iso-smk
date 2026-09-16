@@ -3106,6 +3106,10 @@ function aiMergeStructuredSource(baseData, sourceData) {
       if(aiHasMeaningfulValue(v)) base[section][k] = JSON.parse(JSON.stringify(v));
     });
   });
+  if(Array.isArray(source.staff) && source.staff.length) {
+    base.staff = aiMergeEntityArray(base.staff, source.staff,
+      row => aiNormIdentity(row?.fio || row?.name || row?.full_name));
+  }
   if(source.company_attestation) {
     const sca = source.company_attestation;
     const bca = {...(base.company_attestation || {})};

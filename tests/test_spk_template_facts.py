@@ -114,6 +114,8 @@ def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
                 {'number': 'В-100', 'institution': 'БГТУ', 'speciality': 'ПГС'},
                 {'number': 'ПТУ-200', 'institution': 'ПТУ № 15', 'speciality': 'каменщик'},
                 {'number': 'С-300', 'institution': 'БНТУ', 'speciality': 'строительство'},
+                {'full_text': 'Диплом М-400, БГАС, организация строительства'},
+                {'full_text': 'Диплом ПТУ-500, каменщик'},
             ],
             'trudovye_numbers': ['ПК № 1111111', 'Вкладыш № 2222222'],
         },
@@ -127,7 +129,9 @@ def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
 
     assert 'В-100' in text
     assert 'С-300' in text
+    assert 'Диплом М-400, БГАС, организация строительства' in text
     assert 'ПТУ-200' not in text
+    assert 'ПТУ-500' not in text
     assert 'ПК № 1111111' in text
     assert 'Вкладыш № 2222222' in text
 
@@ -162,6 +166,32 @@ def test_person_archive_folder_can_be_a_surname_or_role():
     assert server._looks_like_person_folder('Белько', personal_blocks)
     assert server._looks_like_person_folder('Директор', personal_blocks)
     assert not server._looks_like_person_folder('Уставные', personal_blocks)
+
+
+def test_spk_person_summaries_become_structured_staff_without_losing_documents():
+    archive_text = '''
+=== 👤 Рощин ===
+1) Рощин Александр Викторович
+Должность/роль для СПК: Заместитель директора — главный инженер
+Паспорт: не требуется для справки
+Дипломы: Диплом АБ № 12345, БНТУ, промышленное и гражданское строительство; Диплом ПТУ № 9, каменщик
+Трудовая книжка и вкладыши: ТК № 7654321; вкладыш № 654321
+ПЕРИОДЫ РАБОТЫ:
+- 01.01.2010 — по настоящее время | ООО «Тест» | главный инженер
+'''
+
+    staff = server._extract_spk_staff_from_person_summaries(archive_text)
+
+    assert staff == [{
+        'fio': 'Рощин Александр Викторович',
+        'position': 'Заместитель директора — главный инженер',
+        'diplomas': [
+            {'full_text': 'Диплом АБ № 12345, БНТУ, промышленное и гражданское строительство'},
+            {'full_text': 'Диплом ПТУ № 9, каменщик'},
+        ],
+        'trudovye_numbers': ['ТК № 7654321', 'вкладыш № 654321'],
+        'source': 'archive_person_summary',
+    }]
 
 
 def test_spk_si_includes_copy_list_tools_without_inventing_verification():

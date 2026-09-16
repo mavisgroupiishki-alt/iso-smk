@@ -1,9 +1,15 @@
 import io
+import http.client
+import json
+import os
 import subprocess
 import sys
+import tempfile
+import threading
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+import socketserver
 
 import server
 
@@ -138,3 +144,67 @@ def test_rar_converter_uses_libarchive_when_no_system_extractor_exists(monkeypat
             'ИК СПК инфа/Люди/трудовая.jpg',
             'ИК СПК инфа/СИ/свидетельство.pdf',
         ]
+
+
+def test_archive_task_returns_structured_data_to_the_browser():
+    """The async archive client depends on this payload to keep SPK tools."""
+    temp = tempfile.TemporaryDirectory()
+    root = Path(temp.name)
+    previous = {
+        'AUTH_DIR': server.AUTH_DIR,
+        'USERS_FILE': server.USERS_FILE,
+        'SESSIONS_FILE': server.SESSIONS_FILE,
+        'owner_password': os.environ.get('IGOR_OWNER_PASSWORD'),
+        'owner_username': os.environ.get('IGOR_OWNER_USERNAME'),
+        'tasks': dict(server.TASKS),
+    }
+    server.AUTH_DIR = root / 'auth'
+    server.USERS_FILE = server.AUTH_DIR / 'users.json'
+    server.SESSIONS_FILE = server.AUTH_DIR / 'sessions.json'
+    os.environ['IGOR_OWNER_PASSWORD'] = 'owner-secret-password-123'
+    os.environ['IGOR_OWNER_USERNAME'] = 'owner'
+    server.TASKS.clear()
+    httpd = socketserver.TCPServer(('127.0.0.1', 0), server.H)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        server.auth_bootstrap_owner()
+        server.TASKS['archive-structured'] = {
+            'status': 'done', 'kind': 'archive', 'owner_user_id': 'owner',
+            'text': 'full archive text', 'analysis_text': 'focused archive text',
+            'summary': 'archive summary', 'structured_data': {
+                'spk': {'measurement_tools': [{'name': 'Нивелир', 'quantity': 1}]}
+            },
+        }
+        conn = http.client.HTTPConnection('127.0.0.1', httpd.server_address[1], timeout=5)
+        conn.request('POST', '/api/auth/login', body=json.dumps({
+            'username': 'owner', 'password': 'owner-secret-password-123'
+        }), headers={'Content-Type': 'application/json'})
+        response = conn.getresponse()
+        assert response.status == 200
+        response.read()
+        cookie = response.getheader('Set-Cookie').split(';', 1)[0]
+
+        conn.request('GET', '/api/task/archive-structured', headers={'Cookie': cookie})
+        response = conn.getresponse()
+        payload = json.loads(response.read())
+
+        assert response.status == 200
+        assert payload['analysis_text'] == 'focused archive text'
+        assert payload['summary'] == 'archive summary'
+        assert payload['structured_data']['spk']['measurement_tools'][0]['name'] == 'Нивелир'
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        server.TASKS.clear()
+        server.TASKS.update(previous['tasks'])
+        server.AUTH_DIR = previous['AUTH_DIR']
+        server.USERS_FILE = previous['USERS_FILE']
+        server.SESSIONS_FILE = previous['SESSIONS_FILE']
+        for name, value in (('IGOR_OWNER_PASSWORD', previous['owner_password']),
+                            ('IGOR_OWNER_USERNAME', previous['owner_username'])):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        temp.cleanup()

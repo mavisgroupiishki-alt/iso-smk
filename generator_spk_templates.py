@@ -352,7 +352,7 @@ ROLE_RESPONSIBILITIES = {
 def _is_ptu_diploma(diploma: dict) -> bool:
     """ПТУ в СПК-справку не включается по правилу оформителя."""
     text = ' '.join(str(diploma.get(key) or '') for key in (
-        'number', 'institution', 'speciality', 'qualification', 'education_level',
+        'number', 'institution', 'speciality', 'qualification', 'education_level', 'full_text',
     )).lower().replace('ё', 'е')
     return bool(re.search(r'\bпту\b|профессионально[ -]техническ', text))
 
@@ -374,6 +374,13 @@ def _itr_diploma_lines(person: dict) -> list:
     for value in values:
         diploma = dict(value) if isinstance(value, dict) else {'number': str(value)}
         if _is_ptu_diploma(diploma):
+            continue
+        full_text = str(diploma.get('full_text') or '').strip()
+        if full_text:
+            key = full_text.lower()
+            if key not in seen:
+                seen.add(key)
+                lines.append(full_text)
             continue
         key = tuple(str(diploma.get(field) or '').strip().lower() for field in (
             'number', 'date', 'institution', 'speciality', 'qualification', 'education_level',
