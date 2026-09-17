@@ -117,6 +117,49 @@ def test_spk_does_not_block_personnel_on_missing_ot_certificates():
     assert 'удостоверен' not in payload['message'].lower()
 
 
+def test_spk_activity_profile_is_preserved_and_unknown_profile_needs_confirmation():
+    raw = json.dumps({
+        'message': 'Область обновлена.',
+        'questions': [],
+        'data': {
+            'certification': {'standard': 'spk_stroy'},
+            'spk': {'activity_profile': 'construction_metal'},
+        },
+    }, ensure_ascii=False)
+    profile = json.loads(server._sanitize_ai_visible_response(raw, 'spk_stroy'))
+
+    assert profile['data']['spk']['activity_profile'] == 'construction_metal'
+    assert not any('Уточните область СПК' in question for question in profile['questions'])
+
+    raw_without_profile = json.dumps({
+        'message': 'Добавлены сведения о помещении.',
+        'questions': [],
+        'data': {
+            'certification': {'standard': 'spk_stroy'},
+            'spk': {'premises': [{'address': 'г. Минск'}]},
+        },
+    }, ensure_ascii=False)
+    without_profile = json.loads(server._sanitize_ai_visible_response(raw_without_profile, 'spk_stroy'))
+
+    # The client deep-merges this response into the saved company card. Omitting
+    # the scalar must therefore retain a previously confirmed non-default profile.
+    assert 'activity_profile' not in without_profile['data']['spk']
+    assert not any('Уточните область СПК' in question for question in without_profile['questions'])
+
+    raw_unknown = json.dumps({
+        'message': 'Область обновлена.',
+        'questions': [],
+        'data': {
+            'certification': {'standard': 'spk_stroy'},
+            'spk': {'activity_profile': 'неизвестная область'},
+        },
+    }, ensure_ascii=False)
+    unknown = json.loads(server._sanitize_ai_visible_response(raw_unknown, 'spk_stroy'))
+
+    assert unknown['data']['spk']['activity_profile'] == 'construction'
+    assert any('Уточните область СПК' in question for question in unknown['questions'])
+
+
 def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
     dates = generator.calculate_dates('17.09.2026')
     company = {
@@ -223,3 +266,65 @@ def test_spk_si_includes_copy_list_tools_without_inventing_verification():
     assert set(by_name) == {'Нивелир', 'Рейка нивелирная', 'Теодолит'}
     assert by_name['Теодолит']['verification'] == 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
     assert len(warnings) == 3
+
+
+def test_spk_activity_profiles_change_all_scope_dependent_documents():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    itr = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        {'fio': 'Петров Петр Петрович', 'position': 'Главный инженер'},
+        {'fio': 'Сидоров Сидор Сидорович', 'position': 'Производитель работ'},
+    ]
+
+    def package_text(profile):
+        result = generate_spk_package_v2(
+            company, itr, [], dates, generator.select_responsible(itr),
+            spk_data={'activity_profile': profile},
+        )
+        return '\n'.join(_xml_text(doc['bytes']) for doc in result['docs'])
+
+    construction = package_text('construction')
+    metal_only = package_text('metal_only')
+    construction_metal = package_text('construction_metal')
+    low_voltage = package_text('low_voltage_systems')
+
+    assert 'строительно-монтажных работ' in construction
+    assert 'производству металлоконструкций' in metal_only
+    assert 'строительно-монтажных работ' not in metal_only
+    assert 'стаж работы в области строительства' not in metal_only
+    assert 'стаж работы в области производства металлоконструкций' in metal_only
+    assert 'СМР' not in metal_only
+    assert 'производству строительных работ, производству металлоконструкций' in construction_metal
+    assert 'монтажу слаботочных систем' in low_voltage
+    assert 'видеонаблюдения' in low_voltage
+    assert 'строительно-монтажных работ' not in low_voltage
+    assert 'стаж работы в области строительства' not in low_voltage
+    assert 'стаж работы в области электромонтажных и слаботочных систем' in low_voltage
+    assert 'СМР' not in low_voltage
+
+
+def test_spk_scope_profiles_keep_confirmed_operational_job_title():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    itr = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        {'fio': 'Петров Петр Петрович', 'position': 'Мастер производственного участка'},
+    ]
+    result = generate_spk_package_v2(
+        company, itr, [], dates, generator.select_responsible(itr),
+        spk_data={'activity_profile': 'metal_only'},
+    )
+    order = _xml_text(_document(result, '4.1 Приказ о СПК')['bytes'])
+    si_order = _xml_text(_document(result, '4.3 Приказ о ТО СИ')['bytes'])
+
+    assert 'Мастера производственного участка Петрова П.П.' in order
+    assert 'Мастера производственного участка Петрова П.П.' in si_order

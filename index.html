@@ -2900,6 +2900,16 @@ function aiRenderCard(data) {
     workTypes.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🏗 ${w}</span></div>`);
     html += '</div>';
   }
+  const spkProfileLabels = {
+    construction: 'Строительно-монтажные работы',
+    metal_only: 'Производство металлоконструкций',
+    construction_metal: 'СМР и производство металлоконструкций',
+    low_voltage_systems: 'Электромонтажные и слаботочные системы',
+  };
+  if(spk.activity_profile && spkProfileLabels[spk.activity_profile]) {
+    html += '<div class="ai-sec">Область СПК</div><div><div class="ai-df"><span class="ai-dv">'
+      + igorEscape(spkProfileLabels[spk.activity_profile]) + '</span></div></div>';
+  }
 
   // Аттестация специалистов
   const attPersons = (aiCurrentData.attestation && aiCurrentData.attestation.persons) || [];

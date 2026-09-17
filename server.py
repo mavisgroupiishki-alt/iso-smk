@@ -600,6 +600,37 @@ VIBE_URL   = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
 VIBE_MODEL = "bitrix/bitrixgpt-5.5"
 VIBE_MODEL_VISION = "bitrix/bitrixgpt-5.5-thinking"  # vision + reasoning для анализа документов
 
+SPK_ACTIVITY_PROFILE_LABELS = {
+    'construction': 'строительно-монтажные работы',
+    'metal_only': 'производство металлоконструкций',
+    'construction_metal': 'строительно-монтажные работы и производство металлоконструкций',
+    'low_voltage_systems': 'электромонтажные и слаботочные системы',
+}
+
+
+def _normalize_spk_activity_profile(value):
+    """Return a known SPK activity profile without inferring an unknown scope."""
+    raw = str(value or '').strip().lower().replace('ё', 'е')
+    direct = {
+        'construction': 'construction',
+        'metal_only': 'metal_only',
+        'construction_metal': 'construction_metal',
+        'low_voltage_systems': 'low_voltage_systems',
+    }
+    if raw in direct:
+        return direct[raw]
+    if not raw:
+        return ''
+    if 'слаботоч' in raw or 'пожарн' in raw or 'видеонаблюд' in raw or 'охранн' in raw:
+        return 'low_voltage_systems'
+    if 'металл' in raw and any(marker in raw for marker in ('смр', 'строитель', 'монтажн')):
+        return 'construction_metal'
+    if 'металл' in raw:
+        return 'metal_only'
+    if 'строител' in raw or 'смр' in raw:
+        return 'construction'
+    return None
+
 AI_SYSTEM = """Ты — ИИгорь, оформитель документов ИСО/СУОТ/СПК (Mavis Group, Беларусь).
 
 ПРОДУКТЫ: ISO 9001, ISO 45001/СУОТ, ISO 9001+45001, СПК Строй Комплекс, СПК БИСП, Периодика.
@@ -705,6 +736,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 - Виды работ: берём из КП если прикреплено, иначе спрашиваем у клиента
 - Клиент называет своими словами ("штукатурка, плитка") — ты переводишь в официальные формулировки
 - Орган: spk_stroy = Стройкомплекс (12 докум.), spk_bisp = БИСП (+8 докум.)
+- Профиль деятельности СПК хранится в spk.activity_profile: construction — СМР; metal_only — только производство металлоконструкций; construction_metal — СМР и производство металлоконструкций; low_voltage_systems — электромонтажные и слаботочные системы. Орган СПК и профиль деятельности — разные поля. Не выбирай профиль по догадке: если из слов клиента не ясно, что металл сочетается со СМР, спроси.
 - Минимум 2 ИТР-строителя по основному месту (директор, прораб, ГИ — не бухгалтер)
 - Гарантийное письмо 9.3 (лаборатория): общая формулировка без реквизитов лаборатории
 - Тех.требования: отдельный файл на каждый вид работ
@@ -851,6 +883,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
         "responsible_persons": [{"fio":"","responsibility":""}]
     },
     "spk": {
+        "activity_profile":"construction|metal_only|construction_metal|low_voltage_systems",
         "premises": [{"address":"","area":"","ownership":"","document":""}],
         "technical_competence": {"number":"","date":"","valid_until":""},
         "measurement_tools": [{"name":"","model":"","factory_number":"","range":"","quantity":1}],
@@ -1095,6 +1128,17 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
         competence = spk.get('technical_competence') if isinstance(spk.get('technical_competence'), dict) else {}
         ttk = [item for item in (spk.get('ttk') or []) if isinstance(item, dict)]
 
+        # A partial model answer often omits the profile altogether. In that case
+        # it must not overwrite a confirmed non-construction profile in the
+        # browser's deep merge. The generator itself uses construction by default.
+        profile_was_supplied = 'activity_profile' in spk
+        requested_profile = spk.get('activity_profile')
+        activity_profile = _normalize_spk_activity_profile(requested_profile) if profile_was_supplied else ''
+        if profile_was_supplied and activity_profile is None:
+            spk['activity_profile'] = 'construction'
+        elif activity_profile:
+            spk['activity_profile'] = activity_profile
+
         def _spk_ot_certificate_request(value):
             text = str(value or '').lower().replace('ё', 'е')
             mentions_ot = ('удостоверен' in text or 'охран' in text) and (
@@ -1107,6 +1151,10 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
 
         questions = list(payload.get('questions') or []) if isinstance(payload.get('questions'), list) else []
         questions = [q for q in questions if not _spk_ot_certificate_request(q)]
+        if profile_was_supplied and activity_profile is None:
+            questions.append(
+                'Уточните область СПК: строительно-монтажные работы, только производство металлоконструкций, СМР вместе с металлоконструкциями или слаботочные системы.'
+            )
         if not spk.get('premises'):
             questions.append('Уточните производственное помещение: адрес, площадь и основание пользования (собственность или аренда, реквизиты документа).')
         if not competence.get('number'):

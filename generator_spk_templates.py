@@ -79,6 +79,158 @@ def _dir_initials(fio: str) -> str:
     return fio or ''
 
 
+SPK_ACTIVITY_PROFILES = {
+    'construction': {
+        'order_purpose': ('С целью повышения качества, конкурентоспособности и укрепления экономического потенциала '
+                          'организации, решения задач по дальнейшему укреплению доверия потребителей к деятельности '
+                          'организации по производству строительных работ, достижения и поддержания высокого уровня '
+                          'качества выполняемых работ'),
+        'training_purpose': ('С целью подготовки специалистов к проведению контроля качества работ, обеспечению '
+                             'достоверности результатов контроля качества, получения объективной оценки качества '
+                             'выполняемых работ на всех стадиях производства работ (входной контроль, операционный, '
+                             'приемочный контроль)'),
+        'protocol_scope': 'строительно-монтажных работ',
+        'itr_experience_field': 'стаж работы в области строительства',
+        'director_responsibility': ('Функционирование СПК; организация проведения внутренних аудитов; входной контроль '
+                                    'ПСД; ведение Журнала учета рекламаций по качеству СМР и принятия мер по ним;'),
+        'polozhenie_replacements': (),
+    },
+    'construction_metal': {
+        'order_purpose': ('С целью повышения качества, конкурентоспособности и укрепления экономического потенциала '
+                          'организации, решения задач по дальнейшему укреплению доверия потребителей к деятельности '
+                          'организации по производству строительных работ, производству металлоконструкций достижения '
+                          'и поддержания высокого уровня качества выполняемых работ'),
+        'training_purpose': ('С целью подготовки специалистов к проведению контроля качества работ, обеспечению '
+                             'достоверности результатов контроля качества, получения объективной оценки качества '
+                             'выполняемых работ на всех стадиях производства работ и продукции (входной контроль, '
+                             'операционный, приемочный контроль)'),
+        'protocol_scope': 'строительно-монтажных работ и производства металлоконструкций',
+        'itr_experience_field': 'стаж работы в области строительства и производства металлоконструкций',
+        'director_responsibility': ('Функционирование СПК; организация проведения внутренних аудитов; входной контроль '
+                                    'ПСД; ведение Журнала учета рекламаций по качеству СМР и принятия мер по ним;'),
+        'polozhenie_replacements': (),
+    },
+    'metal_only': {
+        'order_purpose': ('С целью повышения качества, конкурентоспособности и укрепления экономического потенциала '
+                          'организации, решения задач по дальнейшему укреплению доверия потребителей к деятельности '
+                          'организации по производству металлоконструкций, достижения и поддержания высокого уровня '
+                          'качества выпускаемой продукции'),
+        'training_purpose': ('С целью подготовки специалистов к проведению контроля качества производства '
+                             'металлоконструкций, обеспечению достоверности результатов контроля качества, получения '
+                             'объективной оценки качества продукции на всех стадиях производства (входной контроль, '
+                             'операционный, приемо-сдаточный и периодический контроль)'),
+        'protocol_scope': 'производства металлоконструкций',
+        'itr_experience_field': 'стаж работы в области производства металлоконструкций',
+        'director_responsibility': ('Функционирование СПК; организация проведения внутренних аудитов; входной контроль '
+                                    'материалов и документации; ведение Журнала учета рекламаций по качеству '
+                                    'производимых металлоконструкций и принятия мер по ним;'),
+        'polozhenie_replacements': (
+            ('Основной задачей производственного контроля',
+             'Основной задачей производственного контроля является предотвращение выпуска некачественных металлоконструкций и достижение постоянного соответствия выпускаемой продукции требованиям технических нормативных правовых актов (далее по тексту – ТНПА) и технологической документации.'),
+            ('Основной функцией производственного контроля',
+             'Основной функцией производственного контроля является обеспечение входного, операционного, приемо-сдаточного и периодического контролей производимой продукции.'),
+            ('проводить операционный и приемочный контроль выполняемых работ с регистрацией',
+             'проводить операционный, приемо-сдаточный и периодический контроль производимых металлоконструкций с регистрацией результатов в соответствующих журналах контроля;'),
+            ('Операционный контроль при производстве СМР проводит',
+             'Операционный контроль при производстве металлоконструкций проводит лицо, назначенное приказом. Все результаты контроля заносятся в журнал операционного контроля.'),
+            ('Приемочный контроль при производстве СМР осуществляется',
+             'Приемо-сдаточный контроль металлоконструкций осуществляется в соответствии с требованиями ТНПА и технологической документации на каждый вид выпускаемой продукции.'),
+            ('приемку некачественно выполненных работ в строительстве',
+             '- приемку некачественных металлоконструкций;'),
+            ('проводить входной контроль закупаемой продукции, операционный и приемочный',
+             '- проводить входной контроль закупаемой продукции, операционный, приемо-сдаточный и периодический контроль производимых металлоконструкций;'),
+            ('Порядок применения технологической документации',
+             'Технологическая документация на производство металлоконструкций применяется в соответствии с действующими ТНПА, технологическими регламентами и технологическими картами организации.'),
+            ('Порядок приобретения технологической документации',
+             'Необходимая технологическая документация на производство металлоконструкций приобретается у разработчиков либо разрабатывается и утверждается организацией в установленном порядке.'),
+            ('Предприятие приобретает необходимые типовые технологические карты',
+             'Оригиналы технологических регламентов и технологических карт на производство металлоконструкций хранятся у назначенного приказом специалиста; рабочие экземпляры регистрируются и выдаются по необходимости.'),
+            ('внешнее взаимодействие при контроле качества выполненных СМР',
+             '- внешнее взаимодействие при контроле качества выпускаемых металлоконструкций — с аккредитованной лабораторией в части необходимых испытаний материалов, сварных соединений и покрытий;'),
+            ('В состав системы производственного контроля входит персонал',
+             'В состав системы производственного контроля входит персонал, работающий на предприятии на постоянной основе и имеющий соответствующее образование, профессиональную подготовку, технические знания и опыт работы в области контроля качества металлоконструкций и метрологического обеспечения производства не менее одного года.'),
+        ),
+    },
+    'low_voltage_systems': {
+        'order_purpose': ('С целью обеспечения качества выполнения электромонтажных работ, работ по монтажу '
+                          'слаботочных систем, систем пожарной сигнализации, пожаротушения, связи, диспетчеризации, '
+                          'видеонаблюдения, охранной сигнализации, линейно-кабельных сооружений электросвязи, '
+                          'соблюдения требований технических нормативных правовых актов и проектной документации'),
+        'training_purpose': ('С целью подготовки специалистов к проведению контроля качества электромонтажных работ, '
+                             'работ по монтажу слаботочных систем, систем пожарной сигнализации, пожаротушения, связи, '
+                             'диспетчеризации, видеонаблюдения, охранной сигнализации, линейно-кабельных сооружений '
+                             'электросвязи, обеспечения достоверности результатов контроля качества, получения '
+                             'объективной оценки качества выполняемых работ на всех стадиях производства работ '
+                             '(входной контроль, операционный, приёмочный контроль)'),
+        'protocol_scope': ('электромонтажных работ, работ по монтажу слаботочных систем, систем пожарной сигнализации, '
+                           'пожаротушения, связи, диспетчеризации, видеонаблюдения, охранной сигнализации, '
+                           'линейно-кабельных сооружений электросвязи'),
+        'itr_experience_field': 'стаж работы в области электромонтажных и слаботочных систем',
+        'director_responsibility': ('Функционирование СПК; организация проведения внутренних аудитов; входной контроль '
+                                    'ПСД; ведение Журнала учета рекламаций по качеству электромонтажных и слаботочных '
+                                    'работ и принятия мер по ним;'),
+        'polozhenie_replacements': (
+            ('Система производственного контроля предприятия создана',
+             'Система производственного контроля предприятия создана с целью обеспечения возможности достижения требуемых показателей качества выполняемых электромонтажных работ, работ по монтажу слаботочных систем, систем пожарной сигнализации, пожаротушения, связи, диспетчеризации, видеонаблюдения, охранной сигнализации, линейно-кабельных сооружений электросвязи, обеспечения единства и достоверности результатов контроля, получения объективной оценки качества выполняемых работ и обеспечения гарантии качества выполняемых работ.'),
+            ('Основной задачей производственного контроля',
+             'Основной задачей производственного контроля является предотвращение некачественного производства электромонтажных и слаботочных работ, монтажа систем пожарной сигнализации, пожаротушения, связи, видеонаблюдения, охранной сигнализации, линейно-кабельных сооружений и достижение постоянного соответствия производимых работ требованиям технических нормативных правовых актов (далее — ТНПА) и проектной документации.'),
+            ('Основной функцией производственного контроля',
+             'Основной функцией производственного контроля является обеспечение входного, операционного и приемочного контроля выполняемых работ.'),
+            ('проводить операционный и приемочный контроль выполняемых работ с регистрацией',
+             'проводить операционный и приемочный контроль выполняемых работ с регистрацией в «Журнале производства работ» (СН 1.03.04-2020);'),
+            ('Операционный контроль при производстве СМР проводит',
+             'Операционный контроль проводит лицо, назначенное приказом. Все результаты контроля заносятся в журнал производства работ (СН 1.03.04-2020).'),
+            ('Приемочный контроль при производстве СМР осуществляется',
+             'Приемочный контроль осуществляется в соответствии с требованиями постановления Совмина от 06.06.2011 №716 «Об утверждении положения о порядке приемки в эксплуатацию объектов строительства» в части приёмки электромонтажных, слаботочных работ и работ по монтажу систем пожарной сигнализации, пожаротушения, связи, видеонаблюдения, охранной сигнализации, линейно-кабельных сооружений.'),
+            ('приемку некачественно выполненных работ в строительстве',
+             '- приемку некачественно выполненных электромонтажных и слаботочных работ, работ по монтажу систем пожарной сигнализации, пожаротушения, связи, видеонаблюдения, охранной сигнализации, линейно-кабельных сооружений;'),
+            ('проводить входной контроль закупаемой продукции, операционный и приемочный',
+             '- проводить входной контроль закупаемой продукции, операционный и приемочный контроль электромонтажных и слаботочных работ;'),
+            ('Порядок применения технологической документации',
+             'Предприятие приобретает необходимые типовые технологические карты у разработчиков. Лицо, назначенное приказом, регистрирует технологические карты в журнале учета ТТК и ТНПА; оригиналы хранятся у назначенного специалиста, рабочие экземпляры выдаются по необходимости.'),
+            ('Порядок приобретения технологической документации',
+             'Ответственным за учет, регистрацию, хранение, актуализацию и выдачу технологических документов является лицо, назначенное приказом по предприятию.'),
+            ('Предприятие приобретает необходимые типовые технологические карты',
+             'Технологическая документация по электромонтажным и слаботочным системам пересматривается по мере изменения ТНПА, проектных решений или технологии выполнения работ.'),
+            ('внешнее взаимодействие при контроле качества выполненных СМР',
+             '- с производственными участками электромонтажных, слаботочных систем, монтажа СПС, АПТ, связи, видеонаблюдения, охранной сигнализации и линейно-кабельных сооружений — в части контроля качества работ и получения необходимой информации о ходе работ;'),
+            ('В состав системы производственного контроля входит персонал',
+             'В состав системы производственного контроля входит персонал, работающий на предприятии на постоянной основе и имеющий соответствующее образование, профессиональную подготовку, технические знания и опыт работы в области контроля качества электромонтажных, слаботочных работ и работ по монтажу систем пожарной сигнализации, пожаротушения, связи, видеонаблюдения, охранной сигнализации, линейно-кабельных сооружений и метрологического обеспечения производства не менее одного года.'),
+        ),
+    },
+}
+
+
+def _spk_activity_profile(spk_data=None):
+    key = str((spk_data or {}).get('activity_profile') or 'construction').strip().lower()
+    return key, SPK_ACTIVITY_PROFILES.get(key, SPK_ACTIVITY_PROFILES['construction'])
+
+
+def _responsible_position_forms(position: str) -> tuple[str, str]:
+    """Return accusative and dative role labels without changing the person's real title."""
+    value = str(position or '').lower().replace('ё', 'е')
+    if 'мастер' in value:
+        return 'Мастера производственного участка', 'Мастеру производственного участка'
+    if 'заместител' in value and 'главн' in value and 'инженер' in value:
+        return 'Заместителя директора-главного инженера', 'Заместителю директора-главному инженеру'
+    if 'главн' in value and 'инженер' in value:
+        return 'Главного инженера', 'Главному инженеру'
+    return 'Производителя работ', 'Производителю работ'
+
+
+def _replace_paragraphs_by_marker(xml: str, replacements) -> str:
+    """Replace whole paragraphs while retaining the Word style from the source template."""
+    for marker, replacement in replacements:
+        matching = [
+            paragraph for paragraph in _paragraphs(xml)
+            if marker.lower() in re.sub(r'<[^>]+>', '', paragraph).lower()
+        ]
+        for paragraph in matching:
+            if paragraph in xml:
+                xml = xml.replace(paragraph, _replace_para_text(paragraph, replacement), 1)
+    return xml
+
+
 # ═══════════════════ Документ 1: Условия в производственных помещениях ═══════════════════
 def render_usloviya(company: dict) -> bytes:
     """
@@ -153,7 +305,8 @@ def _replace_director_signature(xml: str, paras: list, dir_init: str) -> str:
 
 # ═══════════════════ Документ 2: Приказ о СПК (назначение ответственных) ═══════════════════
 def render_prikaz_spk(company: dict, order_number: str, order_date: str, city: str,
-                       director_fio: str, gl_inzhener_fio: str, foremen_fio: list) -> bytes:
+                       director_fio: str, gl_inzhener_fio: str, foremen_fio: list,
+                       profile: dict = None, operational_position: str = '') -> bytes:
     """
     director_fio: ФИО директора (обязателен, всегда в списке).
     gl_inzhener_fio: ФИО главного инженера (может быть пустым, если нет такой роли).
@@ -165,11 +318,16 @@ def render_prikaz_spk(company: dict, order_number: str, order_date: str, city: s
     paras = _paragraphs(xml)
     full_name = f'{company.get("form","ООО")} «{company.get("name","")}»'
     dir_init = _dir_initials(director_fio)
+    profile = profile or SPK_ACTIVITY_PROFILES['construction']
+    operational_position_acc, _ = _responsible_position_forms(operational_position)
 
     replacements = {0: full_name, 4: f"{order_date} № {order_number}", 6: city}
     for i, new_text in replacements.items():
         if i < len(paras) and paras[i] in xml:
             xml = xml.replace(paras[i], _replace_para_text(paras[i], new_text), 1)
+    xml = _replace_paragraphs_by_marker(xml, [
+        ('С целью повышения качества', profile['order_purpose']),
+    ])
 
     # --- Список лиц, задействованных в СПК (абзацы 16-19 в образце): по одному на
     #     каждого человека, формат "Фамилия И.О., Должность" (родительный падеж) ---
@@ -180,7 +338,7 @@ def render_prikaz_spk(company: dict, order_number: str, order_date: str, city: s
         if gl_inzhener_fio:
             people.append((gl_inzhener_fio, 'Главного инженера'))
         for f in foremen_fio:
-            people.append((f, 'Производителя работ'))
+            people.append((f, operational_position_acc))
         style_line = paras[idx_list_start + 1]
         new_lines = []
         for fio, pos_gen in people:
@@ -197,8 +355,10 @@ def render_prikaz_spk(company: dict, order_number: str, order_date: str, city: s
     idx5 = _find_para_index(paras, lambda t: t.startswith('5. Производителей работ') or
                                                t.startswith('5. Производителя работ'))
     if idx3 >= 0 and paras[idx3] in xml:
-        old_t = re.sub(r'<[^>]+>', '', paras[idx3]).strip().replace('\xa0', ' ')
-        new_t = re.sub(r'Директора [^\s]+ [^\s]+', f'Директора {_fio_initials_surname_first(director_fio)}', old_t, count=1)
+        new_t = (
+            f'3. Директора {_fio_initials_surname_first(director_fio)} назначить ответственным за '
+            f'{profile["director_responsibility"].rstrip(";")}. '
+        )
         xml = xml.replace(paras[idx3], _replace_para_text(paras[idx3], new_t), 1)
     if idx4 >= 0 and paras[idx4] in xml and gl_inzhener_fio:
         old_t = re.sub(r'<[^>]+>', '', paras[idx4]).strip().replace('\xa0', ' ')
@@ -206,11 +366,15 @@ def render_prikaz_spk(company: dict, order_number: str, order_date: str, city: s
         xml = xml.replace(paras[idx4], _replace_para_text(paras[idx4], new_t), 1)
     if idx5 >= 0 and paras[idx5] in xml and foremen_fio:
         if len(foremen_fio) == 1:
-            new_t = f"5. Производителя работ {_fio_initials_surname_first(foremen_fio[0])}, назначить ответственным за Входной, операционный, приемочный контроль;"
+            new_t = f"5. {operational_position_acc} {_fio_initials_surname_first(foremen_fio[0])}, назначить ответственным за Входной, операционный, приемочный контроль;"
         else:
-            names_part = ', '.join(f"производителя работ {_fio_initials_surname_first(f)}" for f in foremen_fio)
+            names_part = ', '.join(f"{operational_position_acc.lower()} {_fio_initials_surname_first(f)}" for f in foremen_fio)
             new_t = f"5. {names_part}, назначить ответственными за Входной, операционный, приемочный контроль;"
         xml = xml.replace(paras[idx5], _replace_para_text(paras[idx5], new_t), 1)
+    elif idx5 >= 0 and paras[idx5] in xml:
+        # The source template may contain sample foremen. Do not retain them
+        # when the confirmed SPK staff only has a director and chief engineer.
+        xml = xml.replace(paras[idx5], _replace_para_text(paras[idx5], ''), 1)
 
     xml = _replace_director_signature(xml, paras, dir_init)
     parts['word/document.xml'] = xml.encode('utf-8')
@@ -219,18 +383,22 @@ def render_prikaz_spk(company: dict, order_number: str, order_date: str, city: s
 
 # ═══════════════════ Документ 3: Приказ о внутреннем обучении ═══════════════════
 def render_prikaz_obuchenie(company: dict, order_number: str, order_date: str, city: str,
-                             director_fio: str, deadline_date: str) -> bytes:
+                             director_fio: str, deadline_date: str, profile: dict = None) -> bytes:
     parts = _load_parts('3_prikaz_obuchenie.docx')
     xml = parts['word/document.xml'].decode('utf-8')
     paras = _paragraphs(xml)
     full_name = f'{company.get("form","ООО")} «{company.get("name","")}»'
     dir_init = _dir_initials(director_fio)
+    profile = profile or SPK_ACTIVITY_PROFILES['construction']
 
     idx_deadline = _find_para_index(paras, lambda t: t.startswith('2. До'))
     replacements = {0: full_name, 4: f"{order_date} № {order_number}", 6: city}
     for i, new_text in replacements.items():
         if i < len(paras) and paras[i] in xml:
             xml = xml.replace(paras[i], _replace_para_text(paras[i], new_text), 1)
+    xml = _replace_paragraphs_by_marker(xml, [
+        ('С целью подготовки специалистов', profile['training_purpose']),
+    ])
     if idx_deadline >= 0 and paras[idx_deadline] in xml:
         old_text = re.sub(r'<[^>]+>', '', paras[idx_deadline]).strip()
         new_text = re.sub(r'\d{2}\.\d{2}\.\d{4}', deadline_date, old_text, count=1)
@@ -243,7 +411,7 @@ def render_prikaz_obuchenie(company: dict, order_number: str, order_date: str, c
 
 # ═══════════════════ Документ 4: Приказ о ТО средств измерений ═══════════════════
 def render_prikaz_to_si(company: dict, order_number: str, order_date: str, city: str,
-                         director_fio: str, responsible_fio: str) -> bytes:
+                         director_fio: str, responsible_fio: str, responsible_position: str = '') -> bytes:
     parts = _load_parts('4_prikaz_to_si.docx')
     xml = parts['word/document.xml'].decode('utf-8')
     paras = _paragraphs(xml)
@@ -251,6 +419,7 @@ def render_prikaz_to_si(company: dict, order_number: str, order_date: str, city:
     dir_init = _dir_initials(director_fio)
     resp_acc = _fio_initials_surname_first(responsible_fio)   # "Туника Д.И."
     resp_dat = _fio_initials_dative(responsible_fio)          # "Тунику Д.И."
+    position_acc, position_dat = _responsible_position_forms(responsible_position)
 
     replacements = {0: full_name, 4: f"{order_date} № {order_number}", 6: city}
     for i, new_text in replacements.items():
@@ -261,11 +430,11 @@ def render_prikaz_to_si(company: dict, order_number: str, order_date: str, city:
     idx2 = _find_para_index(paras, lambda t: t.startswith('2. Производителю работ'))
     if idx1 >= 0 and paras[idx1] in xml:
         old_t = re.sub(r'<[^>]+>', '', paras[idx1]).strip().replace('\xa0', ' ')
-        new_t = re.sub(r'Производителя работ [^\s]+ [^\s]+', f'Производителя работ {resp_acc}', old_t, count=1)
+        new_t = re.sub(r'Производителя работ [^\s]+ [^\s]+', f'{position_acc} {resp_acc}', old_t, count=1)
         xml = xml.replace(paras[idx1], _replace_para_text(paras[idx1], new_t), 1)
     if idx2 >= 0 and paras[idx2] in xml:
         old_t = re.sub(r'<[^>]+>', '', paras[idx2]).strip().replace('\xa0', ' ')
-        new_t = re.sub(r'Производителю работ [^\s]+ [^\s]+', f'Производителю работ {resp_dat}', old_t, count=1)
+        new_t = re.sub(r'Производителю работ [^\s]+ [^\s]+', f'{position_dat} {resp_dat}', old_t, count=1)
         xml = xml.replace(paras[idx2], _replace_para_text(paras[idx2], new_t), 1)
 
     xml = _replace_director_signature(xml, paras, dir_init)
@@ -275,12 +444,13 @@ def render_prikaz_to_si(company: dict, order_number: str, order_date: str, city:
 
 # ═══════════════════ Документ 5: Приказ о назначении ответственного за машины ═══════════════════
 def render_prikaz_mashiny(company: dict, order_number: str, order_date: str, city: str,
-                           director_fio: str, responsible_fio: str) -> bytes:
+                           director_fio: str, responsible_fio: str, responsible_position: str = '') -> bytes:
     parts = _load_parts('5_prikaz_mashiny.docx')
     xml = parts['word/document.xml'].decode('utf-8')
     paras = _paragraphs(xml)
     full_name = f'{company.get("form","ООО")} «{company.get("name","")}»'
     resp_acc = _fio_initials_surname_first(responsible_fio)
+    position_acc, _ = _responsible_position_forms(responsible_position)
     dir_init = _dir_initials(director_fio)
 
     replacements = {0: full_name, 3: f"{order_date} № {order_number}", 5: city}
@@ -291,7 +461,7 @@ def render_prikaz_mashiny(company: dict, order_number: str, order_date: str, cit
     idx1 = _find_para_index(paras, lambda t: t.startswith('1. Назначить ответственным'))
     if idx1 >= 0 and paras[idx1] in xml:
         old_t = re.sub(r'<[^>]+>', '', paras[idx1]).strip().replace('\xa0', ' ')
-        new_t = re.sub(r'Производителя работ [^\s]+ [^\s]+', f'Производителя работ {resp_acc}', old_t, count=1)
+        new_t = re.sub(r'Производителя работ [^\s]+ [^\s]+', f'{position_acc} {resp_acc}', old_t, count=1)
         xml = xml.replace(paras[idx1], _replace_para_text(paras[idx1], new_t), 1)
 
     xml = _replace_director_signature(xml, paras, dir_init)
@@ -345,6 +515,7 @@ ROLE_RESPONSIBILITIES = {
     'директор': "Функционирование СПК; организация проведения внутренних аудитов; входной контроль ПСД; ведение Журнала учета рекламаций по качеству СМР и принятия мер по ним;",
     'главный инженер': "Входной, операционный, приемочный контроль; Обеспечение и содержание в рабочем состоянии машин и механизмов; учет, хранение, актуализация, выдача ТНПА, ТК; метрологическое обеспечение.",
     'производитель работ': "Входной, операционный, приемочный контроль; Обеспечение и содержание в рабочем состоянии машин и механизмов; учет, хранение, актуализация, выдача ТНПА, ТК; метрологическое обеспечение.",
+    'мастер': "Входной, операционный, приемочный контроль; Обеспечение и содержание в рабочем состоянии машин и механизмов; учет, хранение, актуализация, выдача ТНПА, ТК; метрологическое обеспечение.",
 }
 
 
@@ -421,7 +592,7 @@ def _itr_workbook_lines(person: dict) -> list:
     ]
 
 
-def render_spravka_itr(company: dict, people: list) -> bytes:
+def render_spravka_itr(company: dict, people: list, profile: dict = None) -> bytes:
     """
     people: [{fio, position, education_level, diploma_number, diploma_date,
               diploma_institution, diploma_speciality, diploma_qualification,
@@ -433,12 +604,19 @@ def render_spravka_itr(company: dict, people: list) -> bytes:
     xml = parts['word/document.xml'].decode('utf-8')
     rows = _rows(xml)
     template_row = rows[1]
+    profile = profile or SPK_ACTIVITY_PROFILES['construction']
+    xml = _replace_paragraphs_by_marker(xml, [
+        ('стаж работы в области строительства', profile['itr_experience_field']),
+    ])
 
     new_rows = []
     for p in people:
         edu = _itr_diploma_lines(p)
         role_key = (p.get('role_key') or '').lower()
-        responsibility = ROLE_RESPONSIBILITIES.get(role_key, p.get('responsibility', ''))
+        responsibility = (
+            profile['director_responsibility'] if role_key == 'директор'
+            else ROLE_RESPONSIBILITIES.get(role_key, p.get('responsibility', ''))
+        )
         protocol = f"Протокол №{p.get('protocol_number','')} от {p.get('protocol_date','')} г." if p.get('protocol_number') else '—'
         extra = [f"Стаж – {p.get('stage_years','—')}", *_itr_workbook_lines(p)]
         cell_values = [p.get('fio', ''), p.get('position', ''), edu, responsibility, protocol, extra]
@@ -455,7 +633,8 @@ def render_spravka_itr(company: dict, people: list) -> bytes:
 
 
 # ═══════════════════ Документ 7: Организационная структура СПК (органиграмма) ═══════════════════
-def render_orgstruktura(company: dict, director_fio: str, gl_inzhener_fio: str, foremen_fio: list) -> bytes:
+def render_orgstruktura(company: dict, director_fio: str, gl_inzhener_fio: str, foremen_fio: list,
+                         profile: dict = None) -> bytes:
     """
     Графическая схема (текстовые блоки-фигуры) — надёжнее менять глобальной заменой
     известных старых значений на новые, а не по индексу абзаца (содержимое фигур
@@ -467,6 +646,10 @@ def render_orgstruktura(company: dict, director_fio: str, gl_inzhener_fio: str, 
     old_company = 'Сфера Секьюрити'
     new_company = company.get('name', '')
     xml = xml.replace(old_company, new_company)
+    profile = profile or SPK_ACTIVITY_PROFILES['construction']
+    xml = _replace_paragraphs_by_marker(xml, [
+        ('Функционирование СПК; организация проведения внутренних аудитов', profile['director_responsibility']),
+    ])
 
     # Старые ФИО в образце (фамилия и имя-отчество идут отдельными run'ами —
     # заменяем как две независимые подстроки, это надёжнее целой фразы)
@@ -496,7 +679,8 @@ def render_orgstruktura(company: dict, director_fio: str, gl_inzhener_fio: str, 
 
 # ═══════════════════ Документ 8: Протокол о внутреннем обучении ═══════════════════
 def render_protokol_obuchenie(company: dict, protocol_number: str, protocol_date: str,
-                               city: str, order_date: str, order_number: str, people: list) -> bytes:
+                               city: str, order_date: str, order_number: str, people: list,
+                               profile: dict = None) -> bytes:
     """people: [{fio, position, result}]  # result по умолчанию "Хорошо" """
     parts = _load_parts('8_protokol_obuchenie.docx')
     xml = parts['word/document.xml'].decode('utf-8')
@@ -505,6 +689,7 @@ def render_protokol_obuchenie(company: dict, protocol_number: str, protocol_date
     LEGAL_FULL = {'ООО':'Общество с ограниченной ответственностью','ОДО':'Общество с дополнительной ответственностью',
                   'ЧУП':'Частное унитарное предприятие','ЗАО':'Закрытое акционерное общество','ОАО':'Открытое акционерное общество'}
     legal_full_name = f'{LEGAL_FULL.get((company.get("form") or "ООО").upper(), "Общество с ограниченной ответственностью")} «{company.get("name","")}»'
+    profile = profile or SPK_ACTIVITY_PROFILES['construction']
 
     replacements = {0: full_name, 2: f"ПРОТОКОЛ № {protocol_number}", 4: f"{protocol_date} г.", 6: city}
     idx_order_ref = _find_para_index(paras, lambda t: t.startswith('В соответствии с приказом'))
@@ -513,8 +698,11 @@ def render_protokol_obuchenie(company: dict, protocol_number: str, protocol_date
         if i < len(paras) and paras[i] in xml:
             xml = xml.replace(paras[i], _replace_para_text(paras[i], new_text), 1)
     if idx_order_ref >= 0 and paras[idx_order_ref] in xml:
-        old_t = re.sub(r'<[^>]+>', '', paras[idx_order_ref]).strip().replace('\xa0', ' ')
-        new_t = re.sub(r'от \d{2}\.\d{2}\.\d{4} № \S+', f'от {order_date} № {order_number}', old_t, count=1)
+        new_t = (
+            f'В соответствии с приказом от {order_date} № {order_number} проведено внутреннее обучение '
+            f'по контролю качества {profile["protocol_scope"]} специалистов, задействованных в системе '
+            'производственного контроля.'
+        )
         xml = xml.replace(paras[idx_order_ref], _replace_para_text(paras[idx_order_ref], new_t), 1)
     if idx_result >= 0 and paras[idx_result] in xml:
         new_t = f"Считать {legal_full_name} прошедшим внутреннее обучение."
@@ -536,7 +724,7 @@ def render_protokol_obuchenie(company: dict, protocol_number: str, protocol_date
 
 
 # ═══════════════════ Документ 9: Положение о системе производственного контроля ═══════════════════
-def render_polozhenie(company: dict, director_fio: str, approval_date: str = '') -> bytes:
+def render_polozhenie(company: dict, director_fio: str, approval_date: str = '', profile: dict = None) -> bytes:
     """Стандартный регламентный документ (337 абзацев), почти без переменных данных —
     только название компании (7 упоминаний) и подпись директора (1). Меняем глобально."""
     parts = _load_parts('9_polozhenie.docx')
@@ -545,6 +733,8 @@ def render_polozhenie(company: dict, director_fio: str, approval_date: str = '')
     old_company = 'Сфера Секьюрити'
     new_company = company.get('name', '')
     xml = xml.replace(old_company, new_company)
+    profile = profile or SPK_ACTIVITY_PROFILES['construction']
+    xml = _replace_paragraphs_by_marker(xml, profile.get('polozhenie_replacements') or ())
 
     dir_init = _dir_initials(director_fio)
     paras = _paragraphs(xml)
@@ -795,6 +985,7 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     variant: 'spk_stroy' | 'spk_bisp'
     """
     org = company.get('name', 'company')
+    _profile_key, profile = _spk_activity_profile(spk_data)
     director_fio = company.get('director_fio', '') or (resp.get('director') or {}).get('fio', '')
     gl_person = _find_person(itr, 'главный инженер', 'гл. инженер')
     gl_inzhener_fio = (gl_person or {}).get('fio', '') if gl_person != resp.get('director') else ''
@@ -805,6 +996,12 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
         alt = _find_person(itr, 'мастер')
         if alt and alt.get('fio') != director_fio:
             foremen = [alt.get('fio', '')]
+
+    responsible_person = next((p for p in itr if p.get('fio') in foremen), None)
+    if not responsible_person:
+        responsible_person = gl_person or next((p for p in itr if p.get('fio') == director_fio), None) or {}
+    responsible_fio = responsible_person.get('fio') or director_fio
+    responsible_position = responsible_person.get('position') or company.get('director_position', 'Директор')
 
     def _person_copy(source, role_key, fallback_fio='', fallback_position=''):
         item = dict(source or {})
@@ -837,7 +1034,8 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
             all_people.append(person)
     for f in foremen:
         fp = next((p for p in itr if p.get('fio') == f), {})
-        person = _person_copy(fp, 'производитель работ', f, 'Производитель работ')
+        role_key = 'мастер' if 'мастер' in (fp.get('position') or '').lower() else 'производитель работ'
+        person = _person_copy(fp, role_key, f, 'Производитель работ')
         fio_key = (person.get('fio') or '').strip().lower()
         if fio_key and fio_key not in seen_people:
             seen_people.add(fio_key)
@@ -866,20 +1064,20 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
 
     p("2. Приказ о СПК")
     add(f"{org} СПК - 4.1 Приказ о СПК.docx",
-        render_prikaz_spk(company, '1/СПК', order_date, city, director_fio, gl_inzhener_fio, foremen))
+        render_prikaz_spk(company, '1/СПК', order_date, city, director_fio, gl_inzhener_fio, foremen,
+                          profile, responsible_position))
 
     p("3. Приказ о внутреннем обучении")
     add(f"{org} СПК - 4.2.1 Приказ о внутреннем обучении.docx",
-        render_prikaz_obuchenie(company, '2/СПК', order_date, city, director_fio, order_date))
+        render_prikaz_obuchenie(company, '2/СПК', order_date, city, director_fio, order_date, profile))
 
     p("4. Приказ о ТО средств измерений")
-    resp_si = foremen[0] if foremen and foremen[0] else director_fio
     add(f"{org} СПК - 4.3 Приказ о ТО СИ.docx",
-        render_prikaz_to_si(company, '3/СПК', order_date, city, director_fio, resp_si))
+        render_prikaz_to_si(company, '3/СПК', order_date, city, director_fio, responsible_fio, responsible_position))
 
     p("5. Приказ о назначении ответственного за машины")
     add(f"{org} СПК - 4.4 Приказ о машинах.docx",
-        render_prikaz_mashiny(company, '4/СПК', order_date, city, director_fio, resp_si))
+        render_prikaz_mashiny(company, '4/СПК', order_date, city, director_fio, responsible_fio, responsible_position))
 
     p("6. Справка ИТР")
     people_itr = []
@@ -892,18 +1090,18 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
         if not item.get('protocol_date'):
             item['protocol_date'] = item.get('ot_protocol_date') or item.get('training_protocol_date') or ''
         people_itr.append(item)
-    add(f"{org} СПК - 2 Справка ИТР.docx", render_spravka_itr(company, people_itr))
+    add(f"{org} СПК - 2 Справка ИТР.docx", render_spravka_itr(company, people_itr, profile))
 
     p("7. Организационная структура")
     add(f"{org} СПК - 3 Организационная структура.docx",
-        render_orgstruktura(company, director_fio, gl_inzhener_fio, foremen))
+        render_orgstruktura(company, director_fio, gl_inzhener_fio, foremen, profile))
 
     p("8. Протокол о внутреннем обучении")
     add(f"{org} СПК - 4.2.2 Протокол обучения.docx",
-        render_protokol_obuchenie(company, '1', order_date, city, order_date, '2/СПК', all_people))
+        render_protokol_obuchenie(company, '1', order_date, city, order_date, '2/СПК', all_people, profile))
 
     p("9. Положение о СПК")
-    add(f"{org} СПК - 5 Положение о СПК.docx", render_polozhenie(company, director_fio, policy_date))
+    add(f"{org} СПК - 5 Положение о СПК.docx", render_polozhenie(company, director_fio, policy_date, profile))
 
     p("10. Паспорт СПК")
     competence = (spk_data or {}).get('technical_competence') or {}
