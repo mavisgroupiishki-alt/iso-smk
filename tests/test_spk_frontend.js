@@ -49,4 +49,26 @@ if (result.staff[0].position !== 'Главный инженер') throw new Erro
 if (result.staff[0].diplomas[0].full_text !== 'Диплом АБ № 12345') throw new Error('diploma was lost');
 if (result.staff[0].trudovye_numbers[0] !== 'ТК № 7654321') throw new Error('workbook number was lost');
 
+// The card is rendered immediately after every chat response. A profile from
+// SPK must therefore not crash the entire chat with a missing local variable.
+const card = { innerHTML: '', insertAdjacentHTML() {} };
+const status = {};
+const generateButton = { style: {} };
+context.document = {
+  getElementById(id) {
+    return id === 'ai-card-body' ? card : (id === 'ai-gen-btn' ? generateButton : status);
+  },
+};
+context.aiCurrentData = {};
+context.aiPhotoThumbnails = {};
+context.aiNormalizeCompanyAttestation = () => {};
+context.aiSaveCurrentCompany = () => ({ catch() {} });
+context.aiValidateReadiness = () => ({ ready: false, warnings: [], missing: [] });
+context.igorEscape = value => String(value);
+vm.runInContext(extractFunction('aiRenderCard'), context);
+context.aiRenderCard({ spk: { activity_profile: 'metal_only' } });
+if (!card.innerHTML.includes('Производство металлоконструкций')) {
+  throw new Error('SPK activity profile was not rendered in the card');
+}
+
 console.log('SPK frontend structured-staff regression: PASS');

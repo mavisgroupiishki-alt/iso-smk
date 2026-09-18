@@ -2895,6 +2895,7 @@ function aiRenderCard(data) {
 
   // Виды работ для СПК
   const workTypes = aiCurrentData.work_types||[];
+  const spk = aiCurrentData.spk||{};
   if(workTypes.length) {
     html += '<div class="ai-sec">Виды работ СПК (' + workTypes.length + ')</div><div>';
     workTypes.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🏗 ${w}</span></div>`);
