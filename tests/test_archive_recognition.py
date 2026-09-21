@@ -149,6 +149,28 @@ def test_rar_converter_uses_libarchive_when_no_system_extractor_exists(monkeypat
         ]
 
 
+def test_periodika_reads_one_nested_rar_with_the_previous_iso_suot_package(monkeypatch):
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('Старый пакет/Политика.txt', 'ISO 9001 и СУОТ: прежний пакет организации')
+
+    outer = io.BytesIO()
+    with zipfile.ZipFile(outer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('ЯрмолюкСтрой/Список сотрудников.txt', 'Ярмолюк Альбин Владимирович — директор')
+        archive.writestr('ЯрмолюкСтрой/Старые доки.rar', b'not-a-real-rar')
+
+    monkeypatch.setattr(server, '_rar_to_zip_bytes', lambda *_: inner.getvalue())
+    monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)
+
+    result = server.extract_archive_with_vision(
+        outer.getvalue(), 'ЯрмолюкСтрой.zip', 'unused', product='iso_suot'
+    )
+
+    assert 'Ярмолюк Альбин Владимирович' in result['text']
+    assert 'прежний пакет организации' in result['text']
+    assert 'Старый пакет/Политика.txt' in result['text']
+
+
 def test_archive_task_returns_structured_data_to_the_browser():
     """The async archive client depends on this payload to keep SPK tools."""
     temp = tempfile.TemporaryDirectory()

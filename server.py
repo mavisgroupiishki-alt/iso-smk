@@ -2588,7 +2588,7 @@ def _extract_spk_tools_from_copy_list(text: str) -> list:
     return tools
 
 
-def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all"):
+def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all", _archive_depth=0):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
     - текстовые файлы (docx/pdf/txt/csv/xlsx) читаются как раньше, быстро
@@ -2640,6 +2640,12 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     entries.append((name, fixed, info.file_size, 'text'))
                 elif ext in IMAGE_EXTS and info.file_size <= IMAGE_INNER_LIMIT:
                     entries.append((name, fixed, info.file_size, 'image'))
+                elif ext in ('zip', 'rar') and _archive_depth < 1:
+                    # Clients often put the previous ISO/SUOT package into a RAR
+                    # alongside a current staffing schedule. One bounded nested
+                    # level lets periodika use that package as its base without
+                    # recursively unpacking arbitrary archive trees.
+                    entries.append((name, fixed, info.file_size, 'nested_archive'))
                 elif ext == 'pdf' or ext in TEXT_EXTS or ext in IMAGE_EXTS:
                     entries.append((name, fixed, info.file_size, 'skip_size'))
                 else:
@@ -2654,7 +2660,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     # docx были в карточке даже если распознавание сканов ещё не закончилось
     entries.sort(key=lambda e: 0 if e[3] == 'text' else (1 if e[3] in ('image', 'pdf') else 2))
 
-    readable_entries = [e for e in entries if e[3] in ('text', 'image', 'pdf')]
+    readable_entries = [e for e in entries if e[3] in ('text', 'image', 'pdf', 'nested_archive')]
     to_process = readable_entries[:MAX_ITEMS]
     skipped = [e for e in entries if e[3] == 'skip_size']
     unsupported = [e for e in entries if e[3] == 'unsupported']
@@ -2665,7 +2671,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     structured_fragments = []
     skipped_notes = [f"{fn.split('/')[-1]} ({sz//1024//1024} МБ)" for _, fn, sz, _ in skipped]
 
-    text_entries = [e for e in to_process if e[3] == 'text']
+    text_entries = [e for e in to_process if e[3] in ('text', 'nested_archive')]
     image_entries = [e for e in to_process if e[3] in ('image', 'pdf')]  # оба идут через vision-путь ниже
     done_count = [0]
 
@@ -2678,6 +2684,15 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             p(f"Читаю {done_count[0]}/{total}: {short}")
             try:
                 data = z.read(raw_name)
+                if kind == 'nested_archive':
+                    nested = extract_archive_with_vision(
+                        data, fixed_name, api_key, product=product,
+                        _archive_depth=_archive_depth + 1,
+                    )
+                    nested_text = str(nested.get('text') or '')
+                    prefix = f"--- {folder + '/' if folder else ''}{short} (вложенный архив) ---"
+                    texts.append(prefix + "\n" + (nested_text or '[Вложенный архив не дал читаемого текста]'))
+                    continue
                 if parse_company_attestation_docx and short.lower().endswith('.docx'):
                     try:
                         structured = parse_company_attestation_docx(data, short)
