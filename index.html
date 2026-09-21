@@ -3175,10 +3175,32 @@ async function aiFindSavedCompanyByName(query) {
   return list.find(item => (item.label || '').toLowerCase().includes(q)) || null;
 }
 
+function aiIsPeriodikaRequest(text) {
+  return /периодик/iu.test(String(text || ''));
+}
+
+// Периодика может начинаться не только из сохранённой карточки, но и с ZIP
+// прошлого пакета. Для такой загрузки сразу выбираем быстрый разбор ИСО/СУОТ.
+function aiArchiveProductForRequest(text, currentProduct) {
+  const product = String(currentProduct || 'all').toLowerCase();
+  if (aiIsPeriodikaRequest(text) && !['iso', 'suot', 'iso_suot'].includes(product)) return 'iso_suot';
+  return product || 'all';
+}
+
+function aiBuildArchivePeriodikaContext(text, filesContent) {
+  if (!aiIsPeriodikaRequest(text) || !String(filesContent || '').trim()) return '';
+  return 'НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ ИЗ ЗАГРУЖЕННОГО ПРЕДЫДУЩЕГО ПАКЕТА. '
+    + 'Это периодика ИСО/СУОТ: используй загруженный пакет как базу карточки, извлеки из него реквизиты, '
+    + 'область, штат, рабочие профессии, объекты, поставщиков и сведения по охране труда. '
+    + 'Не создавай пустую новую компанию и не теряй сведения из пакета. '
+    + 'Дату выезда и данные, которые могли измениться за период, уточни только если пользователь их не указал.\n\n';
+}
+
 // Признаки того что пользователь хочет работать со старой/сохранённой компанией
 // (периодика, повторная генерация, "у тебя есть данные" и т.п.)
 function aiLooksLikeCompanyLookupRequest(text) {
-  return /период[ои]к|подгруз|загруз[иы]|у\s+тебя\s+(?:есть|сохран)|ранее\s+(?:дела|сохран)|повторн|дела[лм]и\s+(?:исо|суот|спк)/i.test(text);
+  return aiIsPeriodikaRequest(text)
+    || /подгруз|загруз[иы]|у\s+тебя\s+(?:есть|сохран)|ранее\s+(?:дела|сохран)|повторн|дела[лм]и\s+(?:исо|суот|спк)/i.test(text);
 }
 
 // Прямое сопоставление: ищем в тексте любое слово/фразу, совпадающую с названием
@@ -3357,6 +3379,9 @@ async function aiSend() {
   const ta = document.getElementById('ai-input');
   const text = ta.value.trim();
   if(!text && aiAttachedFiles.length === 0) return;
+  const archiveProductHint = aiArchiveProductForRequest(
+    text, aiCurrentData?.certification?.standard || 'all'
+  );
 
   // Показываем сообщение пользователя
   const fileNames = aiAttachedFiles.map(f=>f.name).join(', ');
@@ -3404,7 +3429,7 @@ async function aiSend() {
     for(let i = 0; i < total; i += BATCH) {
       const batch = aiAttachedFiles.slice(i, i + BATCH);
       aiAddMsg('ai', `⏳ Читаю файлы ${i+1}-${Math.min(i+BATCH,total)} из ${total}...`);
-      const results = await Promise.all(batch.map(aiReadFile));
+      const results = await Promise.all(batch.map(file => aiReadFile(file, archiveProductHint)));
       fileData.push(...results);
       // убираем промежуточное сообщение о прогрессе
       const msgs2 = document.getElementById('ai-messages');
@@ -3453,8 +3478,10 @@ async function aiSend() {
   const correctionRequested = aiIsCorrectionIntent(text);
 
   // Собираем контент для ИИ
+  const archivePeriodikaContext = aiBuildArchivePeriodikaContext(text, filesContent);
   let content = '';
   if(savedCompanyContext) content += savedCompanyContext;
+  if(archivePeriodikaContext) content += archivePeriodikaContext;
   if(filesContent) content += 'СОДЕРЖИМОЕ ФАЙЛОВ:' + filesContent + '\n\n';
   if(Object.keys(authoritativeSourceData).length > 0) {
     content += 'СТРУКТУРИРОВАННЫЕ ДАННЫЕ ИЗ ЗАПОЛНЕННЫХ ФОРМ 1–5 ' +
@@ -3472,7 +3499,7 @@ async function aiSend() {
     const resp = await fetch('/api/ai/chat', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({messages: aiHistory.slice(-10), product: aiCurrentData?.certification?.standard || 'all'})
+      body: JSON.stringify({messages: aiHistory.slice(-10), product: archiveProductHint})
     });
     const result = await resp.json();
     aiRemoveTyping();
@@ -3533,12 +3560,12 @@ function aiRemoveFile(i) {
   aiRenderFileList();
 }
 
-async function aiReadFile(file) {
+async function aiReadFile(file, productHint = '') {
   // ZIP/RAR and large scanned PDFs are processed asynchronously with progress.
   // This avoids synchronous HTTP timeouts and the old 6 MB single-file bottleneck.
   const ext = file.name.split('.').pop().toLowerCase();
   if(ext === 'zip' || ext === 'rar') {
-    return aiReadArchiveAsync(file);
+    return aiReadArchiveAsync(file, productHint);
   }
 
   // A large PDF is wrapped into a tiny one-file ZIP in the browser and sent to the
@@ -3549,7 +3576,7 @@ async function aiReadFile(file) {
       z.file(file.name, file);
       const blob = await z.generateAsync({type:'blob', compression:'STORE'});
       const wrapped = new File([blob], file.name.replace(/\.pdf$/i, '') + '_для_обработки.zip', {type:'application/zip'});
-      const result = await aiReadArchiveAsync(wrapped);
+      const result = await aiReadArchiveAsync(wrapped, productHint);
       if(result) result.name = file.name;
       return result;
     } catch(e) {
@@ -3648,7 +3675,7 @@ async function aiCompressArchiveClientSide(file, onProgress) {
   return new File([outBlob], file.name, {type: 'application/zip'});
 }
 
-async function aiReadArchiveAsync(file) {
+async function aiReadArchiveAsync(file, productHint = '') {
   // Архив (zip/rar) обрабатывается в фоне на сервере: текстовые файлы читаются как раньше,
   // а ФОТО внутри теперь тоже распознаются через vision (раньше пропускались молча).
   // Не блокирует один HTTP-запрос — можно грузить архивы гораздо крупнее.
@@ -3678,7 +3705,7 @@ async function aiReadArchiveAsync(file) {
   try {
     const formData = new FormData();
     formData.append('file', uploadFile);
-    formData.append('product', aiCurrentData?.certification?.standard || 'all');
+    formData.append('product', productHint || aiCurrentData?.certification?.standard || 'all');
     const startResp = await fetch('/api/extract-archive-async', {method:'POST', body: formData}).then(r=>r.json());
     if(!startResp.success) {
       aiUpdateMsg(progressMsgId, `❌ ${file.name}: ${startResp.error || 'не удалось начать обработку'}`);
