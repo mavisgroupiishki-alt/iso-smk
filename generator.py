@@ -1086,11 +1086,13 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     if product in ('iso', 'suot', 'iso_suot'):
         try:
             from generator_iso_suot_templates import generate_iso_suot_package_v2
+            is_periodika = str(certification.get('package_mode') or '').strip().lower() == 'periodika'
             result_is = generate_iso_suot_package_v2(
                 company, itr, dates, resp, product=product,
                 progress_cb=lambda i, t, m: p(m),
                 workers=workers, objects=objects, suppliers=suppliers,
                 iso_suot=company_data.get('iso_suot') or {},
+                periodika=is_periodika,
                 knowledge_text=_GENERATION_KNOWLEDGE_CONTEXT,
                 knowledge_rules=generation_knowledge_rules,
             )

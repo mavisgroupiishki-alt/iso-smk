@@ -3179,6 +3179,29 @@ function aiIsPeriodikaRequest(text) {
   return /периодик/iu.test(String(text || ''));
 }
 
+// The generation mode is a separate concern from the ISO/SUOT standard.  Keeping
+// it in the card means a follow-up such as "добавь объект" cannot silently turn
+// an annual update back into a full initial package.
+function aiRequestedPackageMode(text) {
+  const value = String(text || '');
+  if (aiIsPeriodikaRequest(value)) return 'periodika';
+  if (/(?:новый|первичн)\s+(?:пакет|исо|суот)|(?:пакет|исо|суот)\s+(?:новый|первичн)/iu.test(value)) return 'initial';
+  return '';
+}
+
+function aiApplyRequestedPackageMode(data, text) {
+  const mode = aiRequestedPackageMode(text);
+  if (!mode || !data) return data;
+  data.certification = data.certification || {};
+  data.certification.package_mode = mode;
+  // When the archive has not yet told us whether it is ISO, SUOT or both, the
+  // combined recogniser is the safest default. It never overwrites a known type.
+  if (mode === 'periodika' && !['iso', 'suot', 'iso_suot'].includes(data.certification.standard)) {
+    data.certification.standard = 'iso_suot';
+  }
+  return data;
+}
+
 // Периодика может начинаться не только из сохранённой карточки, но и с ZIP
 // прошлого пакета. Для такой загрузки сразу выбираем быстрый разбор ИСО/СУОТ.
 function aiArchiveProductForRequest(text, currentProduct) {
@@ -3379,6 +3402,7 @@ async function aiSend() {
   const ta = document.getElementById('ai-input');
   const text = ta.value.trim();
   if(!text && aiAttachedFiles.length === 0) return;
+  const requestedPackageMode = aiRequestedPackageMode(text);
   const archiveProductHint = aiArchiveProductForRequest(
     text, aiCurrentData?.certification?.standard || 'all'
   );
@@ -3509,10 +3533,17 @@ async function aiSend() {
     let parsed = aiParseResponse(result.text);
 
     if(parsed.data || Object.keys(authoritativeSourceData).length) {
-      const dataForCard = Object.keys(authoritativeSourceData).length
+      let dataForCard = Object.keys(authoritativeSourceData).length
         ? aiMergeStructuredSource(parsed.data || {}, authoritativeSourceData)
         : parsed.data;
+      dataForCard = aiApplyRequestedPackageMode(dataForCard, text);
       aiRenderCard(dataForCard);
+    }
+    // A short command may legitimately produce no structured delta from the AI.
+    // The explicit user command still has to reach the generator.
+    if(requestedPackageMode && !parsed.data && !Object.keys(authoritativeSourceData).length) {
+      aiApplyRequestedPackageMode(aiCurrentData, text);
+      aiRenderCardFromCurrent();
     }
     if(correctionRequested) {
       parsed = await aiRetryCorrectionIfNeeded(

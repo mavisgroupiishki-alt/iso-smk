@@ -659,6 +659,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 
 ПЕРИОДИКА (если в сообщении есть блок "НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ"):
 Это означает что у компании уже была сделана генерация (ИСО/СУОТ/СПК), и теперь нужно её актуализировать.
+В JSON обязательно ставь certification.package_mode="periodika". Для нового первичного ISO/СУОТ пакета ставь certification.package_mode="initial".
 1. Используй найденные данные как стартовую базу — не переспрашивай реквизиты компании (название, УНП, адрес, директор), если они уже есть.
 2. ОБЯЗАТЕЛЬНО уточни у пользователя свежие данные за прошедший период (это всегда меняется при периодике):
    - Новую дату выезда эксперта (от неё пересчитываются все остальные даты)
@@ -870,7 +871,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
   "questions": ["вопрос если не хватает данных"],
   "data": {
     "company": {"name":"","form":"","unp":"","address":"","city":"","director_fio":"","director_position":"","glavbukh_fio":"","scope":"","has_welding": false, "machinery": ["Автомобиль"], "bisp_org": "РУП «СтройМедиаПроект»", "phone":"", "email":"", "bank_details":"полная строка банковских реквизитов", "bank_account":"IBAN", "bank_name":"наименование банка", "bik":"БИК"},
-    "certification": {"standard":"iso|suot|iso_suot|spk_stroy|spk_bisp|att|company_att","scope":"","body":"","audit_date":""},
+    "certification": {"standard":"iso|suot|iso_suot|spk_stroy|spk_bisp|att|company_att","package_mode":"initial|periodika","scope":"","body":"","audit_date":""},
     "dates": {"audit_date":"","development_date":"","implementation_date":""},
     "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":""}],
     "workers": ["Штукатур","Маляр","Электрогазосварщик"],
@@ -993,7 +994,7 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
   "questions":[],
   "data":{
     "company":{"name":"без ООО/ОДО","form":"ООО","unp":"","address":"","city":"","director_fio":"","director_position":"","phone":"","email":"","bank_details":"","bank_account":"","bank_name":"","bik":"","scope":"","has_welding":false},
-    "certification":{"standard":"iso|suot|iso_suot","scope":"точная область текущего пакета","body":"","audit_date":""},
+    "certification":{"standard":"iso|suot|iso_suot","package_mode":"initial|periodika","scope":"точная область текущего пакета","body":"","audit_date":""},
     "dates":{"audit_date":"","development_date":"","implementation_date":""},
     "staff":[{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"employment_type":"основное место|совместительство|договор|","part_time":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":"","needs_review":false,"confidence":1.0}],
     "workers":["профессия"],

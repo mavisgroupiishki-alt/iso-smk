@@ -30,12 +30,25 @@ const context = {};
 vm.createContext(context);
 vm.runInContext([
   extractFunction('aiIsPeriodikaRequest'),
+  extractFunction('aiRequestedPackageMode'),
+  extractFunction('aiApplyRequestedPackageMode'),
   extractFunction('aiBuildArchivePeriodikaContext'),
   extractFunction('aiArchiveProductForRequest'),
 ].join('\n\n'), context);
 
 if (!context.aiIsPeriodikaRequest('сделай периодику')) {
   throw new Error('periodika command was not detected');
+}
+if (context.aiRequestedPackageMode('сделай периодику ИСО') !== 'periodika') {
+  throw new Error('periodika command did not select the annual-update mode');
+}
+if (context.aiRequestedPackageMode('сформируй новый пакет ISO') !== 'initial') {
+  throw new Error('new package command did not reset the annual-update mode');
+}
+const card = {certification: {standard: 'iso'}};
+context.aiApplyRequestedPackageMode(card, 'сделай периодику');
+if (card.certification.package_mode !== 'periodika' || card.certification.standard !== 'iso') {
+  throw new Error('periodika mode was not stored without changing ISO selection');
 }
 if (context.aiIsPeriodikaRequest('сформируй новый пакет ISO')) {
   throw new Error('ordinary package was mistaken for periodika');

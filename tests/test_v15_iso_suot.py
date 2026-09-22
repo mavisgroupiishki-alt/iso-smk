@@ -94,6 +94,58 @@ def test_suot_report_has_current_scope_and_current_staff_count():
     assert '17 человек' not in source_xml
 
 
+def test_periodika_iso_contains_only_annual_documents_and_current_objects():
+    data = sample_data()
+    company = dict(data['company']); company['scope'] = data['certification']['scope']
+    itr = [x for x in data['staff'] if not x['is_worker']]
+    workers = [x for x in data['staff'] if x['is_worker']]
+    result = generate_iso_suot_package_v2(
+        company, itr, generator.calculate_dates('20.08.2026'), generator.select_responsible(itr),
+        product='iso', periodika=True, workers=workers,
+        suppliers=data['suppliers'], objects=data['objects']
+    )
+    names = [doc['name'] for doc in result['docs']]
+    assert any('Политика в области качества' in name for name in names)
+    assert any('РЕЕСТР РИСКОВ' in name for name in names)
+    assert any('оценке удовлетворенности заказчиков' in name.lower() for name in names)
+    assert any('сводн' in name.lower() for name in names)
+    assert not any('РК СМК' in name or 'СТП СМК' in name for name in names)
+    assert not any('Приказ' in name or 'ДИ ' in name for name in names)
+    assert not any('Журнал' in name for name in names)
+    report = next(doc for doc in result['docs'] if 'оценке удовлетворенности заказчиков' in doc['name'].lower())
+    assert 'Текущий ремонт поликлиники' in xml_text(report['bytes'])
+
+
+def test_periodika_suot_excludes_baseline_manuals_instructions_and_orders():
+    data = sample_data()
+    company = dict(data['company']); company['scope'] = data['certification']['scope']
+    itr = [x for x in data['staff'] if not x['is_worker']]
+    workers = [x for x in data['staff'] if x['is_worker']]
+    result = generate_iso_suot_package_v2(
+        company, itr, generator.calculate_dates('20.08.2026'), generator.select_responsible(itr),
+        product='suot', periodika=True, workers=workers
+    )
+    names = [doc['name'] for doc in result['docs']]
+    assert any('цели-и-мероприятия' in name for name in names)
+    assert any('SWOT анализ OH&S' in name for name in names)
+    assert any('Отчет для анализа OH&S' in name for name in names)
+    assert any('Программа внутренних аудитов' in name for name in names)
+    assert not any('Руководство СУОТ' in name or 'СТП 8.1' in name for name in names)
+    assert not any('ИНСТРУКЦИЯ' in name or 'ИОТ ' in name for name in names)
+    assert not any('Приказ' in name or 'Журнал' in name for name in names)
+
+
+def test_generator_uses_periodika_mode_from_card_data():
+    data = sample_data()
+    data['certification']['package_mode'] = 'periodika'
+    result = generator.generate_package(data, 'dummy', 'iso')
+    names = [doc['name'] for doc in result['docs']]
+    assert names
+    assert any('Политика в области качества' in name for name in names)
+    assert not any('РК СМК' in name or 'СТП СМК' in name for name in names)
+    assert not any('Приказ' in name for name in names)
+
+
 def test_nonstandard_scope_is_visible_in_smk_orders_and_customer_report():
     data = sample_data()
     scope = 'Производство металлоконструкций и разработка проектной документации'

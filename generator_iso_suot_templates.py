@@ -172,6 +172,34 @@ _DYNAMIC_KEYS = {
     'suot_audit_4.docx', 'suot_audit_5.docx',
 }
 
+# Annual update packages are intentionally whitelisted from the same source
+# templates as a full package.  Do not infer this from file names: a renamed
+# baseline instruction must never return to periodika by accident.
+_PERIODIKA_TEMPLATE_KEYS = {
+    'iso': {
+        'smk_doc_2.docx',   # risk register
+        'smk_doc_3.docx',   # risk plan/report
+        'smk_doc_4.docx',   # validation schedule (only when welding applies)
+        'smk_doc_5.docx',   # quality goals
+        'smk_doc_14.docx',  # customer satisfaction with current objects
+        'smk_doc_15.docx',  # construction process report
+        'smk_doc_16.docx',  # annual measurement-tools calibration schedule
+        'smk_doc_22.docx',  # opportunities plan
+        'smk_doc_23.docx',  # qualification plan
+        'smk_doc_24.docx',  # management review report
+    },
+    'suot': {
+        'suot_root_5.docx',   # OHS goals and measures
+        'suot_root_7.docx',   # occupational-safety action plan
+        'suot_root_9.docx',   # emergency training schedule
+        'suot_root_13.docx',  # SWOT analysis
+        'suot_root_16.docx',  # management review report
+        'suot_risk_1.docx', 'suot_risk_2.docx',
+        'suot_risk_3.docx', 'suot_risk_4.docx',
+        'suot_risk_5.docx', 'suot_risk_6.docx',
+    },
+}
+
 
 def _category_of(key: str) -> str:
     if key.startswith('suot_'):
@@ -1295,6 +1323,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                                   product: str = 'iso_suot', progress_cb=None,
                                   workers: list | None = None, objects: list | None = None,
                                   suppliers: list | None = None, iso_suot: dict | None = None,
+                                  periodika: bool = False,
                                   knowledge_text: str = '', knowledge_rules: list | None = None) -> dict:
     """Generate ISO/SUOT package in seconds using current card data only."""
     org = _clean_org_name(company)
@@ -1348,6 +1377,13 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
 
     wanted_categories = {'iso_suot': {'iso', 'suot'}, 'iso': {'iso'}, 'suot': {'suot'}}.get(product, {'iso', 'suot'})
     keys = sorted(k for k in _MANIFEST if _category_of(k) in wanted_categories)
+    if periodika:
+        periodika_keys = set().union(*(
+            _PERIODIKA_TEMPLATE_KEYS[category]
+            for category in wanted_categories
+            if category in _PERIODIKA_TEMPLATE_KEYS
+        ))
+        keys = [key for key in keys if key in periodika_keys]
 
     # Remove staff/profession templates that are not applicable. They are rebuilt below.
     applicable_itr_template_keys = set()
@@ -1421,10 +1457,11 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         docs.append({'name': f'{org} - 1 Политика в области качества.docx', 'bytes': _iso_policy_doc(company, scope, itr, dates)})
         prog('Лист ознакомления с целями СМК')
         docs.append({'name': f'{org} - 2.2 Лист ознакомления с целями.docx', 'bytes': _awareness_doc(company, 'ЛИСТ ОЗНАКОМЛЕНИЯ С ЦЕЛЯМИ В ОБЛАСТИ КАЧЕСТВА', itr, dates)})
-        prog('Протокол внутреннего обучения СМК')
-        docs.append({'name': f'{org} - 3.9.2 Протокол внутреннего обучения СМК.docx', 'bytes': _training_doc(company, resp.get('auditors') or itr[:3], dates, 'iso', 'protocol')})
-        prog('Программа внутреннего обучения СМК')
-        docs.append({'name': f'{org} - 3.9.3 Программа внутреннего обучения СМК.docx', 'bytes': _training_doc(company, resp.get('auditors') or itr[:3], dates, 'iso', 'program')})
+        if not periodika:
+            prog('Протокол внутреннего обучения СМК')
+            docs.append({'name': f'{org} - 3.9.2 Протокол внутреннего обучения СМК.docx', 'bytes': _training_doc(company, resp.get('auditors') or itr[:3], dates, 'iso', 'protocol')})
+            prog('Программа внутреннего обучения СМК')
+            docs.append({'name': f'{org} - 3.9.3 Программа внутреннего обучения СМК.docx', 'bytes': _training_doc(company, resp.get('auditors') or itr[:3], dates, 'iso', 'program')})
         prog('Программа внутренних аудитов СМК по фактическим ИТР')
         docs.append({'name': f'{org} - 4.1 Программа внутренних аудитов СМК.docx', 'bytes': _audit_program_doc(company, itr, dates, 'iso')})
 
@@ -1440,52 +1477,57 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
 
         # Job descriptions for EVERY actual ITR. If no exact template exists, create
         # a generic draft and mark profile-specific duties for review.
-        used_positions = set()
-        for person in itr or []:
-            position = str(person.get('position') or '').strip()
-            key = _norm(position)
-            if not position or key in used_positions:
-                continue
-            used_positions.add(key)
-            if _matching_template(position, _ITR_TEMPLATE_RULES):
-                # A matching original template is already present in docs.
-                continue
-            prog(f'Должностная инструкция: {position}')
-            docs.append({'name': f'{org} - ДИ {position}.docx', 'bytes': _generic_job_description(company, position, dates)})
+        if not periodika:
+            used_positions = set()
+            for person in itr or []:
+                position = str(person.get('position') or '').strip()
+                key = _norm(position)
+                if not position or key in used_positions:
+                    continue
+                used_positions.add(key)
+                if _matching_template(position, _ITR_TEMPLATE_RULES):
+                    # A matching original template is already present in docs.
+                    continue
+                prog(f'Должностная инструкция: {position}')
+                docs.append({'name': f'{org} - ДИ {position}.docx', 'bytes': _generic_job_description(company, position, dates)})
 
     # --- Deterministic dynamic SUOT documents ---
     if 'suot' in wanted_categories:
         all_people = list(itr or []) + workers_rows
-        prog('Лист ознакомления с политикой СУОТ')
-        docs.append({'name': f'{org} СУОТ - 2.2 Лист ознакомления с политикой.docx', 'bytes': _awareness_doc(company, 'ЛИСТ ОЗНАКОМЛЕНИЯ С ПОЛИТИКОЙ В ОБЛАСТИ ОХРАНЫ ТРУДА', all_people, dates, 'goals')})
+        if not periodika:
+            prog('Лист ознакомления с политикой СУОТ')
+            docs.append({'name': f'{org} СУОТ - 2.2 Лист ознакомления с политикой.docx', 'bytes': _awareness_doc(company, 'ЛИСТ ОЗНАКОМЛЕНИЯ С ПОЛИТИКОЙ В ОБЛАСТИ ОХРАНЫ ТРУДА', all_people, dates, 'goals')})
         prog('Лист ознакомления с целями СУОТ')
         docs.append({'name': f'{org} СУОТ - 2.4 Лист ознакомления с целями.docx', 'bytes': _awareness_doc(company, 'ЛИСТ ОЗНАКОМЛЕНИЯ С ЦЕЛЯМИ В ОБЛАСТИ ОХРАНЫ ТРУДА', all_people, dates, 'goals')})
-        prog('Перечень должностей ИТР для проверки знаний ОТ')
-        docs.append({'name': f'{org} СУОТ - Перечень должностей ИТР для проверки знаний.docx', 'bytes': _positions_list_doc(company, itr, dates, workers=False)})
-        prog('Перечень профессий рабочих для проверки знаний ОТ')
-        docs.append({'name': f'{org} СУОТ - Перечень профессий рабочих для проверки знаний.docx', 'bytes': _positions_list_doc(company, workers_rows, dates, workers=True)})
+        if not periodika:
+            prog('Перечень должностей ИТР для проверки знаний ОТ')
+            docs.append({'name': f'{org} СУОТ - Перечень должностей ИТР для проверки знаний.docx', 'bytes': _positions_list_doc(company, itr, dates, workers=False)})
+            prog('Перечень профессий рабочих для проверки знаний ОТ')
+            docs.append({'name': f'{org} СУОТ - Перечень профессий рабочих для проверки знаний.docx', 'bytes': _positions_list_doc(company, workers_rows, dates, workers=True)})
         prog('Программа внутренних аудитов СУОТ по фактическим ИТР')
         docs.append({'name': f'{org} СУОТ - Программа внутренних аудитов.docx', 'bytes': _audit_program_doc(company, itr, dates, 'suot')})
-        prog('Протокол внутреннего обучения СУОТ')
-        docs.append({'name': f'{org} СУОТ - Протокол внутреннего обучения.docx', 'bytes': _training_doc(company, resp.get('auditors') or itr[:3], dates, 'suot', 'protocol')})
+        if not periodika:
+            prog('Протокол внутреннего обучения СУОТ')
+            docs.append({'name': f'{org} СУОТ - Протокол внутреннего обучения.docx', 'bytes': _training_doc(company, resp.get('auditors') or itr[:3], dates, 'suot', 'protocol')})
 
-        worker_professions = [str(w.get('position') or '').strip() for w in workers_rows if str(w.get('position') or '').strip()]
-        prog('Перечень инструкций ОТ по фактическому штату')
-        docs.append({'name': f'{org} СУОТ - Перечень инструкций по ОТ.docx', 'bytes': _ot_instruction_list_doc(company, worker_professions, dates)})
+            worker_professions = [str(w.get('position') or '').strip() for w in workers_rows if str(w.get('position') or '').strip()]
+            prog('Перечень инструкций ОТ по фактическому штату')
+            docs.append({'name': f'{org} СУОТ - Перечень инструкций по ОТ.docx', 'bytes': _ot_instruction_list_doc(company, worker_professions, dates)})
 
-        # Create instructions for professions not covered by a concrete template.
-        for worker in workers_rows:
-            profession = str(worker.get('position') or '').strip()
-            if not profession or _matching_template(profession, _WORKER_TEMPLATE_RULES):
-                continue
-            prog(f'Инструкция ОТ: {profession}')
-            docs.append({'name': f'{org} СУОТ - ИОТ {profession}.docx', 'bytes': _generic_worker_instruction(company, profession, dates)})
+            # Create instructions for professions not covered by a concrete template.
+            for worker in workers_rows:
+                profession = str(worker.get('position') or '').strip()
+                if not profession or _matching_template(profession, _WORKER_TEMPLATE_RULES):
+                    continue
+                prog(f'Инструкция ОТ: {profession}')
+                docs.append({'name': f'{org} СУОТ - ИОТ {profession}.docx', 'bytes': _generic_worker_instruction(company, profession, dates)})
 
     # Staff-dependent orders are rebuilt from the current card so each FIO keeps
     # its real current position. This eliminates the old Varta role/name cross-wiring.
-    for order_doc in _dynamic_role_orders(company, itr, dates, resp, wanted_categories):
-        prog(order_doc['name'][:50])
-        docs.append(order_doc)
+    if not periodika:
+        for order_doc in _dynamic_role_orders(company, itr, dates, resp, wanted_categories):
+            prog(order_doc['name'][:50])
+            docs.append(order_doc)
 
     # A legacy detailed order and a newer dynamic order can otherwise appear side by
     # side. Collapse them before the final package is returned.
