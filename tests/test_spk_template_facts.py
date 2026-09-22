@@ -268,6 +268,29 @@ def test_spk_si_includes_copy_list_tools_without_inventing_verification():
     assert len(warnings) == 3
 
 
+def test_spk_si_keeps_standard_template_characteristics_until_a_document_changes_them():
+    rows, _warnings = _build_real_si_list({
+        'measurement_tools': [
+            {'name': 'Линейка измерительная', 'quantity': 1},
+            {'name': 'Рейка контрольная 3000 мм', 'quantity': 1},
+            {'name': 'Шаблон сварщика УШС-2', 'quantity': 1},
+        ],
+    })
+    by_name = {row['name']: row for row in rows}
+
+    assert by_name['Линейка измерительная']['characteristics'] == 'Диапазон измерений: (0-1 000) мм'
+    assert by_name['Рейка контрольная 3000 мм']['characteristics'] == 'Диапазон измерений: (0-3000) мм'
+    assert by_name['Шаблон сварщика УШС-2']['characteristics'] == 'Диапазон измерений: 4-14 мм'
+
+    changed, _warnings = _build_real_si_list({
+        'measurement_tools': [{
+            'name': 'Линейка измерительная',
+            'range': 'Диапазон измерений: (0-2 000) мм',
+        }],
+    })
+    assert changed[0]['characteristics'] == 'Диапазон измерений: (0-2 000) мм'
+
+
 def test_spk_activity_profiles_change_all_scope_dependent_documents():
     dates = generator.calculate_dates('17.09.2026')
     company = {

@@ -875,6 +875,33 @@ def _norm_si_text(value):
     return re.sub(r'[^а-яa-z0-9]+', ' ', str(value or '').lower().replace('ё', 'е')).strip()
 
 
+_SPK_STANDARD_SI_CHARACTERISTICS = (
+    # Базовые значения из утверждённой строки справки СИ. Они не являются
+    # данными конкретного клиента и должны оставаться, пока паспорт/поверка
+    # не содержит явно другую характеристику.
+    ('рейка нивелир', 'Диапазон измерений: (0-5 000) мм'),
+    ('рейка контроль', 'Диапазон измерений: (0-3000) мм'),
+    ('нивелир', 'Класс точности (погрешность): 2,5 мм/км'),
+    ('плотномер', 'Масса гири: 2,49 кг; Высота падения гири: 300 мм; Диаметр основания конуса: 16 мм; Угол при вершине конуса: 60°; Диаметр штампа: 100 см'),
+    ('линейк', 'Диапазон измерений: (0-1 000) мм'),
+    ('рулетк', 'Диапазон измерений: (0-5 000) мм'),
+    ('уров', 'Диапазон измерений: ±90°, ±100%, ±1000 мм/м'),
+    ('штангенциркул', 'Диапазон измерений: (0-125) мм'),
+    ('угольник повероч', 'Диапазон измерений: 250 × 160 мм'),
+    ('термометр', 'Диапазон измерений: (-35 +50) °С'),
+    ('теодолит', 'Диапазон измерений: (0-360)°'),
+    ('шаблон сварщика', 'Диапазон измерений: 4-14 мм'),
+    ('ушс', 'Диапазон измерений: 4-14 мм'),
+)
+
+def _standard_si_characteristics(tool: dict) -> str:
+    name = _norm_si_text(' '.join(str(tool.get(key) or '') for key in ('name', 'model')))
+    for marker, characteristics in _SPK_STANDARD_SI_CHARACTERISTICS:
+        if marker in name:
+            return characteristics
+    return ''
+
+
 def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
     """Build SPK SI rows only from client measurement/verification/calibration data.
 
@@ -926,7 +953,16 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
                 if text:
                     related.append(text)
                 used_docs.add(idx)
-        characteristics = '; '.join(x for x in [tool.get('model',''), tool.get('range',''), tool.get('characteristics','')] if x)
+        # A range/characteristic actually read from the submitted passport or
+        # verification overrides the standard template. Without such evidence,
+        # retain the template value instead of turning a familiar tool yellow.
+        source_range_or_characteristics = [
+            x for x in [tool.get('range', ''), tool.get('characteristics', '')] if x
+        ]
+        source_characteristics = '; '.join(
+            x for x in [tool.get('model', ''), *source_range_or_characteristics] if x
+        )
+        characteristics = source_characteristics or _standard_si_characteristics(tool) or tool.get('model', '')
         verification = '; '.join(dict.fromkeys(related)) or 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
         if not related:
             warnings.append(f"Для СИ «{tool.get('name') or tool.get('model') or 'без названия'}» не найден документ поверки/калибровки.")
@@ -948,7 +984,7 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
             continue
         rows.append({
             'name': tool_name,
-            'characteristics': d.get('model') or 'ТРЕБУЕТ УТОЧНЕНИЯ: характеристики',
+            'characteristics': _standard_si_characteristics(d) or d.get('model') or 'ТРЕБУЕТ УТОЧНЕНИЯ: характеристики',
             'count': 1,
             'number': d.get('factory_number') or d.get('tool_number') or 'ТРЕБУЕТ УТОЧНЕНИЯ: заводской номер',
             'verification': doc_text(d) or 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка',
