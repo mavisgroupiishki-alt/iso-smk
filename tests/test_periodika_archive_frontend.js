@@ -30,6 +30,7 @@ const context = {};
 vm.createContext(context);
 vm.runInContext([
   extractFunction('aiIsPeriodikaRequest'),
+  extractFunction('aiRequestedIsoSuotProduct'),
   extractFunction('aiRequestedPackageMode'),
   extractFunction('aiApplyRequestedPackageMode'),
   extractFunction('aiBuildArchivePeriodikaContext'),
@@ -49,6 +50,16 @@ const card = {certification: {standard: 'iso'}};
 context.aiApplyRequestedPackageMode(card, 'сделай периодику');
 if (card.certification.package_mode !== 'periodika' || card.certification.standard !== 'iso') {
   throw new Error('periodika mode was not stored without changing ISO selection');
+}
+const suotCard = {certification: {}};
+context.aiApplyRequestedPackageMode(suotCard, 'сделай периодику СУОТ');
+if (suotCard.certification.standard !== 'suot') {
+  throw new Error('SUOT periodika was changed into a combined ISO/SUOT package');
+}
+const unknownCard = {certification: {}};
+context.aiApplyRequestedPackageMode(unknownCard, 'сделай периодику');
+if (unknownCard.certification.standard) {
+  throw new Error('an unspecified periodika was incorrectly changed into a combined package');
 }
 if (context.aiIsPeriodikaRequest('сформируй новый пакет ISO')) {
   throw new Error('ordinary package was mistaken for periodika');
@@ -70,6 +81,9 @@ if (context.aiArchiveProductForRequest('сделай периодику', 'all')
 }
 if (context.aiArchiveProductForRequest('сделай периодику', 'iso') !== 'iso') {
   throw new Error('selected ISO product was overwritten');
+}
+if (context.aiArchiveProductForRequest('сделай периодику СУОТ', 'all') !== 'suot') {
+  throw new Error('SUOT periodika archive was routed through the combined product');
 }
 
 console.log('periodika archive frontend: PASS');

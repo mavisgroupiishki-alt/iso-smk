@@ -139,6 +139,16 @@ def test_archive_warnings_name_only_files_that_were_not_read():
     assert server._archive_read_warnings(text) == ['СИ/поверка.pdf']
 
 
+def test_archive_warning_includes_an_oversized_pdf_that_was_not_read():
+    text = (
+        '--- СИ/скан.pdf ---\n'
+        '[Скан слишком большой для распознавания.]\n\n'
+        '--- СИ/перечень.xlsx ---\n[Лист: СИ]'
+    )
+
+    assert server._archive_read_warnings(text) == ['СИ/скан.pdf']
+
+
 def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
     monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 2)

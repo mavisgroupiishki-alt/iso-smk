@@ -2391,6 +2391,13 @@ def _archive_read_warnings(result_text):
         name = str(path).strip()
         if name and name not in warnings:
             warnings.append(name)
+    # Keep the client truthful even if a legacy path produced an error body
+    # without the header marker.  The body is still a known, user-safe reason
+    # (for example an oversized scanned PDF), not a parser exception.
+    for path, body in _archive_document_blocks(result_text):
+        name = str(path).strip()
+        if name and _is_extraction_error_text(body) and name not in warnings:
+            warnings.append(name)
     return warnings[:8]
 
 
@@ -2799,7 +2806,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 # которое затем переводит связанные поля в жёлтую ручную проверку.
                 PDF_VISION_LIMIT = 80 * 1024 * 1024
                 if len(data) > PDF_VISION_LIMIT:
-                    return (f"--- {folder + '/' if folder else ''}{short} ---\n"
+                    return (f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n"
                             f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания — "
                             f"пришлите этот документ отдельными фото по 1-2 страницы вместо одного большого PDF]")
                 txt, _retried = vision_extract_with_retry(

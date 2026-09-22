@@ -291,6 +291,34 @@ def test_spk_si_keeps_standard_template_characteristics_until_a_document_changes
     assert changed[0]['characteristics'] == 'Диапазон измерений: (0-2 000) мм'
 
 
+def test_spk_si_model_does_not_replace_the_template_range_without_documented_override():
+    rows, _warnings = _build_real_si_list({
+        'measurement_tools': [{
+            'name': 'Линейка измерительная',
+            'model': 'ЛМ-1',
+        }],
+    })
+
+    assert rows[0]['characteristics'] == 'ЛМ-1; Диапазон измерений: (0-1 000) мм'
+
+
+def test_spk_si_does_not_attach_a_document_for_a_different_factory_number():
+    rows, warnings = _build_real_si_list({
+        'measurement_tools': [{
+            'name': 'Угольник поверочный',
+            'factory_number': '111',
+        }],
+        'verification_documents': [{
+            'tool': 'Угольник поверочный',
+            'factory_number': '222',
+            'number': 'ПВ-222',
+        }],
+    })
+
+    assert rows[0]['verification'] == 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
+    assert len(warnings) == 1
+
+
 def test_spk_activity_profiles_change_all_scope_dependent_documents():
     dates = generator.calculate_dates('17.09.2026')
     company = {

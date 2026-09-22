@@ -3179,6 +3179,16 @@ function aiIsPeriodikaRequest(text) {
   return /периодик/iu.test(String(text || ''));
 }
 
+function aiRequestedIsoSuotProduct(text) {
+  const value = String(text || '').toLowerCase();
+  const asksSuot = /суот|охран[аы]\s+труд|oh\s*&\s*s/iu.test(value);
+  const asksIso = /(?:\biso\b|исо|смк)/iu.test(value);
+  if (asksIso && asksSuot) return 'iso_suot';
+  if (asksSuot) return 'suot';
+  if (asksIso) return 'iso';
+  return '';
+}
+
 // The generation mode is a separate concern from the ISO/SUOT standard.  Keeping
 // it in the card means a follow-up such as "добавь объект" cannot silently turn
 // an annual update back into a full initial package.
@@ -3194,10 +3204,12 @@ function aiApplyRequestedPackageMode(data, text) {
   if (!mode || !data) return data;
   data.certification = data.certification || {};
   data.certification.package_mode = mode;
-  // When the archive has not yet told us whether it is ISO, SUOT or both, the
-  // combined recogniser is the safest default. It never overwrites a known type.
-  if (mode === 'periodika' && !['iso', 'suot', 'iso_suot'].includes(data.certification.standard)) {
-    data.certification.standard = 'iso_suot';
+  // The requested type wins.  A generic "periodika" intentionally leaves an
+  // unknown type blank: it must come from the uploaded package or a question,
+  // never from a combined ISO+SUOT guess.
+  const requestedProduct = aiRequestedIsoSuotProduct(text);
+  if (mode === 'periodika' && requestedProduct) {
+    data.certification.standard = requestedProduct;
   }
   return data;
 }
@@ -3206,7 +3218,11 @@ function aiApplyRequestedPackageMode(data, text) {
 // прошлого пакета. Для такой загрузки сразу выбираем быстрый разбор ИСО/СУОТ.
 function aiArchiveProductForRequest(text, currentProduct) {
   const product = String(currentProduct || 'all').toLowerCase();
-  if (aiIsPeriodikaRequest(text) && !['iso', 'suot', 'iso_suot'].includes(product)) return 'iso_suot';
+  if (aiIsPeriodikaRequest(text)) {
+    const requestedProduct = aiRequestedIsoSuotProduct(text);
+    if (requestedProduct) return requestedProduct;
+    if (!['iso', 'suot', 'iso_suot'].includes(product)) return 'iso_suot';
+  }
   return product || 'all';
 }
 

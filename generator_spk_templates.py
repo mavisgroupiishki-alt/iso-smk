@@ -935,8 +935,11 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
     def matches(tool, d):
         factory = _norm_si_text(tool.get('factory_number') or tool.get('number'))
         d_factory = _norm_si_text(d.get('factory_number') or d.get('tool_number'))
-        if factory and d_factory and factory == d_factory:
-            return True
+        # Two explicit, different factory numbers are decisive: matching the
+        # generic tool name after that would assign another instrument's
+        # calibration to this row.
+        if factory and d_factory:
+            return factory == d_factory
         tn = _norm_si_text(' '.join(str(tool.get(k) or '') for k in ('name','model')))
         dn = _norm_si_text(' '.join(str(d.get(k) or '') for k in ('tool','name','model')))
         if not tn or not dn:
@@ -959,10 +962,16 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
         source_range_or_characteristics = [
             x for x in [tool.get('range', ''), tool.get('characteristics', '')] if x
         ]
-        source_characteristics = '; '.join(
-            x for x in [tool.get('model', ''), *source_range_or_characteristics] if x
+        model = str(tool.get('model') or '').strip()
+        standard_characteristics = _standard_si_characteristics(tool)
+        # A model identifies the instrument but is not its measurement range.
+        # Keep the template range until a passport or verification supplies a
+        # specific replacement.
+        characteristics = '; '.join(
+            x for x in ([model, *source_range_or_characteristics]
+                        if source_range_or_characteristics
+                        else [model, standard_characteristics]) if x
         )
-        characteristics = source_characteristics or _standard_si_characteristics(tool) or tool.get('model', '')
         verification = '; '.join(dict.fromkeys(related)) or 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
         if not related:
             warnings.append(f"Для СИ «{tool.get('name') or tool.get('model') or 'без названия'}» не найден документ поверки/калибровки.")
