@@ -65,6 +65,22 @@ def test_rar_upload_uses_the_existing_zip_recognition_pipeline(monkeypatch):
     assert 'рулетка' in result['text']
 
 
+def test_single_pdf_is_packed_for_the_same_background_recognition_pipeline():
+    packed, worker_name = server._single_visual_as_zip(b'%PDF-scan', 'Иванов трудовая.pdf')
+
+    assert worker_name.endswith('.zip')
+    with zipfile.ZipFile(io.BytesIO(packed)) as archive:
+        assert archive.namelist() == ['Иванов трудовая.pdf']
+        assert archive.read('Иванов трудовая.pdf') == b'%PDF-scan'
+
+
+def test_non_visual_file_is_not_repacked_for_the_archive_worker():
+    data, worker_name = server._single_visual_as_zip(b'data', 'штатное расписание.docx')
+
+    assert data == b'data'
+    assert worker_name == 'штатное расписание.docx'
+
+
 def test_rar_scans_reach_the_pdf_and_image_recognition_path(monkeypatch):
     seen = []
     monkeypatch.setattr(server, '_rar_to_zip_bytes', lambda *_: _zip_with_scans())

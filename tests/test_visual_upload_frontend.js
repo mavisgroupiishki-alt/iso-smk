@@ -28,24 +28,11 @@ function extractFunction(name) {
 }
 
 const progress = [];
-class FakeZip {
-  file(name) { this.originalName = name; }
-  async generateAsync() { return {from: this.originalName}; }
-}
-class FakeFile {
-  constructor(parts, name, options) {
-    this.parts = parts;
-    this.name = name;
-    this.type = options.type;
-  }
-}
 class FakeFormData {
   append() {}
 }
 
 const context = {
-  JSZip: FakeZip,
-  File: FakeFile,
   console,
   aiAddMsg: () => 'progress-id',
   aiUpdateMsg: (_id, message) => progress.push(message),
@@ -56,6 +43,7 @@ const context = {
 vm.createContext(context);
 vm.runInContext([
   extractFunction('aiReadFile'),
+  extractFunction('aiReadJsonResponse'),
   extractFunction('aiFileReadError'),
   extractFunction('aiArchiveIsBusyError'),
   extractFunction('aiReadArchiveAsync'),
@@ -66,7 +54,7 @@ vm.runInContext([
   context.fetch = async (url) => {
     if (url === '/api/extract-archive-async') {
       visualStarts += 1;
-      return {json: async () => ({success: true, task_id: 'visual-task'})};
+      return {text: async () => JSON.stringify({success: true, task_id: 'visual-task'}), ok: true};
     }
     if (url === '/api/task/visual-task') {
       return {text: async () => JSON.stringify({status: 'done', text: 'прочитано', warnings: []})};
@@ -91,9 +79,9 @@ vm.runInContext([
   context.fetch = async (url) => {
     if (url === '/api/extract-archive-async') {
       starts += 1;
-      return {json: async () => starts === 1
+      return {text: async () => JSON.stringify(starts === 1
         ? {success: false, error: 'Сейчас уже разбирается другой архив'}
-        : {success: true, task_id: 'task-1'}};
+        : {success: true, task_id: 'task-1'}), ok: true};
     }
     if (url === '/api/task/task-1') {
       return {text: async () => JSON.stringify({status: 'done', text: 'данные', warnings: []})};
@@ -106,6 +94,28 @@ vm.runInContext([
   }
   if (!progress.some(message => message.includes('ожидаю завершения обработки предыдущего файла'))) {
     throw new Error('queue status was not shown truthfully');
+  }
+
+  context.fetch = async () => ({
+    status: 502,
+    ok: false,
+    text: async () => '<html>temporary proxy page</html>',
+  });
+  const failed = await context.aiReadArchiveAsync({name: 'Иванов трудовая.pdf', size: 512});
+  if (!failed.content.includes('файл не был передан') || failed.content.includes('Unexpected token')) {
+    throw new Error('an HTML proxy response was exposed as a technical JSON error');
+  }
+  try {
+    await context.aiReadJsonResponse({
+      status: 502,
+      ok: false,
+      text: async () => '<html>temporary proxy page</html>',
+    }, 'chat');
+    throw new Error('the chat response should have failed');
+  } catch (error) {
+    if (error.message.includes('Unexpected token') || !error.message.includes('временно не ответил')) {
+      throw new Error('an HTML chat response was exposed as a technical JSON error');
+    }
   }
   console.log('visual upload frontend: PASS');
 })().catch(error => {

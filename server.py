@@ -2650,6 +2650,23 @@ def _extract_spk_tools_from_copy_list(text: str) -> list:
     return tools
 
 
+def _single_visual_as_zip(file_bytes, filename):
+    """Make one scanned document compatible with the archive worker.
+
+    The browser deliberately sends a PDF/photo unchanged.  This avoids a
+    client-side dependency on JSZip and keeps the long OCR request out of the
+    HTTP request that accepted the upload.
+    """
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if ext not in ('pdf', 'jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'):
+        return file_bytes, filename
+    entry_name = Path(filename).name or f'документ.{ext}'
+    packed = io.BytesIO()
+    with zipfile.ZipFile(packed, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(entry_name, file_bytes)
+    return packed.getvalue(), f'{Path(entry_name).stem}_для_обработки.zip'
+
+
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all", _archive_depth=0):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
@@ -2716,7 +2733,9 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     # parser cannot read the format.
                     entries.append((name, fixed, info.file_size, 'unsupported'))
     except Exception as e:
-        return {'text': f'[Ошибка открытия архива: {e}]', 'structured_data': {}}
+        print(f"  ⚠️ Не удалось открыть архив {filename}: {type(e).__name__}: {e}")
+        return {'text': '[Не удалось открыть архив. Проверьте, что файл не повреждён, и загрузите его ещё раз.]',
+                'structured_data': {}}
 
     # Сначала текстовые (быстро), потом PDF и фото (медленно, vision) — чтобы данные из
     # docx были в карточке даже если распознавание сканов ещё не закончилось
@@ -3468,7 +3487,9 @@ class H(http.server.BaseHTTPRequestHandler):
                                  'error': 'Не хватило памяти на обработку файла. Разбейте архив на части поменьше.'}, 500)
                     return
                 except Exception as e:
-                    self._json({'success': False, 'error': f'Ошибка обработки файла: {e}'}, 500)
+                    print(f"  ⚠️ Не удалось извлечь текст из {filename}: {type(e).__name__}: {e}")
+                    self._json({'success': False,
+                                'error': 'Не удалось прочитать файл. Загрузите его отдельным документом или фотографиями страниц.'}, 500)
                     return
                 structured_data = {}
                 if parse_company_attestation_docx and filename.lower().endswith('.docx'):
@@ -3536,6 +3557,11 @@ class H(http.server.BaseHTTPRequestHandler):
                                  'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ), лимит {MAX_ARCHIVE_MB} МБ.'},
                                 413)
                     return
+
+                # Single PDFs and photos use the same durable background queue
+                # as ZIP/RAR archives.  The worker accepts ZIP internally, so
+                # package the one entry after the upload has safely arrived.
+                file_bytes, filename = _single_visual_as_zip(file_bytes, filename)
 
                 import uuid as _uuid
                 if not reserve_archive_processing():
