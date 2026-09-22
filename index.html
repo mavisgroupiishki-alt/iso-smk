@@ -3592,31 +3592,32 @@ function aiRemoveFile(i) {
 }
 
 async function aiReadFile(file, productHint = '') {
-  // ZIP/RAR and large scanned PDFs are processed asynchronously with progress.
-  // This avoids synchronous HTTP timeouts and the old 6 MB single-file bottleneck.
+  // Archives and all visual documents are processed asynchronously with progress.
+  // This keeps passport, certificate and calibration scans out of a single HTTP request.
   const ext = file.name.split('.').pop().toLowerCase();
   if(ext === 'zip' || ext === 'rar') {
     return aiReadArchiveAsync(file, productHint);
   }
 
-  // A large PDF is wrapped into a tiny one-file ZIP in the browser and sent to the
-  // existing background archive pipeline. The PDF itself is not recompressed or changed.
-  if(ext === 'pdf' && file.size > 5 * 1024 * 1024 && typeof JSZip !== 'undefined') {
+  const imageExts = ['png','jpg','jpeg','webp','heic','heif'];
+  const isVisual = imageExts.includes(ext) || ext === 'pdf';
+  // One scan is wrapped into a one-file ZIP and uses the same background pipeline
+  // as a full archive. The original file is preserved unchanged inside the ZIP.
+  if(isVisual && typeof JSZip !== 'undefined') {
     try {
       const z = new JSZip();
       z.file(file.name, file);
       const blob = await z.generateAsync({type:'blob', compression:'STORE'});
-      const wrapped = new File([blob], file.name.replace(/\.pdf$/i, '') + '_для_обработки.zip', {type:'application/zip'});
+      const wrapped = new File([blob], file.name.replace(/\.[^.]+$/, '') + '_для_обработки.zip', {type:'application/zip'});
       const result = await aiReadArchiveAsync(wrapped, productHint);
       if(result) result.name = file.name;
       return result;
     } catch(e) {
-      console.warn('Не удалось перевести большой PDF в фоновую обработку:', e);
+      console.warn('Не удалось передать скан в фоновую обработку:', e);
     }
   }
 
   let uploadFile = file;
-  const imageExts = ['png','jpg','jpeg','webp','heic','heif'];
   if(imageExts.includes(ext) && file.size > 3 * 1024 * 1024) {
     try {
       const blob = await aiCompressImageBlob(file, 2000, 0.80);
@@ -3626,7 +3627,6 @@ async function aiReadFile(file, productHint = '') {
     }
   }
 
-  const isVisual = imageExts.includes(ext) || ext === 'pdf';
   const endpoint = isVisual ? '/api/analyze-image' : '/api/extract-text';
   return new Promise((resolve) => {
     const formData = new FormData();
@@ -3639,16 +3639,36 @@ async function aiReadFile(file, productHint = '') {
           aiPhotoThumbnails[file.name] = data.thumbnail_b64;
         }
         let content = data.text || '[Не удалось извлечь текст из файла]';
-        if(data.verified_match === false) {
-          content = `⚠️ [Двойная проверка распознавания разошлась — сверьте с оригиналом]\n${content}`;
-        }
         resolve({ name: file.name, content, structured_data: data.structured_data || null });
       })
       .catch(err => resolve({
         name: file.name,
-        content: '[Ошибка загрузки файла: ' + err.message + ']'
+        content: '[Не удалось прочитать файл: он не был передан на обработку.]'
       }));
   });
+}
+
+function aiFileReadError(value) {
+  const text = String(value || '').trim();
+  const low = text.toLowerCase();
+  if(aiArchiveIsBusyError(text)) {
+    return 'обработка предыдущего файла не завершилась; этот файл ещё не был запущен';
+  }
+  if(low.includes('слишком больш')) {
+    return 'не удалось прочитать: файл слишком большой для обработки одним документом';
+  }
+  if(low.includes('таймаут') || low.includes('timeout') || low.includes('не завершилось вовремя')) {
+    return 'не удалось прочитать: распознавание не завершилось вовремя';
+  }
+  if(low.includes('скан') || low.includes('пуст') || low.includes('не удалось различить')) {
+    return 'не удалось прочитать: на документе не удалось различить текст';
+  }
+  return 'не удалось прочитать файл. Повторите загрузку; если ошибка повторится, передайте файл отдельно.';
+}
+
+function aiArchiveIsBusyError(value) {
+  const text = String(value || '').toLowerCase();
+  return text.includes('другой архив') || text.includes('уже разбирается');
 }
 
 async function aiCompressImageBlob(blob, maxDim, quality) {
@@ -3737,10 +3757,20 @@ async function aiReadArchiveAsync(file, productHint = '') {
     const formData = new FormData();
     formData.append('file', uploadFile);
     formData.append('product', productHint || aiCurrentData?.certification?.standard || 'all');
-    const startResp = await fetch('/api/extract-archive-async', {method:'POST', body: formData}).then(r=>r.json());
+    let startResp;
+    let queuePolls = 0;
+    const MAX_QUEUE_POLLS = 400; // the same 20-minute ceiling as task polling below
+    while(queuePolls < MAX_QUEUE_POLLS) {
+      startResp = await fetch('/api/extract-archive-async', {method:'POST', body: formData}).then(r=>r.json());
+      if(startResp.success || !aiArchiveIsBusyError(startResp.error)) break;
+      queuePolls++;
+      aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ожидаю завершения обработки предыдущего файла...`);
+      await new Promise(res => setTimeout(res, 3000));
+    }
     if(!startResp.success) {
-      aiUpdateMsg(progressMsgId, `❌ ${file.name}: ${startResp.error || 'не удалось начать обработку'}`);
-      return {name: file.name, content: '[Ошибка: ' + (startResp.error||'не удалось начать обработку') + ']'};
+      const reason = aiFileReadError(startResp.error);
+      aiUpdateMsg(progressMsgId, `❌ ${file.name}: ${reason}`);
+      return {name: file.name, content: `[${reason}.]`};
     }
     const taskId = startResp.task_id;
     const MAX_POLLS = 400; // аварийный потолок ~20 минут; ISO/СУОТ теперь обрабатывается в ускоренном режиме
@@ -3759,25 +3789,33 @@ async function aiReadArchiveAsync(file, productHint = '') {
         const lastMsg = tr.progress && tr.progress.length ? tr.progress[tr.progress.length-1] : 'обрабатываю...';
         aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ${lastMsg}`);
       } else if(tr.status === 'done') {
-        aiUpdateMsg(progressMsgId, `✅ Архив «${file.name}» разобран`);
+        const warnings = Array.isArray(tr.warnings) ? tr.warnings : [];
+        if(warnings.length) {
+          aiUpdateMsg(progressMsgId, `⚠️ «${file.name}» разобран частично. Не прочитано: ${warnings.join(', ')}.`);
+        } else {
+          aiUpdateMsg(progressMsgId, `✅ Архив «${file.name}» разобран`);
+        }
         return {name: file.name,
                 content: tr.analysis_text || tr.text || '[Архив: данные не найдены]',
                 raw_content: tr.text || tr.analysis_text || '[Архив: данные не найдены]',
                 summary: tr.summary || '',
+                warnings,
                 structured_data: tr.structured_data || null};
       } else if(tr.status === 'error') {
-        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${tr.error || 'ошибка обработки'}`);
-        return {name: file.name, content: '[Ошибка обработки архива: ' + (tr.error||'') + ']'};
+        const reason = aiFileReadError(tr.error);
+        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${reason}`);
+        return {name: file.name, content: `[${reason}.]`};
       } else if(tr.status === 'not_found') {
-        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: задача потерялась (сервер перезапустился?)`);
-        return {name: file.name, content: '[Задача обработки архива потерялась — попробуйте ещё раз]'};
+        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: обработка прервалась до завершения. Загрузите файл ещё раз.`);
+        return {name: file.name, content: '[Обработка файла прервалась до завершения.]'};
       }
     }
     aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: превышено время ожидания в браузере. Попробуйте ещё раз — возможно архив слишком большой, разбейте на части поменьше (по 1-2 человека за раз).`);
     return {name: file.name, content: '[Превышено время ожидания обработки архива]'};
   } catch(err) {
-    aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${err.message}`);
-    return {name: file.name, content: '[Ошибка: ' + err.message + ']'};
+    const reason = aiFileReadError(err.message);
+    aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${reason}`);
+    return {name: file.name, content: `[${reason}.]`};
   }
 }
 

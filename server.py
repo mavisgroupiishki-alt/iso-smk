@@ -698,8 +698,10 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
   пользователю «в архиве этого нет», если имя файла уже перечислено там.
 - Раздел «ИСХОДНЫЕ ДОКУМЕНТЫ ИЗ АРХИВА» обязателен для выбранного продукта. Не своди весь архив
   только к реквизитам компании и не игнорируй документы из тематических подпапок.
-- Если конкретный файл не прочитан, назови ТОЧНО его путь/имя и техническую ошибку; не подменяй
-  ошибку фразой «файла нет».
+- Если конкретный файл не прочитан, назови ТОЧНО его путь/имя и понятную фактическую причину
+  (например: «на скане не удалось различить текст» или «распознавание не завершилось вовремя»).
+  Не показывай коды ошибок, внутренние названия или служебные сообщения и не подменяй ошибку
+  фразой «файла нет».
 - Для ISO/СУОТ обязательно извлекай поставщиков, объекты, сотрудников/рабочих, удостоверения ОТ,
   инструкции, аудиторов, комиссии и обучение.
 - Для СПК обязательно извлекай виды работ, ИТР и рабочих, оборудование/машины/механизмы,
@@ -960,7 +962,9 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
 2. Штатное расписание — источник состава персонала. ИТР (директор, ГИ, прораб, инженер, бухгалтер и т.п.)
    идут в staff с is_worker=false; рабочие профессии — staff с is_worker=true и одновременно в workers.
 3. Для ISO/СУОТ сохраняй ВСЕ найденные объекты, поставщиков и удостоверения ОТ.
-4. Не говори «файла нет», если он перечислен в СОСТАВЕ АРХИВА. Если не прочитан — назови конкретную ошибку.
+4. Не говори «файла нет», если он перечислен в СОСТАВЕ АРХИВА. Если не прочитан — назови файл и
+   понятную причину: на скане не удалось различить текст, распознавание не завершилось вовремя или
+   файл повреждён. Не показывай пользователю внутренние названия, коды или служебные сообщения.
 5. Если имя файла и содержимое конфликтуют, не угадывай: needs_review=true, confidence<0.85, review_reason.
 6. Не выдумывай отсутствующие данные. Неуверенное сохраняй как есть и помечай для жёлтой проверки.
 7. ПРАВКИ ПОЛЬЗОВАТЕЛЯ ОБЯЗАНЫ МЕНЯТЬ JSON. Если запрос «исправь/замени/добавь/удали/убери/обнови»
@@ -1415,23 +1419,35 @@ def make_thumbnail_b64(file_bytes, filename, max_dim=900, quality=68):
         return None
 
 
-def vision_extract_verified(file_bytes, filename, api_key):
-    """Двойная проверка — читает фото ДВАЖДЫ (второй раз с чуть другой формулировкой запроса,
-    чтобы не просто повторить тот же ответ) и сравнивает. Если ответы существенно разошлись —
-    явно предупреждает, что данные нужно проверить вручную. Вдвое дороже по времени, поэтому
-    используется точечно (самые важные документы: аттестат, диплом), а не для каждого фото подряд —
-    иначе вся пачка из 25 фото будет обрабатываться вдвое дольше."""
-    first = vision_extract(file_bytes, filename, api_key)
+def _vision_result_needs_retry(text):
+    """A second external read is useful only after a transient recognition failure."""
+    value = str(text or '').strip().casefold()
+    return ('повторная попытка чтения требуется' in value
+            or value.startswith(('[vision:', '[vision ошибка:', '[vision error:')))
 
-    prompt2 = VISION_PROMPT + ("\n\nЭто ПОВТОРНАЯ, перепроверочная попытка чтения того же документа — "
-                                "смотри особенно внимательно на цифры и номера, не спеши.")
-    second = vision_extract(file_bytes, filename, api_key, prompt_override=prompt2)
 
-    if first.strip() == second.strip():
-        return first, True  # (текст, совпало_ли)
+def vision_extract_with_retry(file_bytes, filename, api_key, **kwargs):
+    """Read a visual document once; retry exactly once only after a failed read.
 
-    return (f"⚠️ ДВЕ ПОПЫТКИ ЧТЕНИЯ РАЗОШЛИСЬ — нужна ручная проверка по оригиналу.\n"
-            f"Попытка 1: {first}\n\nПопытка 2: {second}"), False
+    The former "verification" read doubled the wait for every passport and
+    calibration certificate.  A successful result is now returned immediately;
+    the retry is reserved for a timeout or a temporary recognition failure.
+    """
+    first = vision_extract(file_bytes, filename, api_key, **kwargs)
+    if not _vision_result_needs_retry(first):
+        return first, False
+    # PDF page batches retry their own failed batch below. Re-running the full
+    # document here would repeat pages that have already been read successfully.
+    if str(filename or '').lower().endswith('.pdf') and '--- СТРАНИЦЫ ' in str(first):
+        return first, False
+
+    second = vision_extract(file_bytes, filename, api_key, **kwargs)
+    if not _vision_result_needs_retry(second):
+        return second, True
+    reason = ('распознавание не завершилось вовремя'
+              if 'не завершилось вовремя' in str(second or '').casefold()
+              else 'распознавание временно недоступно')
+    return (f'[Не удалось прочитать файл: {reason} после повторной попытки.]', True)
 
 
 def _is_labour_book_filename(filename: str) -> bool:
@@ -1502,7 +1518,24 @@ def _pdf_pages_to_images(file_bytes, max_pages=6, max_dim=1900, quality=82):
 
 
 TESSDATA_DIR = BASE_DIR / 'tessdata'
-_TESSERACT_STATUS = {'checked': False, 'available': False, 'has_rus': False, 'reason': ''}
+_TESSERACT_STATUS = {
+    'checked': False, 'available': False, 'has_rus': False, 'reason': '', 'data_dir': '',
+}
+
+
+def _tesseract_data_candidates():
+    """Known data locations for the bundled image and native Render runtimes."""
+    values = [TESSDATA_DIR]
+    configured = os.environ.get('TESSDATA_PREFIX', '').strip()
+    if configured:
+        values.append(Path(configured))
+    values.extend([
+        Path('/usr/share/tesseract-ocr/5/tessdata'),
+        Path('/usr/share/tesseract-ocr/4.00/tessdata'),
+        Path('/usr/share/tessdata'),
+    ])
+    seen = set()
+    return [path for path in values if not (str(path) in seen or seen.add(str(path)))]
 
 def _check_tesseract():
     """Проверяет один раз при первом обращении: стоит ли вообще tesseract на сервере
@@ -1519,12 +1552,14 @@ def _check_tesseract():
         _TESSERACT_STATUS['reason'] = f'бинарник tesseract недоступен: {e}'
         print(f"  ℹ️ Tesseract OCR недоступен ({_TESSERACT_STATUS['reason']}) — все файлы пойдут через vision как раньше")
         return _TESSERACT_STATUS
-    rus_path = TESSDATA_DIR / 'rus.traineddata'
-    if rus_path.exists():
+    data_dir = next((path for path in _tesseract_data_candidates()
+                     if (path / 'rus.traineddata').exists()), None)
+    if data_dir:
         _TESSERACT_STATUS['has_rus'] = True
-        print(f"  ✅ Tesseract OCR доступен, русский языковой пакет найден в {rus_path}")
+        _TESSERACT_STATUS['data_dir'] = str(data_dir)
+        print(f"  ✅ Tesseract OCR доступен, русский языковой пакет найден в {data_dir}")
     else:
-        _TESSERACT_STATUS['reason'] = f'нет файла {rus_path} (нужно положить в репозиторий, папка tessdata/)'
+        _TESSERACT_STATUS['reason'] = 'не найден русский языковой пакет Tesseract'
         print(f"  ℹ️ Tesseract доступен, но {_TESSERACT_STATUS['reason']} — все файлы пойдут через vision")
     return _TESSERACT_STATUS
 
@@ -1536,8 +1571,9 @@ def _tesseract_ocr_image(pil_image):
     с рукописным текстом или сильно смазанным фото)."""
     import pytesseract
     import os as _os
-    _os.environ['TESSDATA_PREFIX'] = str(TESSDATA_DIR)
-    text = pytesseract.image_to_string(pil_image, lang='rus+eng', config='--tessdata-dir "%s"' % TESSDATA_DIR)
+    data_dir = _check_tesseract().get('data_dir') or str(TESSDATA_DIR)
+    _os.environ['TESSDATA_PREFIX'] = data_dir
+    text = pytesseract.image_to_string(pil_image, lang='rus+eng', config='--tessdata-dir "%s"' % data_dir)
     text = text.strip()
     if len(text) < 15:
         return None  # почти ничего не нашёл — вероятно скан плохого качества или рукопись
@@ -1615,7 +1651,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
         except Exception as e:
             print(f"  ❌ vision_extract({filename}): не удалось конвертировать PDF в изображения — {type(e).__name__}: {e}")
-            return f'[PDF: не удалось подготовить для распознавания — {e}]'
+            return '[Не удалось подготовить страницы PDF для распознавания.]'
         if not pages_b64:
             return '[PDF: страницы не найдены]'
 
@@ -1646,52 +1682,59 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 f"  🔎 vision_extract({filename}): PDF стр. {first_page}-{last_page}/{total_pages}, "
                 f"отправляю {payload_mb:.2f} МБ, жду семафор..."
             )
-            VISION_SEMAPHORE.acquire()
-            t0 = _time.time()
-            try:
-                resp = req_lib.post(
-                    VIBE_URL,
-                    headers={"Content-Type": "application/json", "X-Api-Key": api_key},
-                    json=vibe_payload,
-                    timeout=120,
-                )
-                elapsed = _time.time() - t0
-                resp.raise_for_status()
-                data = resp.json()
-                text = "".join(
-                    (choice.get("message", {}).get("content") or "")
-                    for choice in data.get("choices", [])
-                )
-                print(
-                    f"  ✅ vision_extract({filename}): стр. {first_page}-{last_page} "
-                    f"за {elapsed:.1f} сек, {len(text)} символов"
-                )
-                outputs.append(
-                    f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" +
-                    (text or '[vision: пустой ответ]')
-                )
-            except req_lib.exceptions.Timeout:
-                elapsed = _time.time() - t0
-                print(
-                    f"  ⏱️ vision_extract({filename}): таймаут стр. "
-                    f"{first_page}-{last_page} через {elapsed:.1f} сек"
-                )
-                outputs.append(
-                    f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
-                    f"[vision: таймаут; данные этих страниц требуют ручной проверки]"
-                )
-            except Exception as e:
-                elapsed = _time.time() - t0
-                print(
-                    f"  ❌ vision_extract({filename}): ошибка стр. {first_page}-{last_page} "
-                    f"через {elapsed:.1f} сек — {type(e).__name__}: {e}"
-                )
-                outputs.append(
-                    f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
-                    f"[vision ошибка: {e}; данные этих страниц требуют ручной проверки]"
-                )
-            finally:
-                VISION_SEMAPHORE.release()
+            for attempt in range(2):
+                VISION_SEMAPHORE.acquire()
+                t0 = _time.time()
+                try:
+                    resp = req_lib.post(
+                        VIBE_URL,
+                        headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+                        json=vibe_payload,
+                        timeout=120,
+                    )
+                    elapsed = _time.time() - t0
+                    resp.raise_for_status()
+                    data = resp.json()
+                    text = "".join(
+                        (choice.get("message", {}).get("content") or "")
+                        for choice in data.get("choices", [])
+                    )
+                    if text:
+                        print(
+                            f"  ✅ vision_extract({filename}): стр. {first_page}-{last_page} "
+                            f"за {elapsed:.1f} сек, {len(text)} символов"
+                        )
+                        outputs.append(f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + text)
+                        break
+                    if attempt == 0:
+                        print(f"  ⚠️ vision_extract({filename}): пустой ответ, повторяю только стр. {first_page}-{last_page}")
+                        continue
+                    outputs.append(
+                        f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
+                        f"[Не удалось прочитать страницы PDF: распознавание вернуло пустой ответ.]"
+                    )
+                except req_lib.exceptions.Timeout:
+                    elapsed = _time.time() - t0
+                    if attempt == 0:
+                        print(f"  ⏱️ vision_extract({filename}): таймаут стр. {first_page}-{last_page} через {elapsed:.1f} сек, повторяю только эти страницы")
+                        continue
+                    print(f"  ⏱️ vision_extract({filename}): повторный таймаут стр. {first_page}-{last_page}")
+                    outputs.append(
+                        f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
+                        f"[Не удалось прочитать страницы PDF: распознавание не завершилось вовремя.]"
+                    )
+                except Exception as e:
+                    elapsed = _time.time() - t0
+                    if attempt == 0:
+                        print(f"  ❌ vision_extract({filename}): ошибка стр. {first_page}-{last_page} через {elapsed:.1f} сек — {type(e).__name__}: {e}; повторяю только эти страницы")
+                        continue
+                    print(f"  ❌ vision_extract({filename}): повторная ошибка стр. {first_page}-{last_page} — {type(e).__name__}: {e}")
+                    outputs.append(
+                        f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
+                        f"[Не удалось прочитать страницы PDF: распознавание временно недоступно.]"
+                    )
+                finally:
+                    VISION_SEMAPHORE.release()
 
         if total_pages > len(pages_b64):
             outputs.append(
@@ -1739,11 +1782,11 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     except req_lib.exceptions.Timeout:
         elapsed = _time.time() - t0
         print(f"  ⏱️ vision_extract({filename}): ТАЙМАУТ через {elapsed:.1f} сек (лимит 90с) — файл {payload_mb:.2f} МБ")
-        return f'[vision: таймаут после {elapsed:.0f} сек — файл {payload_mb:.1f} МБ, возможно слишком большой или сервис перегружен]'
+        return '[Повторная попытка чтения требуется: распознавание не завершилось вовремя.]'
     except Exception as e:
         elapsed = _time.time() - t0
         print(f"  ❌ vision_extract({filename}): ОШИБКА через {elapsed:.1f} сек — {type(e).__name__}: {e}")
-        return f'[vision ошибка: {type(e).__name__}: {e}]'
+        return '[Повторная попытка чтения требуется: распознавание временно недоступно.]'
     finally:
         VISION_SEMAPHORE.release()
 
@@ -2340,6 +2383,17 @@ def _archive_document_blocks(result_text):
                       str(result_text or ''), flags=re.M | re.S)
 
 
+def _archive_read_warnings(result_text):
+    """Return only affected filenames; raw parser exceptions remain in server logs."""
+    warnings = []
+    for path in re.findall(r'^---\s*(.+?)\s*---\s*⚠️\s*(?:ОШИБКА(?: ЧТЕНИЯ)?|ПУСТОЙ РЕЗУЛЬТАТ)',
+                           str(result_text or ''), flags=re.M):
+        name = str(path).strip()
+        if name and name not in warnings:
+            warnings.append(name)
+    return warnings[:8]
+
+
 def _compact_archive_summary(result_text):
     """Build a human-facing summary without exposing the raw document dump."""
     text = str(result_text or '')
@@ -2613,7 +2667,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         return {'text': message, 'analysis_text': message, 'summary': message,
                 'structured_data': {}}
     TEXT_EXTS = ('docx', 'doc', 'txt', 'csv', 'xlsx', 'xls')  # без pdf — у него своя ветка ниже
-    IMAGE_EXTS = ('jpg', 'jpeg', 'png', 'webp')
+    IMAGE_EXTS = ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif')
     TEXT_INNER_LIMIT = 4 * 1024 * 1024     # текстовые файлы — как раньше, 4 МБ
     IMAGE_INNER_LIMIT = 15 * 1024 * 1024   # фото крупнее (сами уменьшаются перед отправкой)
     PDF_INNER_LIMIT = 80 * 1024 * 1024     # PDF-сканы (паспорта/трудовые) часто крупнее — до 20 МБ
@@ -2748,9 +2802,12 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     return (f"--- {folder + '/' if folder else ''}{short} ---\n"
                             f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания — "
                             f"пришлите этот документ отдельными фото по 1-2 страницы вместо одного большого PDF]")
-                txt = vision_extract(data, short, api_key, max_pages_override=(2 if str(product) in ('iso','suot','iso_suot') else None))
+                txt, _retried = vision_extract_with_retry(
+                    data, short, api_key,
+                    max_pages_override=(2 if str(product) in ('iso', 'suot', 'iso_suot') else None),
+                )
             else:
-                txt = vision_extract(data, short, api_key)
+                txt, _retried = vision_extract_with_retry(data, short, api_key)
 
             # КРИТИЧНО: раньше здесь было "if txt and len > 10 and not startswith('[')"
             # — а мои же сообщения об ОШИБКАХ специально начинаются с '[' (чтобы легко
@@ -2780,7 +2837,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                         r = fut.result()
                         if r: texts.append(r)
                     except Exception as ex2:
-                        texts.append(f"--- {short} --- [ошибка: {ex2}]")
+                        print(f"  ⚠️ Не удалось прочитать {short}: {type(ex2).__name__}: {ex2}")
+                        texts.append(f"--- {short} --- ⚠️ ОШИБКА\n[Не удалось прочитать файл.]")
 
     # ── Сверка по человеку: убираем дубли и явно помечаем расхождения ──────
     # Раньше отдавали сырую свалку — по 5-10 файлов на человека сплошным текстом,
@@ -3326,28 +3384,20 @@ class H(http.server.BaseHTTPRequestHandler):
                     text = extract_text_from_file(file_bytes, filename)
                     self._json({'success':True,'text':text,'method':'text'}); return
 
-                # Единая функция vision — та же что используется для фото внутри архивов:
-                # умеет HEIC (iPhone), сама уменьшает картинку перед отправкой, при таймауте
-                # не дублирует ожидание повторной попыткой.
-                # Для ОДИНОЧНОЙ загрузки (обычно самые важные документы — диплом/паспорт/аттестат)
-                # включаем двойную проверку: читаем дважды и сравниваем, чтобы поймать случаи
-                # когда модель один раз угадала неправильно.
+                # Visual documents are read once.  A second attempt happens only after a
+                # timeout/temporary failure, never merely as a duplicate "verification".
                 if ext == 'pdf' and _is_labour_book_filename(filename):
                     # Labour books can contain dozens of pages. Reading them twice turns one
                     # upload into 20-40 vision calls and often hits timeouts. Read every page
                     # once in small batches; uncertainty is preserved page-by-page in the text.
-                    text = vision_extract(file_bytes, filename, api_key)
-                    matched = None
+                    text, retried = vision_extract_with_retry(file_bytes, filename, api_key)
                 else:
-                    text, matched = vision_extract_verified(file_bytes, filename, api_key)
-                    if ext == 'pdf' and not str(text or '').strip():
-                        text = vision_extract(file_bytes, filename, api_key)
-                        matched = None
+                    text, retried = vision_extract_with_retry(file_bytes, filename, api_key)
                 thumbnail = make_thumbnail_b64(file_bytes, filename)
                 payload = {'success': True, 'text': text, 'method': 'vision',
                            'thumbnail_b64': thumbnail}
-                if matched is not None:
-                    payload['verified_match'] = matched
+                if retried:
+                    payload['retry_used'] = True
                 self._json(payload)
 
             elif p=='/api/extract-text':
@@ -3525,14 +3575,17 @@ class H(http.server.BaseHTTPRequestHandler):
                             result_analysis = result_bundle.get('analysis_text') or result_text
                             result_summary = result_bundle.get('summary') or _compact_archive_summary(result_text)
                             structured_data = result_bundle.get('structured_data') or {}
+                            read_warnings = _archive_read_warnings(result_text)
                         else:
                             result_text = str(result_bundle or '')
                             result_analysis = result_text
                             result_summary = _compact_archive_summary(result_text)
                             structured_data = {}
+                            read_warnings = _archive_read_warnings(result_text)
                         TASKS[_tid].update({'status':'done','kind':'archive','text':result_text,
                                             'summary': result_summary, 'analysis_text': result_analysis,
-                                            'structured_data': structured_data,'filename':_fn, 'product': _product})
+                                            'structured_data': structured_data, 'warnings': read_warnings,
+                                            'filename':_fn, 'product': _product})
                         save_task(_tid, TASKS[_tid])
                         _prune_tasks()
                     except Exception as _ex:

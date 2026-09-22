@@ -93,6 +93,79 @@ def test_rar_upload_reports_an_unavailable_extractor(monkeypatch):
     assert 'не удалось открыть' in result['text'].lower()
 
 
+def test_visual_ocr_does_not_repeat_a_successful_read(monkeypatch):
+    """A normal passport/certificate upload must make one recognition call."""
+    calls = []
+
+    def fake_vision(*_args, **_kwargs):
+        calls.append(True)
+        return 'Паспорт прочитан'
+
+    monkeypatch.setattr(server, 'vision_extract', fake_vision)
+
+    text, retried = server.vision_extract_with_retry(b'image', 'паспорт.jpg', 'unused')
+
+    assert text == 'Паспорт прочитан'
+    assert retried is False
+    assert len(calls) == 1
+
+
+def test_visual_ocr_retries_once_only_after_a_read_failure(monkeypatch):
+    outcomes = iter([
+        '[vision: таймаут после 90 сек]',
+        'Свидетельство о поверке № 12',
+    ])
+    calls = []
+
+    def fake_vision(*_args, **_kwargs):
+        calls.append(True)
+        return next(outcomes)
+
+    monkeypatch.setattr(server, 'vision_extract', fake_vision)
+
+    text, retried = server.vision_extract_with_retry(b'pdf', 'поверка.pdf', 'unused')
+
+    assert text == 'Свидетельство о поверке № 12'
+    assert retried is True
+    assert len(calls) == 2
+
+
+def test_archive_warnings_name_only_files_that_were_not_read():
+    text = (
+        '--- СИ/поверка.pdf --- ⚠️ ОШИБКА\n[Не удалось прочитать файл.]\n\n'
+        '--- Люди/диплом.pdf ---\nДиплом инженера'
+    )
+
+    assert server._archive_read_warnings(text) == ['СИ/поверка.pdf']
+
+
+def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 2)
+    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['a', 'b'])
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': 'Распознанный текст'}}]}
+
+    def fake_post(*_args, **_kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise server.req_lib.exceptions.Timeout()
+        return Response()
+
+    monkeypatch.setattr(server.req_lib, 'post', fake_post)
+
+    text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused')
+
+    assert text.count('Распознанный текст') == 1
+    assert len(calls) == 2
+
+
 def test_rar_converter_preserves_nested_pdf_and_jpg_paths(monkeypatch):
     def fake_extract(command, **_kwargs):
         output_dir = Path(command[command.index('-C') + 1])
