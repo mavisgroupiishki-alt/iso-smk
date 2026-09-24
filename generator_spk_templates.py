@@ -1140,9 +1140,18 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
         # Protocol details are personal facts. Never invent "№1" and the package date.
         # Use only a real OT/training protocol extracted from the employee documents.
         if not item.get('protocol_number'):
-            item['protocol_number'] = item.get('ot_protocol_number') or item.get('training_protocol_number') or ''
+            # Individual BSC attestation is often entered manually after checking
+            # the official register. It belongs in the ITR certificate just like
+            # a recognised training protocol; never manufacture it from package dates.
+            item['protocol_number'] = (
+                item.get('attestat_number') or item.get('attestation_number') or
+                item.get('ot_protocol_number') or item.get('training_protocol_number') or ''
+            )
         if not item.get('protocol_date'):
-            item['protocol_date'] = item.get('ot_protocol_date') or item.get('training_protocol_date') or ''
+            item['protocol_date'] = (
+                item.get('attestat_date_from') or item.get('attestation_date') or
+                item.get('ot_protocol_date') or item.get('training_protocol_date') or ''
+            )
         people_itr.append(item)
     add(f"{org} СПК - 2 Справка ИТР.docx", render_spravka_itr(company, people_itr, profile))
 

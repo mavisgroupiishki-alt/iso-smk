@@ -29,6 +29,14 @@ def _zip_with_scans() -> bytes:
     return buffer.getvalue()
 
 
+def _docx_with_embedded_scan(image_bytes=b'embedded-scan') -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as document:
+        document.writestr('word/document.xml', '<w:document xmlns:w="urn:test"><w:body/></w:document>')
+        document.writestr('word/media/image1.jpg', image_bytes)
+    return buffer.getvalue()
+
+
 def test_archive_processing_slot_rejects_parallel_jobs():
     server.release_archive_processing()
 
@@ -79,6 +87,35 @@ def test_non_visual_file_is_not_repacked_for_the_archive_worker():
 
     assert data == b'data'
     assert worker_name == 'штатное расписание.docx'
+
+
+def test_docx_with_only_embedded_scans_uses_vision_in_archive(monkeypatch):
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr('Спецы/Трон Ф.А..docx', _docx_with_embedded_scan())
+    calls = []
+    monkeypatch.setattr(server, 'vision_extract_with_retry', lambda data, name, *_args, **_kwargs: (
+        calls.append((data, name)) or ('Диплом инженера-строителя № АБ-1', False)
+    ))
+    monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)
+
+    result = server.extract_archive_with_vision(archive.getvalue(), 'спецы.zip', 'unused', product='spk_bisp')
+
+    assert calls == [(b'embedded-scan', 'Трон Ф.А._страница_1.jpg')]
+    assert 'Диплом инженера-строителя № АБ-1' in result['text']
+
+
+def test_shared_specialists_folder_groups_named_files_and_one_unnamed_photo():
+    texts = [
+        '--- Белеогрин/Спецы/Трон Ф.А..docx ---\nДиплом',
+        '--- Белеогрин/Спецы/Трудовая Трон.docx ---\nТрудовая книжка',
+        '--- Белеогрин/Спецы/photo_2026-09-24.jpg ---\nФото диплома',
+    ]
+
+    groups, _order = server._group_blocks_by_person(texts)
+
+    assert len(groups['Трон']) == 3
+    assert groups['Спецы'] == []
 
 
 def test_spk_si_certificate_facts_are_extracted_without_waiting_for_chat_model():

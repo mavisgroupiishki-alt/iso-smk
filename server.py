@@ -875,7 +875,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
     "company": {"name":"","form":"","unp":"","address":"","city":"","director_fio":"","director_position":"","glavbukh_fio":"","scope":"","has_welding": false, "machinery": ["Автомобиль"], "bisp_org": "РУП «СтройМедиаПроект»", "phone":"", "email":"", "bank_details":"полная строка банковских реквизитов", "bank_account":"IBAN", "bank_name":"наименование банка", "bik":"БИК"},
     "certification": {"standard":"iso|suot|iso_suot|spk_stroy|spk_bisp|att|company_att","package_mode":"initial|periodika","scope":"","body":"","audit_date":""},
     "dates": {"audit_date":"","development_date":"","implementation_date":""},
-    "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":""}],
+    "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":"","diplomas":[{"number":"","date":"","institution":"","speciality":"","qualification":""}],"trudovye_numbers":[""],"attestat_number":"","attestat_date_from":"","attestat_date_to":"","attestat_specialization":""}],
     "workers": ["Штукатур","Маляр","Электрогазосварщик"],
     "objects": [{"name":"","year":"","customer":""}],
     "suppliers": [{"name":"","type":""}],
@@ -2035,7 +2035,61 @@ def _group_blocks_by_person(texts):
             person = trimmed[:slash_idx] if slash_idx >= 0 else None
         groups.setdefault(person, []).append(block)
         if person not in order: order.append(person)
+
+    # Some clients keep personal scans directly in a shared ``Спецы`` folder
+    # instead of creating one folder per person. A filename such as
+    # ``Трон Ф.А..docx`` or ``Трудовая Трон.docx`` is still sufficient to keep
+    # those files together; treating the whole folder as a generic category used
+    # to prevent personal diploma/labour reconciliation altogether.
+    shared_person_folders = {'спецы', 'специалисты', 'сотрудники', 'персонал', 'итр'}
+    for folder in list(order):
+        if folder is None:
+            continue
+        leaf = str(folder).replace('\\', '/').rstrip('/').split('/')[-1].lower().replace('ё', 'е')
+        if leaf not in shared_person_folders:
+            continue
+        blocks = groups.get(folder) or []
+        identified, remaining = {}, []
+        for block in blocks:
+            name = _person_surname_from_loose_filename(_archive_block_name(block))
+            if name:
+                identified.setdefault(name, []).append(block)
+            else:
+                remaining.append(block)
+        # An unnamed phone photo can safely join the only otherwise identified
+        # person in that shared folder. With two or more candidates it remains a
+        # general source rather than being attributed to the wrong employee.
+        if len(identified) == 1:
+            only_blocks = next(iter(identified.values()))
+            unnamed_visual = [b for b in remaining if _is_unnamed_personal_visual(_archive_block_name(b))]
+            if unnamed_visual:
+                only_blocks.extend(unnamed_visual)
+                remaining = [b for b in remaining if b not in unnamed_visual]
+        if not identified:
+            continue
+        groups[folder] = remaining
+        for person, person_blocks in identified.items():
+            groups.setdefault(person, []).extend(person_blocks)
+            if person not in order:
+                order.append(person)
     return groups, order
+
+
+def _person_surname_from_loose_filename(path: str) -> str:
+    """Return a safe surname from a personal filename in a shared folder."""
+    stem = Path(str(path or '').replace('\\', '/')).stem.strip()
+    # Prefer a surname at the end, optionally followed by initials: ``Трон Ф.А.``.
+    match = re.search(r'(?iu)([А-ЯЁ][А-ЯЁа-яё-]{2,})(?:\s+[А-ЯЁ]\.?[А-ЯЁ]\.?\s*)?$', stem)
+    if not match:
+        return ''
+    surname = match.group(1).strip()
+    generic = {'диплом', 'трудовая', 'дубликат', 'приказы', 'приказ', 'фото', 'изображение', 'документ'}
+    return '' if surname.lower().replace('ё', 'е') in generic else surname
+
+
+def _is_unnamed_personal_visual(path: str) -> bool:
+    name = Path(str(path or '')).name.lower().replace('ё', 'е')
+    return bool(re.match(r'(?:photo|img|image|изображение|фото|скан)[_.-]', name))
 
 
 def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
@@ -2813,6 +2867,27 @@ def _single_visual_as_zip(file_bytes, filename):
     return packed.getvalue(), f'{Path(entry_name).stem}_для_обработки.zip'
 
 
+def _embedded_docx_images(file_bytes, filename: str) -> list:
+    """Return visual pages embedded in a DOCX scan, in their document order."""
+    if not str(filename or '').lower().endswith('.docx'):
+        return []
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as document:
+            images = []
+            for name in sorted(document.namelist()):
+                if not name.startswith('word/media/'):
+                    continue
+                ext = Path(name).suffix.lower()
+                if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'):
+                    continue
+                content = document.read(name)
+                if content:
+                    images.append((Path(name).name, content))
+            return images[:12]
+    except (zipfile.BadZipFile, KeyError, OSError):
+        return []
+
+
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all", _archive_depth=0):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
@@ -2935,10 +3010,28 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     else:
                         texts.append(prefix + "\n" + txt)
                 else:
-                    texts.append(
-                        f"--- {folder + '/' if folder else ''}{short} --- "
-                        "⚠️ ПУСТОЙ РЕЗУЛЬТАТ"
-                    )
+                    embedded = _embedded_docx_images(data, short)
+                    if not embedded:
+                        texts.append(
+                            f"--- {folder + '/' if folder else ''}{short} --- "
+                            "⚠️ ПУСТОЙ РЕЗУЛЬТАТ"
+                        )
+                        continue
+                    image_texts = []
+                    for image_index, (image_name, image_bytes) in enumerate(embedded, 1):
+                        visual_name = f"{Path(short).stem}_страница_{image_index}{Path(image_name).suffix}"
+                        p(f"{short}: читаю вложенное изображение {image_index}/{len(embedded)}")
+                        visual_text, _retried = vision_extract_with_retry(
+                            image_bytes, visual_name, api_key,
+                            progress_cb=lambda message: p(f"{short}: {message}"),
+                        )
+                        if visual_text and len(visual_text) > 10:
+                            image_texts.append(f"[Вложенное изображение {image_index}]\n{visual_text}")
+                    prefix = f"--- {folder + '/' if folder else ''}{short} ---"
+                    if image_texts:
+                        texts.append(prefix + "\n" + "\n\n".join(image_texts))
+                    else:
+                        texts.append(prefix + " ⚠️ ОШИБКА ЧТЕНИЯ\n[Не удалось прочитать изображения внутри документа.]")
             except Exception as e:
                 texts.append(f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n[{type(e).__name__}: {e}]")
 

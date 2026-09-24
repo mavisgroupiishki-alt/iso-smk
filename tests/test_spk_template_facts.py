@@ -213,6 +213,25 @@ def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
     assert 'Вкладыш № 2222222' in text
 
 
+def test_spk_itr_uses_manually_confirmed_bsc_attestation_details():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    itr = [{
+        'fio': 'Иванов Иван Иванович', 'position': 'Директор',
+        'attestat_number': 'АТ-12345', 'attestat_date_from': '12.09.2026',
+    }]
+    result = generate_spk_package_v2(
+        company, itr, [], dates, generator.select_responsible(itr), variant='spk_stroy',
+    )
+    text = _xml_text(_document(result, '2 Справка ИТР')['bytes'])
+
+    assert 'Протокол №АТ-12345 от 12.09.2026 г.' in text
+
+
 def test_spk_copy_list_is_preserved_as_measurement_tools():
     source = '''
     ПЕРЕЧЕНЬ КОПИЙ СПК
