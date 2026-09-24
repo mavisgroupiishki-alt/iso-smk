@@ -3689,7 +3689,10 @@ async function aiStartArchiveUpload(formData) {
   // response.  Do not let the document specialist wait indefinitely or mistake
   // that transport problem for slow OCR.
   const controller = new AbortController();
-  const uploadTimeout = setTimeout(() => controller.abort(), 120000);
+  // Large RAR/PDF archives can take several minutes to reach Render on a
+  // residential connection.  The server processes the archive asynchronously,
+  // so the browser must not cancel a still-uploading file after two minutes.
+  const uploadTimeout = setTimeout(() => controller.abort(), 10 * 60 * 1000);
   try {
     return await fetch('/api/extract-archive-async', {
       method: 'POST', body: formData, signal: controller.signal
