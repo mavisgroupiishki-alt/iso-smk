@@ -1853,7 +1853,12 @@ def _extract_legacy_doc_text(file_bytes: bytes) -> str:
         for encoding in ('utf-16le', 'cp1251'):
             text = raw.decode(encoding, errors='replace')
             text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', ' ', text)
-            text = re.sub(r'\s+', ' ', text).strip()
+            # Keep Word paragraph boundaries.  Lists in legacy .doc files use
+            # them as the only reliable separator between two similarly named
+            # instruments (for example two thermometers with different ranges).
+            text = text.replace('\r\n', '\n').replace('\r', '\n')
+            text = re.sub(r'[^\S\n]+', ' ', text)
+            text = re.sub(r'\n{3,}', '\n\n', text).strip()
             # Word's own field markers are not printable, although the text
             # around them is perfectly usable.  A normal Russian document has
             # a substantial share of Cyrillic letters; this accepts it without
@@ -2781,24 +2786,27 @@ def _archive_vision_batches(entries):
 
 
 _SPK_COPY_LIST_TOOLS = (
-    ('Нивелир', r'\bнивелир\w*\b'),
     ('Рейка нивелирная', r'\b(?:рейк\w*\s+нивелир\w*|нивелир\w*\s+рейк\w*)\b'),
+    ('Нивелир', r'\bнивелир\w*\b'),
     ('Плотномер динамический', r'\bплотномер\w*\s+динамическ\w*\b'),
     ('Рулетка измерительная', r'\bрулетк\w*\s+измерительн\w*\b'),
     ('Линейка измерительная', r'\bлинейк\w*\s+измерительн\w*\b'),
     ('Уровень электронный строительный', r'\bуров(?:ень|ня)\s+электронн\w*(?:\s+строительн\w*)?\b'),
+    ('Уровень строительный', r'\bуров(?:ень|ня)\b'),
     ('Рейка контрольная', r'\bрейк\w*\s+контрольн\w*\b'),
     ('Штангенциркуль ШЦ', r'\bштангенциркул\w*(?:\s+шц)?\b'),
     ('Угольник поверочный', r'\bугольник\w*\s+поверочн\w*\b'),
     ('Термометр', r'\bтермометр\w*\b'),
     ('Теодолит', r'\bтеодолит\w*\b'),
-    ('Влагомер', r'\b(?:влагомер|гигрометр)\w*\b'),
+    ('Влагомер', r'\bвлагомер\w*\b'),
+    ('Гигрометр', r'\bгигрометр\w*\b'),
     ('Манометр', r'\bманометр\w*\b'),
     ('Адгезиметр', r'\bадгезиметр\w*\b'),
     ('Клин для контроля зазоров', r'\bклин\w*\s+для\s+контрол\w*\s+зазор\w*\b'),
     ('Набор щупов', r'\bнабор\s+щуп\w*\b'),
     ('Дефектоскоп', r'\bдефектоскоп\w*\b'),
     ('Толщиномер', r'\bтолщиномер\w*\b'),
+    ('Ключ динамометрический', r'\b(?:ключ\w*\s+динамометрическ\w*|динамометрическ\w*\s+ключ\w*)\b'),
     ('Шаблон сварщика УШС-2', r'\b(?:шаблон\w*\s+сварщик\w*|ушс[- ]?2)\b'),
 )
 
@@ -2820,11 +2828,33 @@ def _extract_spk_tools_from_copy_list(text: str) -> list:
         return []
     # После заголовка расположен сам список. Ограничение защищает от случайного
     # попадания слов из несвязанной части архива с дипломами и трудовыми.
-    section = value[anchor.start():anchor.start() + 5000]
+    list_heading = re.search(r'перечень\s+средств\w*\s+измер', value)
+    section_start = list_heading.start() if list_heading else anchor.start()
+    section = value[section_start:section_start + 5000]
     tools = []
-    for name, pattern in _SPK_COPY_LIST_TOOLS:
-        if re.search(pattern, section, re.IGNORECASE):
-            tools.append({'name': name, 'quantity': 1, 'source': 'copy_list'})
+    # The client list is a checklist, not a set: two thermometers with different
+    # ranges are two different rows.  Parse its bullets in order and keep each
+    # entry rather than scanning the whole text once per known instrument.
+    bullets = re.split(r'(?:^|\n|;)\s*[-–]\s+', section)
+    entries = bullets[1:] if len(bullets) > 1 else section.split(';')
+    for bullet in entries:
+        selected_name = ''
+        for name, pattern in sorted(_SPK_COPY_LIST_TOOLS, key=lambda item: len(item[0]), reverse=True):
+            if re.search(pattern, bullet, re.IGNORECASE):
+                selected_name = name
+                break
+        if not selected_name:
+            continue
+        item = {'name': selected_name, 'quantity': 1, 'source': 'copy_list'}
+        quantity_match = re.search(r'\b(\d+)\s*(?:шт\.?|штук)\b', bullet)
+        if quantity_match:
+            item['quantity'] = int(quantity_match.group(1))
+        if selected_name == 'Термометр':
+            temperatures = re.findall(r'([+-]?\s*\d+)\s*°?\s*[сc]\b', bullet, re.IGNORECASE)
+            if len(temperatures) >= 2:
+                start, end = (re.sub(r'\s+', '', value) for value in temperatures[:2])
+                item['range'] = f'Диапазон измерений: ({start} {end}) °С'
+        tools.append(item)
     return tools
 
 
@@ -2887,6 +2917,10 @@ def _spk_si_match_tool(items: list, candidate: dict) -> dict | None:
         item_name = _spk_si_norm(item.get('name') or item.get('tool'))
         item_number = _spk_si_norm(item.get('factory_number') or item.get('tool_number'))
         if candidate_number and item_number and candidate_number != item_number:
+            continue
+        candidate_range = _spk_si_norm(candidate.get('range') or candidate.get('characteristics'))
+        item_range = _spk_si_norm(item.get('range') or item.get('characteristics'))
+        if candidate_range and item_range and candidate_range != item_range:
             continue
         candidate_words = candidate_name.split()
         item_words = item_name.split()
