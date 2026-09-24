@@ -352,6 +352,22 @@ def test_spk_si_includes_copy_list_tools_without_inventing_verification():
     assert len(warnings) == 3
 
 
+def test_spk_si_reads_the_actual_pererechen_sredstv_izmereniya_heading():
+    source = '''
+Перечень средств измерения:
+- термометр -50 °С - +50 °С;
+- нивелир;
+- нивелирная рейка;
+- угольник поверочный;
+'''
+
+    tools = server._extract_spk_tools_from_copy_list(source)
+
+    assert {row['name'] for row in tools} == {
+        'Термометр', 'Нивелир', 'Рейка нивелирная', 'Угольник поверочный',
+    }
+
+
 def test_spk_si_keeps_standard_template_characteristics_until_a_document_changes_them():
     rows, _warnings = _build_real_si_list({
         'measurement_tools': [
