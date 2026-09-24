@@ -311,6 +311,33 @@ def test_spk_person_summary_accepts_dot_numbering_and_multiline_diplomas():
     ]
 
 
+def test_spk_person_summary_ignores_numbered_contract_clauses_before_staff_cards():
+    archive_text = '''
+--- договор аренды.docx ---
+1. Арендатор перечисляет оплату в течение десяти рабочих дней.
+2. Использовать помещение в соответствии с договором.
+
+1) ФИО: Трон Федор Александрович
+Должность/роль для СПК: Главный инженер
+Дипломы: № 087353, инженер-гидротехник
+Трудовая книжка и вкладыши: ГТ-I № 7166864
+
+2) ФИО: Зенченко Александр Николаевич / Шевченко Александр Николаевич
+Должность/роль для СПК: инженер
+Дипломы: № 0186143
+'''
+
+    staff = server._extract_spk_staff_from_person_summaries(archive_text)
+
+    assert staff == [{
+        'fio': 'Трон Федор Александрович',
+        'position': 'Главный инженер',
+        'diplomas': [{'full_text': '№ 087353, инженер-гидротехник'}],
+        'trudovye_numbers': ['ГТ-I № 7166864'],
+        'source': 'archive_person_summary',
+    }]
+
+
 def test_spk_si_includes_copy_list_tools_without_inventing_verification():
     source = 'СВЕДЕНИЯ ПО ИНСТРУМЕНТАМ: Нивелир; Рейка нивелирная; Теодолит'
     rows, warnings = _build_real_si_list({

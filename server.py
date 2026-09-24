@@ -2376,6 +2376,12 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
     guessing document fields that are not explicit in the summary.
     """
     value = str(text or '').replace('\r\n', '\n')
+    # Archive source documents can contain ordinary numbered clauses (for example
+    # an аренда agreement).  The reconciler's staff cards start with ``ФИО:``;
+    # when that marker exists, no preceding source-document clause is a person.
+    first_staff_card = re.search(r'(?im)^\s*1[.)]\s*фио\s*:', value)
+    if first_staff_card:
+        value = value[first_staff_card.start():]
     # The reconciliation prompt asks for ``1) ФИО``, but the model sometimes
     # returns ``1. ФИО``. Both are the same card, and rejecting the latter loses
     # every diploma while orders and labour-book text remain visible elsewhere.
@@ -2385,11 +2391,18 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
     people = []
     seen = set()
     for match in card_re.finditer(value):
-        fio = re.sub(r'\s+', ' ', match.group('fio')).strip(' -–—')
+        fio = re.sub(r'^\s*фио\s*:\s*', '', match.group('fio'), flags=re.I)
+        fio = re.sub(r'\s+', ' ', fio).strip(' -–—')
         fio_key = re.sub(r'[^а-яa-z0-9]+', '', fio.lower().replace('ё', 'е'))
-        # A numbered list in a source document is not a person card.
+        name_words = fio.split()
+        valid_name_word = re.compile(r'^[А-ЯЁ][а-яё-]+$|^[А-ЯЁ]\.$')
+        # A numbered list in a source document is not a person card.  Keep only
+        # a complete, unambiguous Russian name (surname + name, optionally
+        # patronymic/initials); do not turn a conflicting ``A / B`` into staff.
         if (not fio_key or fio_key in seen or len(re.findall(r'[А-Яа-яЁёA-Za-z]', fio)) < 4
-                or fio.casefold() in ('фио', 'не найдено')):
+                or fio.casefold() in ('фио', 'не найдено') or '/' in fio
+                or not 2 <= len(name_words) <= 3
+                or not all(valid_name_word.fullmatch(word) for word in name_words)):
             continue
         body = match.group('body')
         position_match = re.search(
