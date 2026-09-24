@@ -112,6 +112,31 @@ def test_legacy_doc_is_read_with_antiword(monkeypatch):
     assert calls[0][0][0] == 'antiword'
 
 
+def test_legacy_doc_retries_antiword_without_an_optional_encoding_map(monkeypatch):
+    calls = []
+
+    class FailedResult:
+        returncode = 1
+        stdout = b''
+        stderr = b'encoding map unavailable'
+
+    class SuccessResult:
+        returncode = 0
+        stdout = 'Перечень средств измерений: нивелир'.encode('utf-8')
+        stderr = b''
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return FailedResult() if len(calls) == 1 else SuccessResult()
+
+    monkeypatch.setattr(server.subprocess, 'run', fake_run)
+
+    text = server.extract_text_from_file(b'legacy-word-binary', 'Перечень СИ.doc')
+
+    assert 'Перечень средств измерений' in text
+    assert calls == [['antiword', '-m', 'UTF-8.txt', calls[0][-1]], ['antiword', calls[0][-1]]]
+
+
 def test_docx_with_only_embedded_scans_uses_vision_in_archive(monkeypatch):
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
