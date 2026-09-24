@@ -152,7 +152,7 @@ def collect_review_tokens_and_items(data: Dict[str, Any]) -> Tuple[List[str], Li
                     else:
                         for token in _iter_scalar_values(field_value):
                             add_item(field_path, token, default_reason, inline=True)
-            elif needs_review:
+            elif needs_review and not path.startswith(('source_documents', 'source_files', 'archive', 'raw_')):
                 # Keep a general warning for the operator, but do not turn every
                 # exact value from this record yellow.  This is especially important
                 # for source_documents and OCR pages where one doubtful word used to
@@ -178,6 +178,10 @@ def collect_review_tokens_and_items(data: Dict[str, Any]) -> Tuple[List[str], Li
         if not isinstance(item, dict):
             continue
         field = str(item.get('field') or 'данные')
+        if field.startswith(('source_documents', 'source_files', 'archive', 'raw_')):
+            # Source-file processing is shown in the upload flow. It is not a
+            # document field and must not leak technical paths/errors into review.
+            continue
         if (field in ('certification.audit_date', 'dates.audit_date')
                 and (certification.get('audit_date') or dates.get('audit_date'))):
             continue

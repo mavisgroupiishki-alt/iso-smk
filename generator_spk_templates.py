@@ -944,7 +944,16 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
         dn = _norm_si_text(' '.join(str(d.get(k) or '') for k in ('tool','name','model')))
         if not tn or not dn:
             return False
-        return tn in dn or dn in tn or any(len(w) >= 5 and w in dn for w in tn.split())
+        tool_words = tn.split()
+        document_words = dn.split()
+        # A shared generic word is not sufficient evidence: "нивелир" and
+        # "рейка нивелирная" are different SI. Exact names, or a multi-word
+        # extension such as "линейка измерительная металлическая", are safe.
+        return (
+            tn == dn or
+            (len(tool_words) > 1 and set(tool_words).issubset(document_words)) or
+            (len(document_words) > 1 and set(document_words).issubset(tool_words))
+        )
 
     rows = []
     used_docs = set()

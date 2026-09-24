@@ -2632,6 +2632,14 @@ _SPK_COPY_LIST_TOOLS = (
     ('Угольник поверочный', r'\bугольник\w*\s+поверочн\w*\b'),
     ('Термометр', r'\bтермометр\w*\b'),
     ('Теодолит', r'\bтеодолит\w*\b'),
+    ('Влагомер', r'\b(?:влагомер|гигрометр)\w*\b'),
+    ('Манометр', r'\bманометр\w*\b'),
+    ('Адгезиметр', r'\bадгезиметр\w*\b'),
+    ('Клин для контроля зазоров', r'\bклин\w*\s+для\s+контрол\w*\s+зазор\w*\b'),
+    ('Набор щупов', r'\bнабор\s+щуп\w*\b'),
+    ('Дефектоскоп', r'\bдефектоскоп\w*\b'),
+    ('Толщиномер', r'\bтолщиномер\w*\b'),
+    ('Шаблон сварщика УШС-2', r'\b(?:шаблон\w*\s+сварщик\w*|ушс[- ]?2)\b'),
 )
 
 
@@ -2653,6 +2661,129 @@ def _extract_spk_tools_from_copy_list(text: str) -> list:
         if re.search(pattern, section, re.IGNORECASE):
             tools.append({'name': name, 'quantity': 1, 'source': 'copy_list'})
     return tools
+
+
+def _spk_si_norm(value: str) -> str:
+    return re.sub(r'[^a-zа-я0-9]+', ' ', str(value or '').lower().replace('ё', 'е')).strip()
+
+
+def _spk_si_tool_from_text(text: str) -> str:
+    """Return a known SI name only when it is explicitly named in this source."""
+    value = _spk_si_norm(text)
+    # Specific compound names must win over their components: a "нивелирная
+    # рейка" is not a "нивелир" and their certificates cannot be exchanged.
+    for name, pattern in sorted(_SPK_COPY_LIST_TOOLS, key=lambda item: len(item[0]), reverse=True):
+        if re.search(pattern, value, re.IGNORECASE):
+            return name
+    return ''
+
+
+def _spk_si_match_tool(items: list, candidate: dict) -> dict | None:
+    """Find the same SI row without allowing a different serial number to match."""
+    candidate_name = _spk_si_norm(candidate.get('name') or candidate.get('tool'))
+    candidate_number = _spk_si_norm(candidate.get('factory_number') or candidate.get('tool_number'))
+    for item in items:
+        item_name = _spk_si_norm(item.get('name') or item.get('tool'))
+        item_number = _spk_si_norm(item.get('factory_number') or item.get('tool_number'))
+        if candidate_number and item_number and candidate_number != item_number:
+            continue
+        candidate_words = candidate_name.split()
+        item_words = item_name.split()
+        if candidate_name and item_name and (
+            candidate_name == item_name or
+            (len(candidate_words) > 1 and set(candidate_words).issubset(item_words)) or
+            (len(item_words) > 1 and set(item_words).issubset(candidate_words))
+        ):
+            return item
+    return None
+
+
+def _extract_spk_si_evidence(text: str) -> dict:
+    """Extract exact SI evidence from source files before the chat model sees it.
+
+    A verification/calibration certificate is a legal source for its own number,
+    date and serial number. Leaving those values solely to a later chat response
+    made the SI table lose them even when the PDF had already been read.
+    """
+    result = {'measurement_tools': [], 'verification_documents': [], 'calibration_documents': []}
+    # Archive extraction puts every file behind this marker. Keeping parsing within
+    # one file prevents a number in a neighbouring certificate pairing with a wrong SI.
+    blocks = re.split(r'(?=^--- .+? ---)', str(text or ''), flags=re.MULTILINE)
+    for block in blocks:
+        compact = re.sub(r'\s+', ' ', block.replace('\xa0', ' '))
+        lower = compact.lower().replace('ё', 'е')
+        if not re.search(r'\b(?:поверк\w*|калибров\w*|свидетельств\w*)', lower):
+            continue
+        tool = _spk_si_tool_from_text(compact)
+        if not tool:
+            # Do not create a speculative SI row from a certificate whose device
+            # cannot be identified. The operator can then send just that file.
+            continue
+        kind = 'Калибровка' if re.search(r'\bкалибров\w*', lower) else 'Поверка'
+        number_match = re.search(
+            r'(?:поверк\w*|калибров\w*|свидетельств\w*|сертификат\w*)[^№#]{0,100}[№#]\s*'
+            r'([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})', compact, re.IGNORECASE,
+        )
+        date_match = re.search(
+            r'(?:\bот\b|дата)\s*[:№#]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})', compact, re.IGNORECASE,
+        )
+        valid_match = re.search(
+            r'(?:действ\w*\s+до|год(?:ен|на)\s+до|срок\s+действ\w*)[^\d]{0,24}'
+            r'(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})', compact, re.IGNORECASE,
+        )
+        factory_match = re.search(
+            r'(?:заводск\w*|серийн\w*|учетн\w*|зав(?:одск\w*)?\.?)\s*(?:номер|№|#)?\s*[:№#]?\s*'
+            r'([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})', compact, re.IGNORECASE,
+        )
+        factory_number = factory_match.group(1).strip('.,;') if factory_match else ''
+        existing_tool = _spk_si_match_tool(result['measurement_tools'], {'name': tool, 'factory_number': factory_number})
+        if existing_tool:
+            if factory_number and not existing_tool.get('factory_number'):
+                existing_tool['factory_number'] = factory_number
+        else:
+            result['measurement_tools'].append({
+                'name': tool, 'factory_number': factory_number, 'quantity': 1,
+                'source': 'verification_or_calibration',
+            })
+        document = {
+            'tool': tool,
+            'number': number_match.group(1).strip('.,;') if number_match else '',
+            'date': date_match.group(1) if date_match else '',
+            'valid_until': valid_match.group(1) if valid_match else '',
+            'factory_number': factory_number,
+            'type': kind,
+            'source': 'verification_or_calibration',
+        }
+        # A source without a certificate number or date is not proof for the SI row.
+        if document['number'] or document['date']:
+            target = result['calibration_documents'] if kind == 'Калибровка' else result['verification_documents']
+            signature = tuple(_spk_si_norm(document.get(key)) for key in ('tool', 'number', 'date', 'factory_number'))
+            if not any(signature == tuple(_spk_si_norm(row.get(key)) for key in ('tool', 'number', 'date', 'factory_number')) for row in target):
+                target.append(document)
+    return result
+
+
+def _merge_spk_si_evidence(spk: dict, evidence: dict) -> dict:
+    """Merge deterministic certificate facts with model-extracted SPK data."""
+    merged = dict(spk or {})
+    tools = [dict(item) for item in (merged.get('measurement_tools') or []) if isinstance(item, dict)]
+    for evidence_tool in evidence.get('measurement_tools') or []:
+        existing = _spk_si_match_tool(tools, evidence_tool)
+        if existing:
+            for key in ('factory_number', 'quantity'):
+                if evidence_tool.get(key) and not existing.get(key):
+                    existing[key] = evidence_tool[key]
+        else:
+            tools.append(dict(evidence_tool))
+    merged['measurement_tools'] = tools
+    for key in ('verification_documents', 'calibration_documents'):
+        docs = [dict(item) for item in (merged.get(key) or []) if isinstance(item, dict)]
+        for evidence_doc in evidence.get(key) or []:
+            signature = tuple(_spk_si_norm(evidence_doc.get(field)) for field in ('tool', 'number', 'date', 'factory_number'))
+            if not any(signature == tuple(_spk_si_norm(item.get(field)) for field in ('tool', 'number', 'date', 'factory_number')) for item in docs):
+                docs.append(dict(evidence_doc))
+        merged[key] = docs
+    return merged
 
 
 def _single_visual_as_zip(file_bytes, filename):
@@ -2955,11 +3086,15 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             print(f"  ⚠️ Не удалось объединить структурированные Формы 1–5: {merge_error}")
     final_text = result or '[Архив: читаемых данных не найдено]'
     copy_list_tools = _extract_spk_tools_from_copy_list(final_text)
-    if copy_list_tools:
-        structured_data['spk'] = {
-            **(structured_data.get('spk') or {}),
-            'measurement_tools': copy_list_tools,
-        }
+    si_evidence = _extract_spk_si_evidence(final_text)
+    if copy_list_tools or any(si_evidence.values()):
+        spk_data = _merge_spk_si_evidence(structured_data.get('spk') or {}, si_evidence)
+        # The mandatory copy list is the baseline. Certificate facts may enrich it,
+        # but must never remove instruments that have no current calibration.
+        for tool in copy_list_tools:
+            if not _spk_si_match_tool(spk_data['measurement_tools'], tool):
+                spk_data['measurement_tools'].append(tool)
+        structured_data['spk'] = spk_data
     if str(product) in ('spk_stroy', 'spk_bisp'):
         summary_staff = _extract_spk_staff_from_person_summaries(final_text)
         if summary_staff:

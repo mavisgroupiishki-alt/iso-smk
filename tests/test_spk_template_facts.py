@@ -78,6 +78,23 @@ def test_expert_date_flag_is_removed_after_the_user_supplies_the_date():
     assert not any(item['field'] == 'certification.audit_date' for item in review_items)
 
 
+def test_source_document_errors_do_not_appear_as_technical_package_warnings():
+    _tokens, items = collect_review_tokens_and_items({
+        'source_documents': [{
+            'filename': 'калибровка.pdf',
+            'needs_review': True,
+            'review_reason': 'пустой результат',
+        }],
+        'review_items': [{
+            'field': 'source_documents[0]',
+            'value': 'ТРЕБУЕТ ПРОВЕРКИ ИСТОЧНИКА',
+            'reason': 'пустой результат',
+        }],
+    })
+
+    assert items == []
+
+
 def test_spk_chat_asks_for_missing_facts_before_generation():
     raw = json.dumps({
         'message': 'Карточка обновлена.',
@@ -316,6 +333,23 @@ def test_spk_si_does_not_attach_a_document_for_a_different_factory_number():
     })
 
     assert rows[0]['verification'] == 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
+    assert len(warnings) == 1
+
+
+def test_spk_si_does_not_attach_leveling_staff_certificate_to_level():
+    rows, warnings = _build_real_si_list({
+        'measurement_tools': [
+            {'name': 'Нивелир', 'factory_number': 'Н-1'},
+            {'name': 'Рейка нивелирная', 'factory_number': 'Р-1'},
+        ],
+        'verification_documents': [{
+            'tool': 'Рейка нивелирная', 'factory_number': 'Р-1', 'number': 'П-18', 'date': '01.03.2026',
+        }],
+    })
+    by_name = {row['name']: row for row in rows}
+
+    assert by_name['Нивелир']['verification'] == 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
+    assert by_name['Рейка нивелирная']['verification'] == 'Поверка № П-18 от 01.03.2026'
     assert len(warnings) == 1
 
 

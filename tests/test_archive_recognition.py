@@ -81,6 +81,58 @@ def test_non_visual_file_is_not_repacked_for_the_archive_worker():
     assert worker_name == 'штатное расписание.docx'
 
 
+def test_spk_si_certificate_facts_are_extracted_without_waiting_for_chat_model():
+    source = '''
+--- СИ/Калибровка манометра.pdf ---
+Свидетельство о калибровке № К-123/26 от 19.03.2026
+Средство измерений: Манометр МП3
+Заводской номер: 4512
+Действительно до 19.03.2027
+--- СИ/Поверка линейки.pdf ---
+Свидетельство о поверке № П-925 от 23.03.2026
+Линейка измерительная металлическая
+Зав. № 2224
+'''
+
+    evidence = server._extract_spk_si_evidence(source)
+
+    assert evidence['measurement_tools'] == [
+        {'name': 'Манометр', 'factory_number': '4512', 'quantity': 1, 'source': 'verification_or_calibration'},
+        {'name': 'Линейка измерительная', 'factory_number': '2224', 'quantity': 1, 'source': 'verification_or_calibration'},
+    ]
+    assert evidence['calibration_documents'][0]['number'] == 'К-123/26'
+    assert evidence['calibration_documents'][0]['date'] == '19.03.2026'
+    assert evidence['calibration_documents'][0]['valid_until'] == '19.03.2027'
+    assert evidence['verification_documents'][0]['number'] == 'П-925'
+    assert evidence['verification_documents'][0]['factory_number'] == '2224'
+
+
+def test_spk_si_parser_does_not_treat_a_serial_number_as_certificate_number():
+    source = '''--- СИ/манометр.txt ---
+Манометр. Заводской номер: 4512. Свидетельство о калибровке приложено.
+'''
+
+    evidence = server._extract_spk_si_evidence(source)
+
+    assert evidence['measurement_tools'][0]['factory_number'] == '4512'
+    assert evidence['calibration_documents'] == []
+
+
+def test_spk_si_certificate_for_leveling_staff_does_not_match_level_in_merge():
+    source = '''--- СИ/поверка рейки.pdf ---
+Свидетельство о поверке № Р-18 от 01.03.2026. Рейка нивелирная. Зав № 87А.
+'''
+
+    evidence = server._extract_spk_si_evidence(source)
+    merged = server._merge_spk_si_evidence({
+        'measurement_tools': [{'name': 'Нивелир', 'factory_number': 'Н-1'}],
+    }, evidence)
+
+    assert merged['measurement_tools'][0]['name'] == 'Нивелир'
+    assert merged['measurement_tools'][1]['name'] == 'Рейка нивелирная'
+    assert merged['measurement_tools'][1]['factory_number'] == '87А'
+
+
 def test_rar_scans_reach_the_pdf_and_image_recognition_path(monkeypatch):
     seen = []
     monkeypatch.setattr(server, '_rar_to_zip_bytes', lambda *_: _zip_with_scans())
