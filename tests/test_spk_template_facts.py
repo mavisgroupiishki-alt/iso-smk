@@ -271,6 +271,27 @@ def test_spk_person_summaries_become_structured_staff_without_losing_documents()
     }]
 
 
+def test_spk_person_summary_accepts_dot_numbering_and_multiline_diplomas():
+    archive_text = '''
+1. Гринкевич Вадим Николаевич
+Должность/роль для СПК: Директор
+Образование:
+- Диплом АБ № 12345, БНТУ, промышленное строительство
+- Диплом СВ № 67890, БГТУ, менеджмент
+Трудовая книжка и вкладыши: ТК № 7654321
+ПЕРИОДЫ РАБОТЫ:
+- 01.01.2010 — по настоящее время | ООО «Тест» | директор
+'''
+
+    staff = server._extract_spk_staff_from_person_summaries(archive_text)
+
+    assert staff[0]['fio'] == 'Гринкевич Вадим Николаевич'
+    assert [item['full_text'] for item in staff[0]['diplomas']] == [
+        'Диплом АБ № 12345, БНТУ, промышленное строительство',
+        'Диплом СВ № 67890, БГТУ, менеджмент',
+    ]
+
+
 def test_spk_si_includes_copy_list_tools_without_inventing_verification():
     source = 'СВЕДЕНИЯ ПО ИНСТРУМЕНТАМ: Нивелир; Рейка нивелирная; Теодолит'
     rows, warnings = _build_real_si_list({

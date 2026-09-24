@@ -2322,8 +2322,11 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
     guessing document fields that are not explicit in the summary.
     """
     value = str(text or '').replace('\r\n', '\n')
+    # The reconciliation prompt asks for ``1) ФИО``, but the model sometimes
+    # returns ``1. ФИО``. Both are the same card, and rejecting the latter loses
+    # every diploma while orders and labour-book text remain visible elsewhere.
     card_re = re.compile(
-        r'(?ms)^\s*\d+\)\s*(?P<fio>[^\n]+)\n(?P<body>.*?)(?=^\s*\d+\)\s*[^\n]+\n|\Z)'
+        r'(?ms)^\s*\d+[.)]\s*(?P<fio>[^\n]+)\n(?P<body>.*?)(?=^\s*\d+[.)]\s*[^\n]+\n|\Z)'
     )
     people = []
     seen = set()
@@ -2339,14 +2342,21 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
             r'(?im)^\s*(?:должность|роль)(?:\s*/\s*роль)?\s*(?:для\s+спк)?\s*:\s*(.+)$',
             body,
         )
-        diploma_match = re.search(r'(?im)^\s*дипломы?\s*:\s*(.+)$', body)
+        diploma_match = re.search(
+            r'(?ims)^\s*(?:дипломы?|образование)\s*:?\s*(.+?)\s*'
+            r'(?=^\s*(?:трудов\w*\s+книжк\w*|периоды?\s+работы|аттестаты?|паспорт|неуверенн)\b|\Z)',
+            body,
+        )
         workbook_match = re.search(
             r'(?im)^\s*трудов(?:ая|ые)\s+книжк[аи].*?:\s*(.+)$', body,
         )
         diplomas = []
         if diploma_match:
-            for raw in diploma_match.group(1).split(';'):
-                full_text = re.sub(r'\s+', ' ', raw).strip(' ,.;')
+            diploma_text = diploma_match.group(1)
+            # A multi-line model answer often uses bullets. Preserve the exact
+            # recognized wording, but split it into separate diploma records.
+            for raw in re.split(r'\s*;\s*|\n\s*(?:[-•]|\d+[.)])\s*', diploma_text):
+                full_text = re.sub(r'\s+', ' ', raw).strip(' ,.;-')
                 if full_text and full_text.casefold() not in ('не найдено', 'нет'):
                     diplomas.append({'full_text': full_text})
         workbooks = []
