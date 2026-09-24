@@ -3684,6 +3684,26 @@ async function aiReadJsonResponse(response, purpose = 'file') {
   return data;
 }
 
+async function aiStartArchiveUpload(formData) {
+  // A proxy can leave a multipart request pending without ever returning a
+  // response.  Do not let the document specialist wait indefinitely or mistake
+  // that transport problem for slow OCR.
+  const controller = new AbortController();
+  const uploadTimeout = setTimeout(() => controller.abort(), 120000);
+  try {
+    return await fetch('/api/extract-archive-async', {
+      method: 'POST', body: formData, signal: controller.signal
+    }).then(response => aiReadJsonResponse(response, 'file'));
+  } catch(err) {
+    if(err && err.name === 'AbortError') {
+      throw new Error('Файл не был передан на обработку за 2 минуты. Разделите PDF на части или повторите загрузку.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(uploadTimeout);
+  }
+}
+
 function aiFileReadError(value) {
   const text = String(value || '').trim();
   const low = text.toLowerCase();
@@ -3770,10 +3790,11 @@ async function aiReadArchiveAsync(file, productHint = '') {
   // а ФОТО внутри теперь тоже распознаются через vision (раньше пропускались молча).
   // Не блокирует один HTTP-запрос — можно грузить архивы гораздо крупнее.
   const progressMsgId = 'archive-prog-' + Date.now();
-  aiAddMsg('ai', `⏳ Разбираю архив «${file.name}»...`, null, progressMsgId);
+  const ext = file.name.split('.').pop().toLowerCase();
+  const isArchive = ext === 'zip' || ext === 'rar';
+  aiAddMsg('ai', `⏳ ${isArchive ? 'Загружаю архив' : 'Загружаю документ'} «${file.name}»...`, null, progressMsgId);
 
   let uploadFile = file;
-  const ext = file.name.split('.').pop().toLowerCase();
   // Сжимаем фото внутри ДО отправки — иначе тело запроса может вообще не долететь
   // до сервера (Render отклоняет слишком большие запросы ещё на своей стороне, без
   // объяснений — это выглядит как "Unexpected token '<'"). RAR так сжать не можем
@@ -3796,12 +3817,12 @@ async function aiReadArchiveAsync(file, productHint = '') {
     const formData = new FormData();
     formData.append('file', uploadFile);
     formData.append('product', productHint || aiCurrentData?.certification?.standard || 'all');
+    aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: загружаю ${(uploadFile.size / 1024 / 1024).toFixed(1)} МБ...`);
     let startResp;
     let queuePolls = 0;
     const MAX_QUEUE_POLLS = 400; // the same 20-minute ceiling as task polling below
     while(queuePolls < MAX_QUEUE_POLLS) {
-      startResp = await fetch('/api/extract-archive-async', {method:'POST', body: formData})
-        .then(response => aiReadJsonResponse(response, 'file'));
+      startResp = await aiStartArchiveUpload(formData);
       if(startResp.success || !aiArchiveIsBusyError(startResp.error)) break;
       queuePolls++;
       aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ожидаю завершения обработки предыдущего файла...`);
@@ -3833,7 +3854,7 @@ async function aiReadArchiveAsync(file, productHint = '') {
         if(warnings.length) {
           aiUpdateMsg(progressMsgId, `⚠️ «${file.name}» разобран частично. Не прочитано: ${warnings.join(', ')}.`);
         } else {
-          aiUpdateMsg(progressMsgId, `✅ Архив «${file.name}» разобран`);
+          aiUpdateMsg(progressMsgId, `✅ ${isArchive ? 'Архив' : 'Документ'} «${file.name}» разобран`);
         }
         return {name: file.name,
                 content: tr.analysis_text || tr.text || '[Архив: данные не найдены]',

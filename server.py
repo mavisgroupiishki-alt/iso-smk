@@ -1624,7 +1624,8 @@ def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
         return None
 
 
-def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None, max_pages_override=None):
+def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None,
+                   max_pages_override=None, progress_cb=None):
     """Синхронный вызов vision для одного файла (фото/скан). Сначала пробует локальный
     Tesseract OCR (бесплатно, быстро, не зависит от внешнего API) — если он недоступен
     на сервере или не справился (плохой скан/рукопись), падает на внешний vision API
@@ -1678,6 +1679,8 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 "max_tokens": 8000,
                 "messages": [{"role": "user", "content": content_blocks}],
             }
+            if progress_cb:
+                progress_cb(f"Распознаю страницы {first_page}–{last_page} из {len(pages_b64)}")
             print(
                 f"  🔎 vision_extract({filename}): PDF стр. {first_page}-{last_page}/{total_pages}, "
                 f"отправляю {payload_mb:.2f} МБ, жду семафор..."
@@ -1705,6 +1708,8 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                             f"за {elapsed:.1f} сек, {len(text)} символов"
                         )
                         outputs.append(f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + text)
+                        if progress_cb:
+                            progress_cb(f"Прочитаны страницы {first_page}–{last_page} из {len(pages_b64)}")
                         break
                     if attempt == 0:
                         print(f"  ⚠️ vision_extract({filename}): пустой ответ, повторяю только стр. {first_page}-{last_page}")
@@ -2831,6 +2836,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 txt, _retried = vision_extract_with_retry(
                     data, short, api_key,
                     max_pages_override=(2 if str(product) in ('iso', 'suot', 'iso_suot') else None),
+                    progress_cb=lambda message: p(f"{short}: {message}"),
                 )
             else:
                 txt, _retried = vision_extract_with_retry(data, short, api_key)

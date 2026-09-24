@@ -32,18 +32,42 @@ class FakeFormData {
   append() {}
 }
 
+class FakeAbortController {
+  constructor() {
+    this.signal = {
+      aborted: false,
+      listeners: [],
+      addEventListener: (_event, callback) => this.signal.listeners.push(callback),
+    };
+  }
+  abort() {
+    this.signal.aborted = true;
+    this.signal.listeners.forEach(callback => callback());
+  }
+}
+
 const context = {
   console,
   aiAddMsg: () => 'progress-id',
   aiUpdateMsg: (_id, message) => progress.push(message),
   aiCurrentData: {},
   FormData: FakeFormData,
-  setTimeout: callback => callback(),
+  AbortController: FakeAbortController,
+  setTimeout: (callback, ms) => {
+    if (ms >= 120000) {
+      context.uploadTimeout = callback;
+      return 'upload-timeout';
+    }
+    callback();
+    return 'poll-timeout';
+  },
+  clearTimeout: () => {},
 };
 vm.createContext(context);
 vm.runInContext([
   extractFunction('aiReadFile'),
   extractFunction('aiReadJsonResponse'),
+  extractFunction('aiStartArchiveUpload'),
   extractFunction('aiFileReadError'),
   extractFunction('aiArchiveIsBusyError'),
   extractFunction('aiReadArchiveAsync'),
@@ -115,6 +139,20 @@ vm.runInContext([
   } catch (error) {
     if (error.message.includes('Unexpected token') || !error.message.includes('временно не ответил')) {
       throw new Error('an HTML chat response was exposed as a technical JSON error');
+    }
+  }
+
+  context.fetch = async (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), {name: 'AbortError'})));
+  });
+  const stalled = context.aiStartArchiveUpload(new FakeFormData());
+  context.uploadTimeout();
+  try {
+    await stalled;
+    throw new Error('stalled upload should have failed');
+  } catch (error) {
+    if (!error.message.includes('не был передан') || error.message.includes('AbortError')) {
+      throw new Error('a stalled PDF upload did not receive a user-facing timeout message');
     }
   }
   console.log('visual upload frontend: PASS');

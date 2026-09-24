@@ -192,6 +192,28 @@ def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
     assert len(calls) == 2
 
 
+def test_pdf_reports_progress_for_each_recognition_batch(monkeypatch):
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 3)
+    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['a', 'b', 'c'])
+    progress = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': 'Распознано'}}]}
+
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: Response())
+
+    server.vision_extract(b'pdf', 'трудовая.pdf', 'unused', progress_cb=progress.append)
+
+    assert 'Распознаю страницы 1–2 из 3' in progress
+    assert 'Прочитаны страницы 1–2 из 3' in progress
+    assert 'Распознаю страницы 3–3 из 3' in progress
+
+
 def test_rar_converter_preserves_nested_pdf_and_jpg_paths(monkeypatch):
     def fake_extract(command, **_kwargs):
         output_dir = Path(command[command.index('-C') + 1])
