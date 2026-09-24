@@ -5,10 +5,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# libarchive-tools provides bsdtar, which is used for RAR extraction.  Russian
-# Tesseract data keeps the local OCR fallback available for scans in archives.
+# libarchive-tools provides bsdtar for RAR extraction; antiword reads legacy
+# Word .doc files. Russian Tesseract data keeps local OCR available for scans.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libarchive-tools tesseract-ocr tesseract-ocr-rus \
+    && apt-get install -y --no-install-recommends libarchive-tools antiword tesseract-ocr tesseract-ocr-rus \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./

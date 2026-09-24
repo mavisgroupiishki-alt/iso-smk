@@ -89,6 +89,29 @@ def test_non_visual_file_is_not_repacked_for_the_archive_worker():
     assert worker_name == 'штатное расписание.docx'
 
 
+def test_legacy_doc_is_read_with_antiword(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = ('Перечень средств измерений:\n'
+                  '- термометр -50 °С - +50 °С;\n'
+                  '- нивелир;').encode('utf-8')
+        stderr = b''
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Result()
+
+    monkeypatch.setattr(server.subprocess, 'run', fake_run)
+
+    text = server.extract_text_from_file(b'legacy-word-binary', 'Перечень СИ.doc')
+
+    assert 'Перечень средств измерений' in text
+    assert 'нивелир' in text
+    assert calls[0][0][0] == 'antiword'
+
+
 def test_docx_with_only_embedded_scans_uses_vision_in_archive(monkeypatch):
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:

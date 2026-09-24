@@ -1836,7 +1836,29 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
                         text = re.sub(r'\s+', ' ', text).strip()
                         return text[:8000]
             except: pass
-            return '[docx: не удалось прочитать]'
+            if ext == 'doc':
+                # Old Word 97–2003 files are OLE containers, not ZIP/DOCX.  The
+                # standard ``antiword`` utility reads their real text (including
+                # Cyrillic tables) without sending a private document elsewhere.
+                try:
+                    with tempfile.NamedTemporaryFile(prefix='igor-doc-', suffix='.doc') as source:
+                        source.write(file_bytes)
+                        source.flush()
+                        completed = subprocess.run(
+                            ['antiword', '-m', 'UTF-8.txt', source.name],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            timeout=20, check=False,
+                        )
+                    if completed.returncode == 0:
+                        raw = completed.stdout or b''
+                        text = raw.decode('utf-8', errors='replace').strip()
+                        if not _looks_like_real_text(text):
+                            text = raw.decode('cp1251', errors='replace').strip()
+                        if _looks_like_real_text(text):
+                            return text[:8000]
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            return '[Документ Word не удалось прочитать]'
 
         elif ext == 'pdf':
             # BT/ET поток парсер
