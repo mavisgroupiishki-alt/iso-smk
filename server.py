@@ -1358,6 +1358,15 @@ VISION_PROMPT = ("Извлеки весь текст с этого докуме�
                   "документа или даты может привести к отказу в приёме документов государственным органом.\n\n"
                   "Отвечай только извлечёнными данными, без лишних слов.")
 
+SPK_SI_VISION_PROMPT = VISION_PROMPT + (
+    "\n\nЕсли это перечень средств измерений, после текста выведи КАЖДУЮ строку строго так:\n"
+    "СИ | наименование: … | модель: … | заводской номер: … | количество: …\n"
+    "Если это свидетельство о поверке или калибровке, выведи одну строку строго так:\n"
+    "ПОВЕРКА | наименование: … | заводской номер: … | номер: … | дата: ДД.ММ.ГГГГ | действует до: ДД.ММ.ГГГГ\n"
+    "или КАЛИБРОВКА | наименование: … | заводской номер: … | номер: … | дата: ДД.ММ.ГГГГ | действует до: ДД.ММ.ГГГГ.\n"
+    "Не подменяй неразборчивые цифры догадкой: оставь соответствующее значение пустым."
+)
+
 def _downscale_image(file_bytes, max_dim=1900, quality=82):
     """Уменьшает фото перед отправкой в vision — камера даёт 3-6 МБ на файл,
     а для распознавания текста хватает гораздо меньшего разрешения.
@@ -1627,7 +1636,7 @@ def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
 
 
 def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None,
-                   max_pages_override=None, progress_cb=None):
+                   max_pages_override=None, progress_cb=None, single_page_batches=False):
     """Синхронный вызов vision для одного файла (фото/скан). Сначала пробует локальный
     Tesseract OCR (бесплатно, быстро, не зависит от внешнего API) — если он недоступен
     на сервере или не справился (плохой скан/рукопись), падает на внешний vision API
@@ -1658,7 +1667,10 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         if not pages_b64:
             return '[PDF: страницы не найдены]'
 
-        batch_size = 2
+        # One SI certificate usually occupies one page.  Keeping it in a separate
+        # vision response makes its serial/verification facts unambiguously belong
+        # to that device instead of a neighbouring certificate in the same batch.
+        batch_size = 1 if single_page_batches else 2
         outputs = []
         for batch_start in range(0, len(pages_b64), batch_size):
             batch = pages_b64[batch_start:batch_start + batch_size]
@@ -2831,6 +2843,42 @@ def _spk_si_tool_from_text(text: str) -> str:
     return ''
 
 
+def _is_spk_si_source_path(filename: str) -> bool:
+    """Whether an archive path is a measurement-equipment source for SPK."""
+    value = f' {_spk_si_norm(filename)} '
+    return any(marker in value for marker in (
+        ' си ', ' сиз ', ' средств измер', ' повер', ' калибр', ' измерительн',
+    ))
+
+
+def _spk_si_line_field(line: str, *labels: str) -> str:
+    """Read one labelled value from the machine-readable Vision SI line."""
+    if not labels:
+        return ''
+    pattern = '|'.join(re.escape(label) for label in labels)
+    match = re.search(r'(?:^|\|)\s*(?:' + pattern + r')\s*:\s*([^|]+)', line, re.IGNORECASE)
+    return match.group(1).strip(' .;,') if match else ''
+
+
+def _spk_si_add_tool(result: dict, tool: dict) -> None:
+    existing = _spk_si_match_tool(result['measurement_tools'], tool)
+    if existing:
+        for key in ('model', 'factory_number', 'range', 'quantity'):
+            if tool.get(key) and not existing.get(key):
+                existing[key] = tool[key]
+        return
+    result['measurement_tools'].append(tool)
+
+
+def _spk_si_add_document(result: dict, document: dict) -> None:
+    if not (document.get('number') or document.get('date')):
+        return
+    target = result['calibration_documents'] if document['type'] == 'Калибровка' else result['verification_documents']
+    signature = tuple(_spk_si_norm(document.get(key)) for key in ('tool', 'number', 'date', 'factory_number'))
+    if not any(signature == tuple(_spk_si_norm(row.get(key)) for key in ('tool', 'number', 'date', 'factory_number')) for row in target):
+        target.append(document)
+
+
 def _spk_si_match_tool(items: list, candidate: dict) -> dict | None:
     """Find the same SI row without allowing a different serial number to match."""
     candidate_name = _spk_si_norm(candidate.get('name') or candidate.get('tool'))
@@ -2859,12 +2907,55 @@ def _extract_spk_si_evidence(text: str) -> dict:
     made the SI table lose them even when the PDF had already been read.
     """
     result = {'measurement_tools': [], 'verification_documents': [], 'calibration_documents': []}
-    # Archive extraction puts every file behind this marker. Keeping parsing within
-    # one file prevents a number in a neighbouring certificate pairing with a wrong SI.
-    blocks = re.split(r'(?=^--- .+? ---)', str(text or ''), flags=re.MULTILINE)
+    # Archive extraction puts every file behind this marker.  SPK SI PDFs are read
+    # one page at a time, so split those pages too: each certificate then stays tied
+    # to its own device and cannot be paired with a neighbouring page's serial.
+    file_blocks = re.split(r'(?=^--- .+? ---)', str(text or ''), flags=re.MULTILINE)
+    blocks = []
+    for file_block in file_blocks:
+        blocks.extend(re.split(r'(?=^--- СТРАНИЦ(?:А|Ы)\s+\d)', file_block, flags=re.MULTILINE))
     for block in blocks:
         compact = re.sub(r'\s+', ' ', block.replace('\xa0', ' '))
         lower = compact.lower().replace('ё', 'е')
+        structured_lines = [line.strip() for line in block.splitlines()
+                            if re.match(r'^(?:СИ|ПОВЕРКА|КАЛИБРОВКА)\s*\|', line.strip(), re.IGNORECASE)]
+        if structured_lines:
+            for line in structured_lines:
+                kind_match = re.match(r'^(СИ|ПОВЕРКА|КАЛИБРОВКА)\s*\|', line, re.IGNORECASE)
+                kind = kind_match.group(1).upper() if kind_match else ''
+                name = _spk_si_line_field(line, 'наименование', 'средство измерений')
+                tool = _spk_si_tool_from_text(name)
+                if not tool:
+                    continue
+                factory_number = _spk_si_line_field(line, 'заводской номер', 'серийный номер', 'учетный номер')
+                if kind == 'СИ':
+                    quantity_raw = _spk_si_line_field(line, 'количество')
+                    quantity_match = re.search(r'\d+', quantity_raw)
+                    _spk_si_add_tool(result, {
+                        'name': tool,
+                        'model': _spk_si_line_field(line, 'модель', 'тип'),
+                        'factory_number': factory_number,
+                        'quantity': int(quantity_match.group()) if quantity_match else 1,
+                        'source': 'si_inventory',
+                    })
+                    continue
+                document_type = 'Калибровка' if kind == 'КАЛИБРОВКА' else 'Поверка'
+                _spk_si_add_tool(result, {
+                    'name': tool, 'factory_number': factory_number, 'quantity': 1,
+                    'source': 'verification_or_calibration',
+                })
+                _spk_si_add_document(result, {
+                    'tool': tool,
+                    'number': _spk_si_line_field(line, 'номер', 'номер свидетельства', 'номер сертификата'),
+                    'date': _spk_si_line_field(line, 'дата'),
+                    'valid_until': _spk_si_line_field(line, 'действует до', 'срок действия'),
+                    'factory_number': factory_number,
+                    'type': document_type,
+                    'source': 'verification_or_calibration',
+                })
+            # The labelled form is more reliable than generic regex and should not
+            # be parsed again as prose (which would create a second, weaker record).
+            continue
         if not re.search(r'\b(?:поверк\w*|калибров\w*|свидетельств\w*)', lower):
             continue
         tool = _spk_si_tool_from_text(compact)
@@ -2889,15 +2980,10 @@ def _extract_spk_si_evidence(text: str) -> dict:
             r'([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})', compact, re.IGNORECASE,
         )
         factory_number = factory_match.group(1).strip('.,;') if factory_match else ''
-        existing_tool = _spk_si_match_tool(result['measurement_tools'], {'name': tool, 'factory_number': factory_number})
-        if existing_tool:
-            if factory_number and not existing_tool.get('factory_number'):
-                existing_tool['factory_number'] = factory_number
-        else:
-            result['measurement_tools'].append({
-                'name': tool, 'factory_number': factory_number, 'quantity': 1,
-                'source': 'verification_or_calibration',
-            })
+        _spk_si_add_tool(result, {
+            'name': tool, 'factory_number': factory_number, 'quantity': 1,
+            'source': 'verification_or_calibration',
+        })
         document = {
             'tool': tool,
             'number': number_match.group(1).strip('.,;') if number_match else '',
@@ -2907,12 +2993,7 @@ def _extract_spk_si_evidence(text: str) -> dict:
             'type': kind,
             'source': 'verification_or_calibration',
         }
-        # A source without a certificate number or date is not proof for the SI row.
-        if document['number'] or document['date']:
-            target = result['calibration_documents'] if kind == 'Калибровка' else result['verification_documents']
-            signature = tuple(_spk_si_norm(document.get(key)) for key in ('tool', 'number', 'date', 'factory_number'))
-            if not any(signature == tuple(_spk_si_norm(row.get(key)) for key in ('tool', 'number', 'date', 'factory_number')) for row in target):
-                target.append(document)
+        _spk_si_add_document(result, document)
     return result
 
 
@@ -2923,7 +3004,7 @@ def _merge_spk_si_evidence(spk: dict, evidence: dict) -> dict:
     for evidence_tool in evidence.get('measurement_tools') or []:
         existing = _spk_si_match_tool(tools, evidence_tool)
         if existing:
-            for key in ('factory_number', 'quantity'):
+            for key in ('model', 'factory_number', 'range', 'quantity'):
                 if evidence_tool.get(key) and not existing.get(key):
                     existing[key] = evidence_tool[key]
         else:
@@ -3156,9 +3237,17 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     return (f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n"
                             f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания — "
                             f"пришлите этот документ отдельными фото по 1-2 страницы вместо одного большого PDF]")
+                is_spk_si_source = str(product) in ('spk_stroy', 'spk_bisp') and _is_spk_si_source_path(fixed_name)
                 txt, _retried = vision_extract_with_retry(
                     data, short, api_key,
-                    max_pages_override=(2 if str(product) in ('iso', 'suot', 'iso_suot') else None),
+                    # The SI register can be a single PDF with one inventory page
+                    # followed by a certificate per device.  Eight pages silently
+                    # discarded most of that evidence; use a bounded full register
+                    # read for SPK SI sources only.
+                    max_pages_override=(32 if is_spk_si_source else
+                                        (2 if str(product) in ('iso', 'suot', 'iso_suot') else None)),
+                    prompt_override=(SPK_SI_VISION_PROMPT if is_spk_si_source else None),
+                    single_page_batches=is_spk_si_source,
                     progress_cb=lambda message: p(f"{short}: {message}"),
                 )
             else:

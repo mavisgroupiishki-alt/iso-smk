@@ -226,6 +226,32 @@ def test_spk_si_certificate_facts_are_extracted_without_waiting_for_chat_model()
     assert evidence['verification_documents'][0]['factory_number'] == '2224'
 
 
+def test_spk_si_machine_readable_pages_keep_inventory_and_each_certificate_separate():
+    source = '''
+--- СИ/4.СИЗ.pdf ---
+--- СТРАНИЦА 1 ---
+СИ | наименование: Термометр технический стеклянный | модель: ТЖ-М | заводской номер: 91526 | количество: 1
+СИ | наименование: Влагомер | модель: МГ4-У | заводской номер: 1983 | количество: 1
+--- СТРАНИЦА 2 ---
+ПОВЕРКА | наименование: Термометр технический стеклянный | заводской номер: 91526 | номер: 1-000845170-2026 | дата: 30.08.2026 | действует до: 30.08.2030
+--- СТРАНИЦА 3 ---
+ПОВЕРКА | наименование: Влагомер | заводской номер: 1983 | номер: 1-000842462-2026 | дата: 30.08.2026 | действует до: 30.08.2027
+'''
+
+    evidence = server._extract_spk_si_evidence(source)
+
+    assert evidence['measurement_tools'] == [
+        {'name': 'Термометр', 'model': 'ТЖ-М', 'factory_number': '91526', 'quantity': 1,
+         'source': 'si_inventory'},
+        {'name': 'Влагомер', 'model': 'МГ4-У', 'factory_number': '1983', 'quantity': 1,
+         'source': 'si_inventory'},
+    ]
+    assert [(x['tool'], x['number'], x['factory_number']) for x in evidence['verification_documents']] == [
+        ('Термометр', '1-000845170-2026', '91526'),
+        ('Влагомер', '1-000842462-2026', '1983'),
+    ]
+
+
 def test_spk_si_parser_does_not_treat_a_serial_number_as_certificate_number():
     source = '''--- СИ/манометр.txt ---
 Манометр. Заводской номер: 4512. Свидетельство о калибровке приложено.
@@ -269,6 +295,28 @@ def test_rar_scans_reach_the_pdf_and_image_recognition_path(monkeypatch):
     assert seen == ['свидетельство.pdf', 'трудовая.jpg']
     assert 'распознан свидетельство.pdf' in result['text']
     assert 'распознан трудовая.jpg' in result['text']
+
+
+def test_spk_si_pdf_reads_the_full_register_one_page_at_a_time(monkeypatch):
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr('СИ/4.СИЗ.pdf', b'pdf-scan')
+    calls = []
+    monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)
+    monkeypatch.setattr(server, 'extract_text_from_file', lambda *_args, **_kwargs: '[PDF_SCAN: файл является сканом]')
+
+    def fake_vision(_data, _filename, *_args, **kwargs):
+        calls.append(kwargs)
+        return 'СИ | наименование: Термометр | модель: ТЖ-М | заводской номер: 1 | количество: 1'
+
+    monkeypatch.setattr(server, 'vision_extract', fake_vision)
+
+    server.extract_archive_with_vision(archive.getvalue(), 'СПК.zip', 'unused', product='spk_bisp')
+
+    assert len(calls) == 1
+    assert calls[0]['max_pages_override'] == 32
+    assert calls[0]['prompt_override'] == server.SPK_SI_VISION_PROMPT
+    assert calls[0]['single_page_batches'] is True
 
 
 def test_rar_upload_reports_an_unavailable_extractor(monkeypatch):
