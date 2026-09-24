@@ -167,6 +167,10 @@ def test_legacy_doc_reads_unicode_worddocument_stream_without_system_converter(m
     assert result == text
 
 
+def test_empty_task_error_is_not_presented_as_a_failure():
+    assert server._friendly_public_error('') == ''
+
+
 def test_docx_with_only_embedded_scans_uses_vision_in_archive(monkeypatch):
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:

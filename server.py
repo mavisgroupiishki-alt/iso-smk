@@ -1065,7 +1065,9 @@ def _friendly_public_error(value):
     """Convert internal exceptions to a short non-technical message for UI responses."""
     text = str(value or '').strip()
     if not text:
-        return 'Не удалось выполнить действие. Попробуйте ещё раз.'
+        # A completed task has no error value.  Returning a default message here
+        # made the client display a failure after a successfully generated package.
+        return ''
     low = text.lower().replace('ё', 'е')
     if 'другая генерация' in low or 'already' in low and 'generation' in low:
         return 'Уже формируется другой пакет. Дождитесь его завершения и попробуйте снова.'
