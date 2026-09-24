@@ -3837,7 +3837,10 @@ async function aiReadArchiveAsync(file, productHint = '') {
       return {name: file.name, content: `[${reason}.]`};
     }
     const taskId = startResp.task_id;
-    const MAX_POLLS = 400; // аварийный потолок ~20 минут; ISO/СУОТ теперь обрабатывается в ускоренном режиме
+    // Архив уже обрабатывается на сервере в фоне.  20 минут недостаточно для
+    // RAR с десятками сканов, а прекращение ожидания в браузере не должно
+    // превращать ещё выполняющуюся задачу в ложную ошибку загрузки.
+    const MAX_POLLS = 2400; // 2400 * 3 секунды = 2 часа
     let pollCount = 0;
 
     while(pollCount < MAX_POLLS) {
@@ -3874,8 +3877,8 @@ async function aiReadArchiveAsync(file, productHint = '') {
         return {name: file.name, content: '[Обработка файла прервалась до завершения.]'};
       }
     }
-    aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: превышено время ожидания в браузере. Попробуйте ещё раз — возможно архив слишком большой, разбейте на части поменьше (по 1-2 человека за раз).`);
-    return {name: file.name, content: '[Превышено время ожидания обработки архива]'};
+    aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: обработка ещё не завершилась. Файл продолжает обрабатываться на сервере; не загружайте его повторно, пока не появится результат.`);
+    return {name: file.name, content: '[Обработка архива ещё не завершилась.]'};
   } catch(err) {
     const reason = aiFileReadError(err.message);
     aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${reason}`);
