@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import zipfile
 
 import generator
@@ -54,7 +55,6 @@ def test_spk_bisp_static_templates_use_package_dates_and_never_keep_sample_certi
     assert '05890263.1245-2021' not in combined
 
     assert dates['policy'] in documents[next(name for name in documents if '5 Положение о СПК' in name)]
-    assert dates['goals'] in documents[next(name for name in documents if '6 Паспорт СПК' in name)]
     assert dates['reports'] in documents[next(name for name in documents if '8 Справка СИ' in name)]
     assert dates['policy'] in documents[next(name for name in documents if '5.2 Положение о входном контроле' in name)]
     schedule = documents[next(name for name in documents if 'График поверки СИ' in name)]
@@ -62,7 +62,7 @@ def test_spk_bisp_static_templates_use_package_dates_and_never_keep_sample_certi
     assert 'Уровень электронный' in schedule
     assert 'Теодолит оптический' not in schedule
     assert 'Плотномер динамический Д-51А' not in schedule
-    assert 'ТРЕБУЕТ УТОЧНЕНИЯ: свидетельство о технической компетентности' in documents[next(name for name in documents if '6 Паспорт СПК' in name)]
+    assert not any('Паспорт СПК' in name for name in documents)
 
 
 def test_expert_date_flag_is_removed_after_the_user_supplies_the_date():
@@ -211,6 +211,39 @@ def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
     assert 'ПТУ-500' not in text
     assert 'ПК № 1111111' in text
     assert 'Вкладыш № 2222222' in text
+
+
+def test_spk_bisp_uses_all_technical_staff_and_excludes_director_from_personnel_forms():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    itr = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        {'fio': 'Петров Петр Петрович', 'position': 'Главный инженер', 'trudovye_numbers': ['ТК-1']},
+        {'fio': 'Сидоров Сидор Сидорович', 'position': 'Производитель работ', 'trudovye_numbers': ['ТК-2']},
+        {'fio': 'Кузнецов Кузьма Кузьмич', 'position': 'Мастер', 'trudovye_numbers': ['ТК-3']},
+    ]
+
+    result = generate_spk_package_v2(
+        company, itr, [], dates, generator.select_responsible(itr), variant='spk_bisp',
+        spk_data={'premises': [{'address': 'г. Минск', 'area': '15'}]},
+    )
+    premises_text = _xml_text(_document(result, '1 Условия в производственных помещениях')['bytes'])
+    itr_text = _xml_text(_document(result, '2 Справка ИТР')['bytes'])
+    org_text = _xml_text(_document(result, '3 Организационная структура')['bytes'])
+    org_visible_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', org_text))
+    names = ('Петров Петр Петрович', 'Сидоров Сидор Сидорович', 'Кузнецов Кузьма Кузьмич')
+
+    assert all(name in itr_text for name in names)
+    assert 'Иванов Иван Иванович' not in itr_text
+    assert all(number in itr_text for number in ('ТК-1', 'ТК-2', 'ТК-3'))
+    assert all(name in org_visible_text for name in names)
+    assert '>15<' in premises_text
+    assert '>25<' not in premises_text
+    assert 'Паспорт СПК' not in '\n'.join(doc['name'] for doc in result['docs'])
 
 
 def test_spk_itr_uses_manually_confirmed_bsc_attestation_details():
