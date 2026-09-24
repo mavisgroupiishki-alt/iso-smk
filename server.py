@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ИСО/СМК Генератор с ИИ-оформителем. Запуск: python server.py → http://localhost:8766"""
-import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,hmac,hashlib,secrets,time,requests as req_lib
+import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,hmac,hashlib,secrets,time,struct,requests as req_lib
 import http.server,socketserver
 from pathlib import Path
 from datetime import datetime,timedelta
@@ -1816,6 +1816,46 @@ def _looks_like_real_text(s: str) -> bool:
     return ratio >= 0.85
 
 
+def _extract_legacy_doc_text(file_bytes: bytes) -> str:
+    """Read the common Word 97–2003 text stream without a system binary.
+
+    A large portion of client archives still contains ``.doc`` files.  Render's
+    Python runtime cannot rely on an OS converter being installed, while simple
+    Word documents keep their Unicode text between ``fcMin`` and ``fcMac`` in
+    the ``WordDocument`` OLE stream.  Return an empty string for complex or
+    damaged files so the caller can try the optional external fallback.
+    """
+    try:
+        import io
+        import olefile
+        with olefile.OleFileIO(io.BytesIO(file_bytes)) as document:
+            stream = document.openstream('WordDocument').read()
+        if len(stream) < 0x20:
+            return ''
+        fc_min, fc_max = struct.unpack_from('<II', stream, 0x18)
+        if not (0 <= fc_min < fc_max <= len(stream)):
+            return ''
+        raw = stream[fc_min:fc_max]
+        for encoding in ('utf-16le', 'cp1251'):
+            text = raw.decode(encoding, errors='replace')
+            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', ' ', text)
+            text = re.sub(r'\s+', ' ', text).strip()
+            # Word's own field markers are not printable, although the text
+            # around them is perfectly usable.  A normal Russian document has
+            # a substantial share of Cyrillic letters; this accepts it without
+            # mistaking a single-byte decode of UTF-16 for readable text.
+            letters = [char for char in text if char.isalpha()]
+            cyrillic_share = (
+                sum('А' <= char <= 'я' or char in 'Ёё' for char in letters) / len(letters)
+                if letters else 0
+            )
+            if _looks_like_real_text(text) or cyrillic_share >= 0.2:
+                return text[:8000]
+    except Exception:
+        pass
+    return ''
+
+
 def extract_text_from_file(file_bytes, filename, _depth=0):
     """Рекурсивно читает файлы и архивы внутри архивов (до 3 уровней)"""
     if _depth > 3:
@@ -1837,6 +1877,9 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
                         return text[:8000]
             except: pass
             if ext == 'doc':
+                embedded_text = _extract_legacy_doc_text(file_bytes)
+                if embedded_text:
+                    return embedded_text
                 # Old Word 97–2003 files are OLE containers, not ZIP/DOCX.  The
                 # standard ``antiword`` utility reads their real text (including
                 # Cyrillic tables) without sending a private document elsewhere.

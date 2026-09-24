@@ -137,6 +137,36 @@ def test_legacy_doc_retries_antiword_without_an_optional_encoding_map(monkeypatc
     assert calls == [['antiword', '-m', 'UTF-8.txt', calls[0][-1]], ['antiword', calls[0][-1]]]
 
 
+def test_legacy_doc_reads_unicode_worddocument_stream_without_system_converter(monkeypatch):
+    import struct
+
+    text = 'Перечень средств измерений: термометр; нивелир;'
+    encoded = text.encode('utf-16le')
+    stream = bytearray(0x40 + len(encoded))
+    struct.pack_into('<II', stream, 0x18, 0x40, 0x40 + len(encoded))
+    stream[0x40:] = encoded
+
+    class FakeOle:
+        def __init__(self, _source):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def openstream(self, name):
+            assert name == 'WordDocument'
+            return io.BytesIO(stream)
+
+    monkeypatch.setitem(sys.modules, 'olefile', SimpleNamespace(OleFileIO=FakeOle))
+
+    result = server.extract_text_from_file(b'legacy-word-binary', 'Перечень СИ.doc')
+
+    assert result == text
+
+
 def test_docx_with_only_embedded_scans_uses_vision_in_archive(monkeypatch):
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
