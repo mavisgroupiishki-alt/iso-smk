@@ -1358,18 +1358,15 @@ VISION_PROMPT = ("Извлеки весь текст с этого докуме�
                   "документа или даты может привести к отказу в приёме документов государственным органом.\n\n"
                   "Отвечай только извлечёнными данными, без лишних слов.")
 
-SPK_SI_VISION_PROMPT = (
-    "Это документ по средствам измерений для СПК. Не пересказывай документ и не добавляй пояснений. "
-    "Верни только строки строго указанных форматов.\n\n"
-    "Если это перечень средств измерений, выведи КАЖДУЮ строку строго так:\n"
+SPK_SI_VISION_PROMPT = VISION_PROMPT + (
+    "\n\nЕсли это перечень средств измерений, после текста выведи КАЖДУЮ строку строго так:\n"
     "СИ | наименование: … | модель: … | заводской номер: … | количество: …\n"
     "Если это свидетельство о поверке или калибровке, выведи одну строку строго так:\n"
     "ПОВЕРКА | наименование: … | заводской номер: … | номер: … | дата: ДД.ММ.ГГГГ | действует до: ДД.ММ.ГГГГ\n"
     "или КАЛИБРОВКА | наименование: … | заводской номер: … | номер: … | дата: ДД.ММ.ГГГГ | действует до: ДД.ММ.ГГГГ.\n"
     "В поле «дата» обязательно укажи дату самого свидетельства или поверки (не срок действия). "
     "Если на бланке есть только срок действия, дату оставь пустой.\n"
-    "Не подменяй неразборчивые цифры догадкой: оставь соответствующее значение пустым. "
-    "Если прибор или свидетельство не читаются, верни: НЕТ ДАННЫХ."
+    "Не подменяй неразборчивые цифры догадкой: оставь соответствующее значение пустым."
 )
 
 def _downscale_image(file_bytes, max_dim=1900, quality=82):
@@ -1651,8 +1648,6 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     import base64 as _b64, time as _time
     active_prompt = prompt_override or VISION_PROMPT
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-    is_spk_si_prompt = prompt_override == SPK_SI_VISION_PROMPT
-
     # SI certificates require the strict labelled response in
     # ``SPK_SI_VISION_PROMPT``. Plain OCR is useful for ordinary documents but
     # cannot reliably bind a certificate number and date to one instrument.
@@ -1689,21 +1684,17 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
                 for b64 in batch
             ]
-            page_instruction = (
-                "Верни только строки формата СИ, ПОВЕРКА или КАЛИБРОВКА."
-                if is_spk_si_prompt else
-                "Сохраняй каждую запись трудовой книжки отдельно с точными датами; "
-                "не придумывай день или месяц."
-            )
             content_blocks.append({
                 "type": "text",
                 "text": active_prompt +
-                    f"\n\nЭто страницы {first_page}–{last_page} из PDF «{filename}». " + page_instruction
+                    f"\n\nЭто страницы {first_page}–{last_page} из PDF «{filename}». "
+                    "Сохраняй каждую запись трудовой книжки отдельно с точными датами; "
+                    "не придумывай день или месяц."
             })
             payload_mb = sum(len(b) for b in batch) / 1024 / 1024
             vibe_payload = {
                 "model": VIBE_MODEL_VISION,
-                "max_tokens": 1200 if is_spk_si_prompt else 8000,
+                "max_tokens": 8000,
                 "messages": [{"role": "user", "content": content_blocks}],
             }
             if progress_cb:
@@ -2260,7 +2251,12 @@ def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
 def _prefer_person_folder_surname(person_name: str, summary: str) -> str:
     """Keep the user-labelled personal folder authoritative over an unclear scan surname."""
     expected = _person_surname_from_loose_filename(person_name)
-    if not expected:
+    # Shared folders such as «Спецы» or «Персонал» are not a person's surname.
+    # They can contain documents for several employees and must never overwrite a
+    # surname read from an order or diploma.
+    if not expected or expected.casefold() in {
+        'спецы', 'специалисты', 'сотрудники', 'персонал', 'штат', 'итр',
+    }:
         return summary
     card = re.search(
         r'(?im)^(?P<prefix>\s*\d+[.)]\s*(?:фио\s*:\s*)?)(?P<fio>[А-ЯЁ][А-Яа-яЁё-]+(?:\s+[А-ЯЁ][А-Яа-яЁё-]+){1,2})(?:\s*\([^\n]*\))?\s*$',
@@ -2353,7 +2349,10 @@ def _looks_like_person_folder(folder_name, blocks):
     # They often contain certificates mentioning people, passports and dates, so
     # the generic one-word-folder heuristic below must never treat them as a
     # single employee and send the entire calibration register to a person prompt.
-    if normalized in {'си', 'сиз', 'средство измерений', 'средства измерений'}:
+    if normalized in {
+        'си', 'сиз', 'средство измерений', 'средства измерений',
+        'спецы', 'специалисты', 'сотрудники', 'персонал', 'штат', 'итр',
+    }:
         return False
     category_keywords = (
         'оборудован', 'техника', 'машин', 'механизм', 'инструмент', 'оснастк',
@@ -2546,6 +2545,20 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
         # remains in the source text for the operator to verify.
         fio = re.sub(r'\s*\([^)]*\)\s*$', '', fio)
         fio = re.sub(r'\s+', ' ', fio).strip(' -–—')
+        # A shared archive folder can be used as a temporary card label.  If the
+        # reconciled source explicitly says that an order names the employee,
+        # take that surname from the order rather than placing «Спецы» in an
+        # official ITR reference.
+        name_parts = fio.split()
+        if name_parts and name_parts[0].casefold() in {
+            'спецы', 'специалисты', 'сотрудники', 'персонал', 'штат', 'итр',
+        }:
+            order_surname = re.search(
+                r'(?iu)приказ\w*[^\n.]{0,100}?\bуказан\w*\s+([А-ЯЁ][А-Яа-яЁё-]+)',
+                body,
+            )
+            if order_surname:
+                fio = ' '.join([order_surname.group(1), *name_parts[1:]])
         if fio.isupper():
             fio = fio.title()
         fio_key = re.sub(r'[^а-яa-z0-9]+', '', fio.lower().replace('ё', 'е'))

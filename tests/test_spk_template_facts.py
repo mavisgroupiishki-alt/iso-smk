@@ -462,6 +462,22 @@ def test_spk_person_summary_keeps_numbered_diplomas_inside_one_card():
 def test_spk_si_folder_is_never_reconciled_as_one_person():
     assert not server._looks_like_person_folder('СИ', ['паспорт поверки', 'свидетельство'])
     assert not server._looks_like_person_folder('СИЗ', ['паспорт поверки', 'свидетельство'])
+    assert not server._looks_like_person_folder('Спецы', ['диплом', 'трудовая книжка'])
+
+
+def test_spk_staff_uses_order_surname_instead_of_shared_folder_name():
+    archive_text = '''
+1) ФИО: Спецы Александр Николаевич
+Должность/роль для СПК: главный инженер
+Дипломы: Диплом № 0186143, инженер
+Трудовая книжка и вкладыши: не найдено
+НЕУВЕРЕННЫЕ ПОЛЯ:
+- Фамилия в дипломе: Шевченко (в папке «Спецы» и приказе указано Зенченко)
+'''
+
+    staff = server._extract_spk_staff_from_person_summaries(archive_text)
+
+    assert staff[0]['fio'] == 'Зенченко Александр Николаевич'
 
 
 def test_spk_si_includes_copy_list_tools_without_inventing_verification():

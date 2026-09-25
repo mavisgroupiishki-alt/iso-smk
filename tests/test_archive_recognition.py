@@ -439,7 +439,7 @@ def test_spk_si_prompt_bypasses_plain_tesseract_for_exact_certificate_fields(mon
 
     assert local_ocr_calls == []
     assert len(vision_calls) == 1
-    assert payloads[0]['max_tokens'] == 1200
+    assert payloads[0]['max_tokens'] == 8000
     assert '1-000845170-2026' in text
 
 
