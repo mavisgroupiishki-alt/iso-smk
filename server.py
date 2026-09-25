@@ -1792,8 +1792,16 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     elapsed = _time.time() - t0
                     if attempt == 0:
                         print(f"  ⏱️ vision_extract({filename}): таймаут стр. {first_page}-{last_page} через {elapsed:.1f} сек, повторяю только эти страницы")
+                        if progress_cb:
+                            progress_cb(
+                                f"Страницы {first_page}–{last_page} читаются дольше обычного; повторяю только их"
+                            )
                         continue
                     print(f"  ⏱️ vision_extract({filename}): повторный таймаут стр. {first_page}-{last_page}")
+                    if progress_cb:
+                        progress_cb(
+                            f"Страницы {first_page}–{last_page} не удалось прочитать за две попытки"
+                        )
                     return batch_start, (
                         f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
                         "[Не удалось прочитать страницы PDF: распознавание не завершилось вовремя.]"
@@ -1802,8 +1810,16 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     elapsed = _time.time() - t0
                     if attempt == 0:
                         print(f"  ❌ vision_extract({filename}): ошибка стр. {first_page}-{last_page} через {elapsed:.1f} сек — {type(e).__name__}: {e}; повторяю только эти страницы")
+                        if progress_cb:
+                            progress_cb(
+                                f"Страницы {first_page}–{last_page} не прочитались с первой попытки; повторяю только их"
+                            )
                         continue
                     print(f"  ❌ vision_extract({filename}): повторная ошибка стр. {first_page}-{last_page} — {type(e).__name__}: {e}")
+                    if progress_cb:
+                        progress_cb(
+                            f"Страницы {first_page}–{last_page} не удалось прочитать за две попытки"
+                        )
                     return batch_start, (
                         f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
                         "[Не удалось прочитать страницы PDF: распознавание временно недоступно.]"

@@ -695,10 +695,12 @@ def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
 
     monkeypatch.setattr(server.req_lib, 'post', fake_post)
 
-    text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused')
+    progress = []
+    text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused', progress_cb=progress.append)
 
     assert text.count('Распознанный текст') == 1
     assert len(calls) == 2
+    assert any('повторяю только их' in message for message in progress)
 
 
 def test_pdf_reports_progress_for_each_recognition_batch(monkeypatch):
