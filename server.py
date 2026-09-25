@@ -2646,15 +2646,31 @@ def _archive_read_warnings(result_text):
     for path in re.findall(r'^---\s*(.+?)\s*---\s*⚠️\s*(?:ОШИБКА(?: ЧТЕНИЯ)?|ПУСТОЙ РЕЗУЛЬТАТ)',
                            str(result_text or ''), flags=re.M):
         name = str(path).strip()
-        if name and name not in warnings:
+        if name and not name.upper().startswith('СТРАНИЦ') and name not in warnings:
             warnings.append(name)
     # Keep the client truthful even if a legacy path produced an error body
     # without the header marker.  The body is still a known, user-safe reason
     # (for example an oversized scanned PDF), not a parser exception.
     for path, body in _archive_document_blocks(result_text):
         name = str(path).strip()
-        if name and _is_extraction_error_text(body) and name not in warnings:
+        if (name and not name.upper().startswith('СТРАНИЦ')
+                and _is_extraction_error_text(body) and name not in warnings):
             warnings.append(name)
+    # A long PDF contains nested ``СТРАНИЦЫ`` headings.  Those are not files and
+    # used to leak into the UI as a cryptic warning instead of naming the actual
+    # document that needs attention.
+    current_file = ''
+    for line in str(result_text or '').splitlines():
+        header = re.match(r'^---\s*(.+?)\s*---(?:\s*⚠️.*)?$', line)
+        if header:
+            candidate = header.group(1).strip()
+            if not candidate.upper().startswith('СТРАНИЦ'):
+                current_file = candidate
+            continue
+        if ('не удалось прочитать страницы pdf' in line.casefold()
+                or 'распознавание не завершилось вовремя' in line.casefold()):
+            if current_file and current_file not in warnings:
+                warnings.append(current_file)
     return warnings[:8]
 
 
@@ -2697,8 +2713,7 @@ def _compact_archive_summary(result_text):
             staff_rows += len(re.findall(r'^\s*\d+\s*\|', block, flags=re.M))
 
     review = []
-    explicit_errors = re.findall(r'^---\s*(.+?)\s*---[^\n]*⚠️\s*(?:ОШИБКА|ОШИБКА ЧТЕНИЯ)', text, flags=re.M)
-    for path in explicit_errors[:5]:
+    for path in _archive_read_warnings(text)[:5]:
         review.append(f'не удалось надёжно прочитать: {path.strip()}')
 
     # Detect a common and dangerous conflict: a surname in the certificate file

@@ -278,6 +278,16 @@ def test_spk_si_certificate_for_leveling_staff_does_not_match_level_in_merge():
     assert merged['measurement_tools'][1]['factory_number'] == '87А'
 
 
+def test_archive_warning_names_parent_pdf_not_internal_page_heading():
+    text = '''--- СИ/4.СИЗ.pdf ---
+--- СТРАНИЦЫ 9-9 ---
+[Не удалось прочитать страницы PDF: распознавание не завершилось вовремя.]
+'''
+
+    assert server._archive_read_warnings(text) == ['СИ/4.СИЗ.pdf']
+    assert 'СИ/4.СИЗ.pdf' in server._compact_archive_summary(text)
+
+
 def test_rar_scans_reach_the_pdf_and_image_recognition_path(monkeypatch):
     seen = []
     monkeypatch.setattr(server, '_rar_to_zip_bytes', lambda *_: _zip_with_scans())
