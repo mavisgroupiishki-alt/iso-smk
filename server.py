@@ -1615,12 +1615,24 @@ def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
             total_pages = _pdf_total_pages(file_bytes)
             pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
             texts = []
+            unreadable_pages = []
             for page_index, b64 in enumerate(pages_b64, start=1):
                 img = Image.open(_io5.BytesIO(base64.b64decode(b64)))
                 t = _tesseract_ocr_image(img)
                 if t:
                     texts.append(f'--- СТРАНИЦА {page_index} ---\n{t}')
+                else:
+                    unreadable_pages.append(page_index)
             if not texts:
+                return None
+            # A partial local result is not safe for personnel records or SI
+            # certificates: the missing page can contain the only diploma or the
+            # certificate number. Let Vision read the document in that case.
+            if unreadable_pages:
+                print(
+                    f"  ℹ️ Tesseract OCR: в {filename} не прочитал страницы "
+                    f"{', '.join(map(str, unreadable_pages))}; передаю файл на точное распознавание"
+                )
                 return None
             if total_pages > len(pages_b64):
                 texts.append(
@@ -1648,12 +1660,17 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     import base64 as _b64, time as _time
     active_prompt = prompt_override or VISION_PROMPT
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-    # SI certificates require the strict labelled response in
-    # ``SPK_SI_VISION_PROMPT``. Plain OCR is useful for ordinary documents but
-    # cannot reliably bind a certificate number and date to one instrument.
-    if prompt_override is None and ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf'):
+    if ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf'):
         tesseract_text = _try_tesseract_first(file_bytes, filename, max_pages_override=max_pages_override)
-        if tesseract_text:
+        # A raw OCR result is enough for ordinary documents. For SPK SI we use
+        # it only when every certificate fact can be deterministically checked:
+        # this keeps the local, fast path without ever replacing a number/date
+        # with a guess. Ambiguous scans still go through the exact Vision path.
+        local_result_is_safe = (
+            prompt_override is None or
+            (prompt_override == SPK_SI_VISION_PROMPT and _spk_si_tesseract_result_is_complete(tesseract_text))
+        )
+        if tesseract_text and local_result_is_safe:
             print(f"  ✅ vision_extract({filename}): прочитано локальным Tesseract OCR, "
                   f"{len(tesseract_text)} символов — в vision API не ходили")
             return tesseract_text
@@ -3131,6 +3148,40 @@ def _spk_si_tool_from_text(text: str) -> str:
         if re.search(pattern, value, re.IGNORECASE):
             return name
     return ''
+
+
+def _spk_si_tesseract_result_is_complete(text: str | None) -> bool:
+    """Whether local OCR is safe to use for SPK SI certificates.
+
+    Tesseract is much faster than the visual model, but a partly recognised
+    certificate must not make its number/date disappear. A local result is
+    accepted only when each page mentioning verification/calibration contains a
+    recognisable tool plus a certificate number and date. Inventory-only pages
+    remain valid because their rows are taken from the approved copy list.
+    """
+    value = str(text or '')
+    if not value.strip():
+        return False
+    pages = re.split(r'(?=^--- СТРАНИЦА\s+\d+\s+---)', value, flags=re.MULTILINE)
+    saw_certificate = False
+    for page in pages:
+        compact = re.sub(r'\s+', ' ', page.replace('\xa0', ' '))
+        lower = compact.lower().replace('ё', 'е')
+        if not re.search(r'\b(?:поверк\w*|калибров\w*|свидетельств\w*)', lower):
+            continue
+        saw_certificate = True
+        has_tool = bool(_spk_si_tool_from_text(compact))
+        has_number = bool(re.search(
+            r'(?:поверк\w*|калибров\w*|свидетельств\w*|сертификат\w*)[^№#]{0,100}[№#]\s*'
+            r'[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80}', compact, re.IGNORECASE,
+        ))
+        has_date = bool(re.search(
+            r'(?:\bот\b|дата)\s*[:№#]?\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}',
+            compact, re.IGNORECASE,
+        ))
+        if not (has_tool and has_number and has_date):
+            return False
+    return saw_certificate
 
 
 def _is_spk_si_source_path(filename: str) -> bool:

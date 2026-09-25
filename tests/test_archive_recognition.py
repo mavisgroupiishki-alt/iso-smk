@@ -417,9 +417,15 @@ def test_spk_si_pdf_reads_the_full_register_one_page_at_a_time(monkeypatch):
     assert calls[0]['single_page_batches'] is True
 
 
-def test_spk_si_prompt_bypasses_plain_tesseract_for_exact_certificate_fields(monkeypatch):
+def test_spk_si_prompt_uses_complete_local_ocr_for_exact_certificate_fields(monkeypatch):
     local_ocr_calls, vision_calls = [], []
-    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: local_ocr_calls.append(True) or 'обычный OCR текст')
+    monkeypatch.setattr(
+        server, '_try_tesseract_first',
+        lambda *_args, **_kwargs: local_ocr_calls.append(True) or (
+            '--- СТРАНИЦА 1 ---\nТермометр. Свидетельство о поверке № '
+            '1-000845170-2026 от 30.08.2026 действует до 30.08.2030'
+        ),
+    )
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 1)
     monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['aGVsbG8='])
 
@@ -437,10 +443,31 @@ def test_spk_si_prompt_bypasses_plain_tesseract_for_exact_certificate_fields(mon
     text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused', prompt_override=server.SPK_SI_VISION_PROMPT,
                                  single_page_batches=True)
 
-    assert local_ocr_calls == []
-    assert len(vision_calls) == 1
-    assert payloads[0]['max_tokens'] == 8000
+    assert local_ocr_calls == [True]
+    assert vision_calls == []
+    assert payloads == []
     assert '1-000845170-2026' in text
+
+
+def test_spk_si_prompt_sends_ambiguous_local_ocr_to_vision(monkeypatch):
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: 'обычный OCR текст')
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 1)
+    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['aGVsbG8='])
+
+    class Response:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {'choices': [{'message': {'content': 'ПОВЕРКА | номер: 123'}}]}
+
+    calls = []
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: calls.append(True) or Response())
+
+    text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused', prompt_override=server.SPK_SI_VISION_PROMPT,
+                                 single_page_batches=True)
+
+    assert calls == [True]
+    assert 'ПОВЕРКА | номер: 123' in text
 
 
 def test_spk_si_image_uses_complete_response_budget(monkeypatch):
