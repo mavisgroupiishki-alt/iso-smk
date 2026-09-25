@@ -263,6 +263,14 @@ def test_spk_si_parser_does_not_treat_a_serial_number_as_certificate_number():
     assert evidence['calibration_documents'] == []
 
 
+def test_spk_si_parser_rejects_ocr_prose_as_factory_number():
+    evidence = server._extract_spk_si_evidence(
+        'ПОВЕРКА | наименование: Клин для контроля зазоров | заводской номер: проверяются | номер: 1-25 | дата: 01.01.2026'
+    )
+
+    assert evidence['measurement_tools'][0]['factory_number'] == ''
+
+
 def test_spk_si_certificate_for_leveling_staff_does_not_match_level_in_merge():
     source = '''--- СИ/поверка рейки.pdf ---
 Свидетельство о поверке № Р-18 от 01.03.2026. Рейка нивелирная. Зав № 87А.

@@ -3085,6 +3085,20 @@ def _spk_si_line_field(line: str, *labels: str) -> str:
     return match.group(1).strip(' .;,') if match else ''
 
 
+def _spk_si_factory_number(value: str) -> str:
+    """Keep only plausible serial/account numbers; never place prose in the SI table."""
+    number = re.sub(r'\s+', ' ', str(value or '')).strip(' .;,')
+    folded = number.casefold().replace('ё', 'е')
+    if not number or any(marker in folded for marker in ('уточн', 'провер', 'не указан', 'отсутств')):
+        return ''
+    # Serials normally contain a digit. A one- or two-letter mark can still be
+    # legitimate (for example «Б»), but a long ordinary word is OCR residue.
+    letters_only = re.sub(r'[^A-Za-zА-Яа-яЁё]', '', number)
+    if not re.search(r'\d', number) and len(letters_only) > 2:
+        return ''
+    return number
+
+
 def _spk_si_add_tool(result: dict, tool: dict) -> None:
     existing = _spk_si_match_tool(result['measurement_tools'], tool)
     if existing:
@@ -3156,7 +3170,9 @@ def _extract_spk_si_evidence(text: str) -> dict:
                 tool = _spk_si_tool_from_text(name)
                 if not tool:
                     continue
-                factory_number = _spk_si_line_field(line, 'заводской номер', 'серийный номер', 'учетный номер')
+                factory_number = _spk_si_factory_number(_spk_si_line_field(
+                    line, 'заводской номер', 'серийный номер', 'учетный номер',
+                ))
                 if kind == 'СИ':
                     quantity_raw = _spk_si_line_field(line, 'количество')
                     quantity_match = re.search(r'\d+', quantity_raw)
@@ -3208,7 +3224,7 @@ def _extract_spk_si_evidence(text: str) -> dict:
             r'(?:заводск\w*|серийн\w*|учетн\w*|зав(?:одск\w*)?\.?)\s*(?:номер|№|#)?\s*[:№#]?\s*'
             r'([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})', compact, re.IGNORECASE,
         )
-        factory_number = factory_match.group(1).strip('.,;') if factory_match else ''
+        factory_number = _spk_si_factory_number(factory_match.group(1) if factory_match else '')
         _spk_si_add_tool(result, {
             'name': tool, 'factory_number': factory_number, 'quantity': 1,
             'source': 'verification_or_calibration',
