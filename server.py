@@ -2867,11 +2867,23 @@ def _extract_spk_diplomas_from_named_sources(text: str) -> list:
             continue
         fields = []
         for label in ('Номер документа', 'Номер диплома', 'Регистрационный номер', 'Организация',
-                      'Специальность', 'Присвоенная квалификация', 'Должности / Квалификации', 'Дата выдачи'):
+                      'Специальность', 'Присвоенная квалификация', 'Квалификация',
+                      'Должности / Квалификации', 'Дата выдачи'):
             value = re.search(rf'(?im)^\s*(?:[-•*]\s*)?{re.escape(label)}\s*:\s*(.+)$', plain_block)
             if value:
                 cleaned_value = re.sub(r'\s+', ' ', value.group(1)).strip()
                 fields.append(f'{label}: {cleaned_value}')
+        for label, pattern in (
+            ('Номер диплома', r'(?im)^\s*(?:[-•*]\s*)?диплом\s*№\s*(.+)$'),
+            ('Регистрационный номер', r'(?im)^\s*(?:[-•*]\s*)?регистрационн\w*\s*№\s*(.+)$'),
+            ('Организация', r'(?im)^\s*организац\w*(?:\s*\([^)]*\))?\s*:\s*(.+)$'),
+        ):
+            value = re.search(pattern, plain_block)
+            if value:
+                cleaned_value = re.sub(r'\s+', ' ', value.group(1)).strip()
+                rendered = f'{label}: {cleaned_value}'
+                if rendered not in fields:
+                    fields.append(rendered)
         if not fields:
             continue
         rows.append({
