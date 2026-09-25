@@ -2855,18 +2855,20 @@ def _extract_spk_diplomas_from_named_sources(text: str) -> list:
     """Attach a diploma in a shared archive folder only to its named holder."""
     rows = []
     for _path, block in _archive_document_blocks(str(text or '')):
-        lower = block.lower().replace('ё', 'е')
+        plain_block = re.sub(r'[*`]', '', block)
+        lower = plain_block.lower().replace('ё', 'е')
         if 'диплом' not in lower:
             continue
         holder = re.search(
             r'(?im)^\s*(?:кому\s+выдан\s*\(фио\)|фио)\s*:\s*'
-            r'([А-ЯЁ][А-Яа-яЁё-]+(?:\s+[А-ЯЁ][А-Яа-яЁё-]+){2})', block,
+            r'([А-ЯЁ][А-Яа-яЁё-]+(?:\s+[А-ЯЁ][А-Яа-яЁё-]+){2})', plain_block,
         )
         if not holder:
             continue
         fields = []
-        for label in ('Номер документа', 'Организация', 'Специальность', 'Присвоенная квалификация', 'Дата выдачи'):
-            value = re.search(rf'(?im)^\s*{re.escape(label)}\s*:\s*(.+)$', block)
+        for label in ('Номер документа', 'Номер диплома', 'Регистрационный номер', 'Организация',
+                      'Специальность', 'Присвоенная квалификация', 'Должности / Квалификации', 'Дата выдачи'):
+            value = re.search(rf'(?im)^\s*(?:[-•*]\s*)?{re.escape(label)}\s*:\s*(.+)$', plain_block)
             if value:
                 cleaned_value = re.sub(r'\s+', ' ', value.group(1)).strip()
                 fields.append(f'{label}: {cleaned_value}')

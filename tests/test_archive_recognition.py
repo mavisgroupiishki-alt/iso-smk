@@ -597,6 +597,23 @@ def test_spk_named_diploma_in_shared_folder_is_attached_to_appointed_person():
     assert 'техник-электрик' in staff[0]['diplomas'][0]['full_text']
 
 
+def test_spk_named_diploma_accepts_markdown_labels_from_vision():
+    source = '''
+--- Клиент/Спецы/photo.jpg ---
+**ФИО:** Зенченко Александр Николаевич
+**Должности / Квалификации:** техник-электрик
+**Номера документов:**
+* Номер диплома: А № 0186143
+* Регистрационный номер: 1150
+'''
+
+    rows = server._extract_spk_diplomas_from_named_sources(source)
+
+    assert rows[0]['fio'] == 'Зенченко Александр Николаевич'
+    assert 'А № 0186143' in rows[0]['diplomas'][0]['full_text']
+    assert 'техник-электрик' in rows[0]['diplomas'][0]['full_text']
+
+
 def test_phone_gallery_overlay_retries_with_document_only_prompt(monkeypatch):
     calls = []
 
