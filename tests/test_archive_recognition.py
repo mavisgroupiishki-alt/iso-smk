@@ -429,13 +429,17 @@ def test_spk_si_prompt_bypasses_plain_tesseract_for_exact_certificate_fields(mon
         def json(self):
             return {'choices': [{'message': {'content': 'ПОВЕРКА | наименование: Термометр | заводской номер: 91526 | номер: 1-000845170-2026 | дата: 30.08.2026 | действует до: 30.08.2030'}}]}
 
-    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: vision_calls.append(True) or Response())
+    payloads = []
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: (
+        payloads.append(_kwargs['json']) or vision_calls.append(True) or Response()
+    ))
 
     text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused', prompt_override=server.SPK_SI_VISION_PROMPT,
                                  single_page_batches=True)
 
     assert local_ocr_calls == []
     assert len(vision_calls) == 1
+    assert payloads[0]['max_tokens'] == 1200
     assert '1-000845170-2026' in text
 
 
