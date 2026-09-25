@@ -614,6 +614,23 @@ def test_spk_named_diploma_accepts_markdown_labels_from_vision():
     assert 'техник-электрик' in rows[0]['diplomas'][0]['full_text']
 
 
+def test_spk_diploma_holder_in_dative_case_merges_with_hiring_order():
+    order = [{'fio': 'Зенченко Александр Николаевич', 'position': 'главный инженер'}]
+    diploma = [{
+        'fio': 'Зенченко Александру Николаевичу',
+        'diplomas': [{'full_text': 'Диплом № 0186143'}],
+    }]
+
+    staff = server._merge_spk_staff_rows(order, diploma)
+
+    assert len(staff) == 1
+    assert staff[0]['fio'] == 'Зенченко Александр Николаевич'
+    assert staff[0]['diplomas'] == [{'full_text': 'Диплом № 0186143'}]
+    assert not server._spk_staff_same_person(
+        'Зенченко Александр Николаевич', 'Евневич Александру Николаевичу',
+    )
+
+
 def test_phone_gallery_overlay_retries_with_document_only_prompt(monkeypatch):
     calls = []
 

@@ -2899,6 +2899,21 @@ def _spk_staff_key(fio: str) -> str:
     return re.sub(r'[^а-яa-z0-9]+', '', str(fio or '').lower().replace('ё', 'е'))
 
 
+def _spk_staff_same_person(first: str, second: str) -> bool:
+    """Match the same full name when a diploma uses the dative case."""
+    left = re.findall(r'[А-ЯЁа-яё-]+', str(first or '').replace('ё', 'е').lower())
+    right = re.findall(r'[А-ЯЁа-яё-]+', str(second or '').replace('ё', 'е').lower())
+    if len(left) < 3 or len(right) < 3 or left[0] != right[0]:
+        return False
+    for expected, observed in zip(left[1:3], right[1:3]):
+        if expected == observed:
+            continue
+        shorter, longer = sorted((expected, observed), key=len)
+        if len(shorter) < 4 or not longer.startswith(shorter):
+            return False
+    return True
+
+
 def _merge_spk_staff_rows(*sources: list) -> list:
     """Merge a person's folder facts with their appointment order facts."""
     merged, positions = [], {}
@@ -2909,11 +2924,18 @@ def _merge_spk_staff_rows(*sources: list) -> list:
             key = _spk_staff_key(row.get('fio'))
             if not key:
                 continue
-            if key not in positions:
+            existing_index = positions.get(key)
+            if existing_index is None:
+                existing_index = next((
+                    index for index, candidate in enumerate(merged)
+                    if _spk_staff_same_person(candidate.get('fio', ''), row.get('fio', ''))
+                ), None)
+            if existing_index is None:
                 positions[key] = len(merged)
                 merged.append(dict(row))
                 continue
-            current = merged[positions[key]]
+            positions[key] = existing_index
+            current = merged[existing_index]
             for field in ('position', 'is_worker', 'employment_type'):
                 if row.get(field) not in ('', None, False):
                     current[field] = row[field]
