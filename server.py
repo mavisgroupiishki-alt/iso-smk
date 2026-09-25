@@ -1657,11 +1657,31 @@ def _tesseract_ocr_image(pil_image):
     _os.environ['TESSDATA_PREFIX'] = data_dir
     text = pytesseract.image_to_string(pil_image, lang='rus+eng', config='--tessdata-dir "%s"' % data_dir)
     text = text.strip()
-    if len(text) < 15:
-        return None  # почти ничего не нашёл — вероятно скан плохого качества или рукопись
-    if not _looks_like_real_text(text):
-        return None  # похоже на мусор, а не реальный текст
+    if not _tesseract_text_is_usable(text):
+        return None
     return text
+
+
+def _tesseract_text_is_usable(text: str) -> bool:
+    """Reject short plausible-looking OCR noise before it hides a document."""
+    value = str(text or '').strip()
+    if len(value) < 15:
+        return False
+    if not _looks_like_real_text(value):
+        return False
+    # A phone screenshot can yield a few distorted Cyrillic fragments that pass
+    # the character-ratio check. For a short result require at least one common
+    # document marker; otherwise Vision gets the cropped source on the retry.
+    if len(value) < 220:
+        normalized = value.lower().replace('ё', 'е')
+        markers = (
+            'диплом', 'трудов', 'свидетельств', 'паспорт', 'приказ',
+            'удостоверен', 'дата', 'номер', 'организац', 'общество',
+            'специальност', 'квалификац', 'министерств', 'республика',
+        )
+        if not any(marker in normalized for marker in markers):
+            return False
+    return True
 
 
 def _tesseract_pdf_pages(file_bytes, filename, max_pages_override=None, progress_cb=None):

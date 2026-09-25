@@ -594,6 +594,14 @@ def test_phone_gallery_overlay_retries_with_document_only_prompt(monkeypatch):
     assert 'Игнорируй интерфейс телефона' in calls[1][1]['prompt_override']
 
 
+def test_tesseract_rejects_short_plausible_looking_photo_noise():
+    noise = 'лыиЛОМ, ууу СЕ рибта. П Вавтратовиско / 7 заФ ТОАУ фенениен Вкр реглго. 9 гелоуй ам 7170'
+    document = 'ДИПЛОМ № 0186143. Настоящий диплом выдан Александру Николаевичу. Специальность: электротехническая.'
+
+    assert not server._tesseract_text_is_usable(noise)
+    assert server._tesseract_text_is_usable(document)
+
+
 def test_spk_si_retries_only_an_ambiguous_page_in_the_correct_orientation(monkeypatch):
     calls = []
 
