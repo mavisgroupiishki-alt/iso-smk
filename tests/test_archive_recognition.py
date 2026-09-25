@@ -507,7 +507,8 @@ def test_spk_si_image_uses_complete_response_budget(monkeypatch):
 def test_spk_si_pages_are_requested_independently_and_returned_in_page_order(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 2)
     monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['cGFnZTE=', 'cGFnZTI='])
-    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: type('Response', (), {
+    calls = []
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: calls.append(kwargs) or type('Response', (), {
         'raise_for_status': lambda self: None,
         'json': lambda self: {'choices': [{'message': {'content': next(
             block['image_url']['url'].rsplit(',', 1)[-1]
@@ -521,6 +522,7 @@ def test_spk_si_pages_are_requested_independently_and_returned_in_page_order(mon
     assert '--- СТРАНИЦЫ 1-1 ---\ncGFnZTE=' in text
     assert '--- СТРАНИЦЫ 2-2 ---\ncGFnZTI=' in text
     assert text.index('СТРАНИЦЫ 1-1') < text.index('СТРАНИЦЫ 2-2')
+    assert {call['timeout'] for call in calls} == {70}
 
 
 def test_short_pdf_page_groups_can_run_in_parallel_without_changing_order(monkeypatch):

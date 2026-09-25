@@ -1595,7 +1595,7 @@ def _tesseract_ocr_image(pil_image):
     return text
 
 
-def _tesseract_pdf_pages(file_bytes, filename, max_pages_override=None):
+def _tesseract_pdf_pages(file_bytes, filename, max_pages_override=None, progress_cb=None):
     """Render a PDF once and return local OCR for each page when available.
 
     Callers can keep a good local page and send only the unreadable or ambiguous
@@ -1612,7 +1612,9 @@ def _tesseract_pdf_pages(file_bytes, filename, max_pages_override=None):
         total_pages = _pdf_total_pages(file_bytes)
         pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
         texts = []
-        for b64 in pages_b64:
+        for index, b64 in enumerate(pages_b64, 1):
+            if progress_cb:
+                progress_cb(f"Локально читаю страницу {index}/{len(pages_b64)}")
             img = Image.open(_io5.BytesIO(base64.b64decode(b64)))
             texts.append(_tesseract_ocr_image(img))
         return total_pages, pages_b64, texts
@@ -1682,7 +1684,10 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # Keep every locally verified certificate page and ask Vision only for
         # pages that Tesseract could not prove. This avoids a single faint scan
         # making the complete SI register wait for twenty external calls.
-        local_spk_si_pages = _tesseract_pdf_pages(file_bytes, filename, max_pages_override)
+        local_spk_si_pages = _tesseract_pdf_pages(
+            file_bytes, filename, max_pages_override,
+            progress_cb=progress_cb,
+        )
         if local_spk_si_pages:
             _, _, page_texts = local_spk_si_pages
             for index, page_text in enumerate(page_texts):
@@ -1720,6 +1725,10 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # vision response makes its serial/verification facts unambiguously belong
         # to that device instead of a neighbouring certificate in the same batch.
         batch_size = 1 if single_page_batches else 2
+        # One weak SI page must not keep the complete archive waiting four
+        # minutes (two 120-second attempts).  The local OCR has already had a
+        # chance; the exact fallback gets a bounded two attempts of 70 seconds.
+        vision_timeout = 70 if single_page_batches else 120
         def read_batch(batch_start):
             batch = pages_b64[batch_start:batch_start + batch_size]
             first_page = batch_start + 1
@@ -1755,7 +1764,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                         VIBE_URL,
                         headers={"Content-Type": "application/json", "X-Api-Key": api_key},
                         json=vibe_payload,
-                        timeout=120,
+                        timeout=vision_timeout,
                     )
                     elapsed = _time.time() - t0
                     resp.raise_for_status()
