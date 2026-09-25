@@ -3271,8 +3271,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                             "⚠️ ПУСТОЙ РЕЗУЛЬТАТ"
                         )
                         continue
-                    image_texts = []
-                    for image_index, (image_name, image_bytes) in enumerate(embedded, 1):
+                    def read_embedded_image(image_index, image_name, image_bytes):
                         visual_name = f"{Path(short).stem}_страница_{image_index}{Path(image_name).suffix}"
                         p(f"{short}: читаю вложенное изображение {image_index}/{len(embedded)}")
                         visual_text, _retried = vision_extract_with_retry(
@@ -3280,7 +3279,25 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                             progress_cb=lambda message: p(f"{short}: {message}"),
                         )
                         if visual_text and len(visual_text) > 10:
-                            image_texts.append(f"[Вложенное изображение {image_index}]\n{visual_text}")
+                            return image_index, f"[Вложенное изображение {image_index}]\n{visual_text}"
+                        return image_index, ''
+
+                    # A DOCX often stores consecutive pages of the same scanned
+                    # labour book as separate images. They are independent reads;
+                    # run at most two while the global semaphore keeps the whole
+                    # service within its memory/API limit.
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+                    image_text_by_index = {}
+                    with ThreadPoolExecutor(max_workers=min(2, len(embedded))) as executor:
+                        futures = [
+                            executor.submit(read_embedded_image, index, image_name, image_bytes)
+                            for index, (image_name, image_bytes) in enumerate(embedded, 1)
+                        ]
+                        for future in as_completed(futures):
+                            image_index, image_text = future.result()
+                            if image_text:
+                                image_text_by_index[image_index] = image_text
+                    image_texts = [image_text_by_index[index] for index in sorted(image_text_by_index)]
                     prefix = f"--- {folder + '/' if folder else ''}{short} ---"
                     if image_texts:
                         texts.append(prefix + "\n" + "\n\n".join(image_texts))
