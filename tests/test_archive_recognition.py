@@ -506,6 +506,46 @@ def test_spk_si_local_ocr_accepts_inventory_and_certificate_without_issue_date()
     assert evidence['verification_documents'][0]['date'] == ''
 
 
+def test_spk_si_local_ocr_accepts_supporting_attestation_without_turning_it_into_verification():
+    attestation = (
+        'АТТЕСТАТ № 3512-4126 от 7 августа 2026 г.\n'
+        'Рейка контрольная с длиной рабочей поверхности 3001 мм\n'
+        'Срок действия аттестата до 7 августа 2027 г.'
+    )
+    protocol = (
+        'ПРОТОКОЛ ИЗМЕРЕНИЙ № 628-4126\n'
+        'Клиновой шаблон для контроля зазоров № 340\n'
+        'Дата измерений 24.08.2026 г.'
+    )
+
+    assert server._spk_si_tesseract_result_is_complete(attestation)
+    assert server._spk_si_tesseract_result_is_complete(protocol)
+    assert server._extract_spk_si_evidence(attestation)['verification_documents'] == []
+
+
+def test_spk_si_retries_only_an_ambiguous_page_in_the_correct_orientation(monkeypatch):
+    calls = []
+
+    class Image:
+        def rotate(self, degrees, expand):
+            calls.append((degrees, expand))
+            return f'rotated-{degrees}'
+
+    monkeypatch.setattr(
+        server,
+        '_tesseract_ocr_image',
+        lambda image: 'неразборчиво' if image == 'rotated-90' else (
+            'Свидетельство о поверке № 7-2026\nТермометр\nЗаводской номер 1'
+            if image == 'rotated-270' else None
+        ),
+    )
+
+    text = server._spk_si_best_local_ocr(Image(), 'неразборчиво')
+
+    assert '№ 7-2026' in text
+    assert calls == [(90, True), (270, True)]
+
+
 def test_spk_si_uses_vision_only_for_ambiguous_page(monkeypatch):
     monkeypatch.setattr(
         server, '_tesseract_pdf_pages',

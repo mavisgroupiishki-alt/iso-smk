@@ -1692,8 +1692,21 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             progress_cb=progress_cb,
         )
         if local_spk_si_pages:
-            _, _, page_texts = local_spk_si_pages
+            _, pages_b64, page_texts = local_spk_si_pages
             for index, page_text in enumerate(page_texts):
+                # Some supplier registers arrive as a sideways scanned sheet.
+                # Rotate only pages that did not pass the strict evidence check;
+                # ordinary certificate pages remain one fast local OCR pass.
+                if not _spk_si_tesseract_result_is_complete(page_text):
+                    try:
+                        from PIL import Image
+                        import io as _io_spk
+                        image = Image.open(_io_spk.BytesIO(base64.b64decode(pages_b64[index])))
+                        page_text = _spk_si_best_local_ocr(image, page_text)
+                        page_texts[index] = page_text
+                    except Exception as exc:
+                        print(f"  ℹ️ Tesseract OCR: не удалось проверить поворот страницы {index + 1} "
+                              f"в {filename} ({type(exc).__name__})")
                 marked_page = f'--- СТРАНИЦА {index + 1} ---\n{page_text or ""}'
                 if page_text and _spk_si_tesseract_result_is_complete(marked_page):
                     local_page_outputs[index] = f'--- СТРАНИЦЫ {index + 1}-{index + 1} ---\n{page_text}'
@@ -3246,6 +3259,20 @@ def _spk_si_is_certificate_text(value: str) -> bool:
     ))
 
 
+def _spk_si_is_supporting_measurement_text(value: str) -> bool:
+    """Recognise official SI attachments that are not a verification certificate.
+
+    A BelGIM attestation or measurement protocol proves that the page was read,
+    but it must not be presented as a verification/calibration record in the
+    SPK table.  The approved copy list remains the source of the SI rows.
+    """
+    lower = str(value or '').lower().replace('ё', 'е')
+    return bool(re.search(
+        r'\b(?:аттестат\w*|протокол\s+измерени\w*|квитанц\w*)\b',
+        lower,
+    ))
+
+
 def _spk_si_tesseract_result_is_complete(text: str | None) -> bool:
     """Whether local OCR is safe to use for SPK SI certificates.
 
@@ -3264,10 +3291,18 @@ def _spk_si_tesseract_result_is_complete(text: str | None) -> bool:
     ) if page.strip()]
     saw_certificate = False
     saw_inventory = False
+    saw_supporting_document = False
     for page in pages:
         compact = re.sub(r'\s+', ' ', page.replace('\xa0', ' '))
         lower = compact.lower().replace('ё', 'е')
         if not _spk_si_is_certificate_text(compact):
+            # Attestations, measurement protocols and return receipts are
+            # supporting source pages.  They must be kept as read, but they
+            # cannot silently create a "поверка" row: only an actual
+            # verification/calibration certificate reaches that extractor.
+            if _spk_si_is_supporting_measurement_text(compact):
+                saw_supporting_document = True
+                continue
             inventory_tools = sum(
                 1 for _, pattern in _SPK_COPY_LIST_TOOLS
                 if re.search(pattern, lower, re.IGNORECASE)
@@ -3281,7 +3316,18 @@ def _spk_si_tesseract_result_is_complete(text: str | None) -> bool:
         has_number = bool(_spk_si_certificate_number(compact))
         if not (has_tool and has_number):
             return False
-    return saw_certificate or saw_inventory
+    return saw_certificate or saw_inventory or saw_supporting_document
+
+
+def _spk_si_best_local_ocr(image, original_text: str | None) -> str | None:
+    """Try two rotations only for a page that failed the SPK SI evidence check."""
+    if _spk_si_tesseract_result_is_complete(original_text):
+        return original_text
+    for degrees in (90, 270):
+        candidate = _tesseract_ocr_image(image.rotate(degrees, expand=True))
+        if _spk_si_tesseract_result_is_complete(candidate):
+            return candidate
+    return original_text
 
 
 def _is_spk_si_source_path(filename: str) -> bool:
