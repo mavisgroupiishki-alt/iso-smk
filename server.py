@@ -1636,7 +1636,8 @@ def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
 
 
 def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None,
-                   max_pages_override=None, progress_cb=None, single_page_batches=False):
+                   max_pages_override=None, progress_cb=None, single_page_batches=False,
+                   parallel_page_batches=False):
     """Синхронный вызов vision для одного файла (фото/скан). Сначала пробует локальный
     Tesseract OCR (бесплатно, быстро, не зависит от внешнего API) — если он недоступен
     на сервере или не справился (плохой скан/рукопись), падает на внешний vision API
@@ -1757,11 +1758,11 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     VISION_SEMAPHORE.release()
 
         starts = list(range(0, len(pages_b64), batch_size))
-        # Each SI certificate still has its own request and response. Running two
-        # independent pages at once uses the existing global limit of two Vision
-        # calls, cutting a long certificate register's wall time without ever
-        # mixing its official numbers or dates.
-        if single_page_batches and len(starts) > 1:
+        # Independent page groups can share the two existing Vision slots.  This
+        # is also safe for a short ordinary PDF (for example a four-page labour
+        # book or lease): the groups remain separate in the result and are put
+        # back in page order below.  Long/heavy PDFs stay sequential.
+        if (single_page_batches or parallel_page_batches) and len(starts) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=2) as executor:
                 outputs_by_start = {}
@@ -3351,6 +3352,11 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                                         (2 if str(product) in ('iso', 'suot', 'iso_suot') else None)),
                     prompt_override=(SPK_SI_VISION_PROMPT if is_spk_si_source else None),
                     single_page_batches=is_spk_si_source,
+                    # Four-page scans previously waited for the first pair before
+                    # even submitting the second.  They fit within the same two
+                    # Vision slots as SI pages, while larger PDFs remain serial
+                    # to protect the 512 MB service from image expansion.
+                    parallel_page_batches=(not is_spk_si_source and len(data) <= 8 * 1024 * 1024),
                     progress_cb=lambda message: p(f"{short}: {message}"),
                 )
             else:

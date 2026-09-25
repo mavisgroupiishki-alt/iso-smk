@@ -360,6 +360,25 @@ def test_spk_si_pages_are_requested_independently_and_returned_in_page_order(mon
     assert text.index('СТРАНИЦЫ 1-1') < text.index('СТРАНИЦЫ 2-2')
 
 
+def test_short_pdf_page_groups_can_run_in_parallel_without_changing_order(monkeypatch):
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 4)
+    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['a', 'b', 'c', 'd'])
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: type('Response', (), {
+        'raise_for_status': lambda self: None,
+        'json': lambda self: {'choices': [{'message': {'content': next(
+            block['image_url']['url'].rsplit(',', 1)[-1]
+            for block in kwargs['json']['messages'][0]['content']
+            if block['type'] == 'image_url')}}]},
+    })())
+
+    text = server.vision_extract(b'pdf', 'трудовая.pdf', 'unused', parallel_page_batches=True)
+
+    assert '--- СТРАНИЦЫ 1-2 ---\na' in text
+    assert '--- СТРАНИЦЫ 3-4 ---\nc' in text
+    assert text.index('СТРАНИЦЫ 1-2') < text.index('СТРАНИЦЫ 3-4')
+
+
 def test_spk_si_folder_stays_a_source_block_and_reaches_evidence_parser(monkeypatch):
     texts = [
         '--- Клиент/СИ/реестр.pdf ---\nСИ | наименование: Термометр | модель: ТТЖ-М | заводской номер: 91526 | количество: 1',
