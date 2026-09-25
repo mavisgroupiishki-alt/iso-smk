@@ -1793,7 +1793,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     payload_mb = len(b64_data) / 1024 / 1024
     vibe_payload = {
         "model": VIBE_MODEL_VISION,
-        "max_tokens": 1200 if is_spk_si_prompt else 8000,
+        "max_tokens": 8000,
         "messages": [{
             "role": "user",
             "content": [

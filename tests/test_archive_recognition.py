@@ -443,6 +443,23 @@ def test_spk_si_prompt_bypasses_plain_tesseract_for_exact_certificate_fields(mon
     assert '1-000845170-2026' in text
 
 
+def test_spk_si_image_uses_complete_response_budget(monkeypatch):
+    payloads = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {'choices': [{'message': {'content': 'ПОВЕРКА | номер: 123'}}]}
+
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: payloads.append(kwargs['json']) or Response())
+
+    text = server.vision_extract(b'photo', 'поверка.jpg', 'unused', prompt_override=server.SPK_SI_VISION_PROMPT)
+
+    assert 'номер: 123' in text
+    assert payloads[0]['max_tokens'] == 8000
+
+
 def test_spk_si_pages_are_requested_independently_and_returned_in_page_order(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 2)
     monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['cGFnZTE=', 'cGFnZTI='])
