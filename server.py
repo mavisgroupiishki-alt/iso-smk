@@ -3265,6 +3265,27 @@ def _merge_spk_si_evidence(spk: dict, evidence: dict) -> dict:
     return merged
 
 
+def _merge_spk_copy_list_baseline(spk: dict, copy_list_tools: list) -> dict:
+    """Keep the mandatory SI list and enrich certificate rows with its characteristics."""
+    merged = dict(spk or {})
+    tools = [dict(item) for item in (merged.get('measurement_tools') or []) if isinstance(item, dict)]
+    # The mandatory copy list is the baseline. Certificate facts may enrich it,
+    # but must never remove instruments that have no current calibration.
+    for tool in copy_list_tools or []:
+        existing_tool = _spk_si_match_tool(tools, tool)
+        if existing_tool:
+            # The copy list holds standard characteristics/ranges; a
+            # verification usually holds only serial and validity data.
+            # Keep both sources in one row rather than dropping the range.
+            for key in ('range', 'model', 'quantity'):
+                if tool.get(key) and not existing_tool.get(key):
+                    existing_tool[key] = tool[key]
+        else:
+            tools.append(dict(tool))
+    merged['measurement_tools'] = tools
+    return merged
+
+
 def _single_visual_as_zip(file_bytes, filename):
     """Make one scanned document compatible with the archive worker.
 
@@ -3639,12 +3660,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     si_evidence = _extract_spk_si_evidence(final_text)
     if copy_list_tools or any(si_evidence.values()):
         spk_data = _merge_spk_si_evidence(structured_data.get('spk') or {}, si_evidence)
-        # The mandatory copy list is the baseline. Certificate facts may enrich it,
-        # but must never remove instruments that have no current calibration.
-        for tool in copy_list_tools:
-            if not _spk_si_match_tool(spk_data['measurement_tools'], tool):
-                spk_data['measurement_tools'].append(tool)
-        structured_data['spk'] = spk_data
+        structured_data['spk'] = _merge_spk_copy_list_baseline(spk_data, copy_list_tools)
     if str(product) in ('spk_stroy', 'spk_bisp'):
         summary_staff = _extract_spk_staff_from_person_summaries(final_text)
         # For BISP SPK the director signs the documents but is not a row in the

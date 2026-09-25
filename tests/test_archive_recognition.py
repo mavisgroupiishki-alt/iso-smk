@@ -286,6 +286,26 @@ def test_spk_si_certificate_for_leveling_staff_does_not_match_level_in_merge():
     assert merged['measurement_tools'][1]['factory_number'] == '87А'
 
 
+def test_spk_copy_list_keeps_ranges_for_two_verified_thermometers():
+    evidence = server._extract_spk_si_evidence('''
+ПОВЕРКА | наименование: Термометр | заводской номер: 91526 | номер: 1-1 | дата: 01.01.2026
+ПОВЕРКА | наименование: Термометр | заводской номер: 102 | номер: 1-2 | дата: 02.01.2026
+''')
+    baseline = [
+        {'name': 'Термометр', 'range': 'Диапазон измерений: (-50 +50) °С', 'quantity': 1},
+        {'name': 'Термометр', 'range': 'Диапазон измерений: (0 +200) °С', 'quantity': 1},
+    ]
+
+    merged = server._merge_spk_copy_list_baseline(
+        server._merge_spk_si_evidence({}, evidence), baseline,
+    )
+
+    assert [(item['factory_number'], item['range']) for item in merged['measurement_tools']] == [
+        ('91526', 'Диапазон измерений: (-50 +50) °С'),
+        ('102', 'Диапазон измерений: (0 +200) °С'),
+    ]
+
+
 def test_archive_warning_names_parent_pdf_not_internal_page_heading():
     text = '''--- СИ/4.СИЗ.pdf ---
 --- СТРАНИЦЫ 9-9 ---
