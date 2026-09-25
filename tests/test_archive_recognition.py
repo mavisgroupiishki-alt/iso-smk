@@ -578,6 +578,25 @@ def test_spk_hiring_order_enriches_personal_folder_without_labour_book():
     assert staff[0]['diplomas'] == [{'full_text': 'А № 0083147, Белорусский технический техникум'}]
 
 
+def test_spk_named_diploma_in_shared_folder_is_attached_to_appointed_person():
+    source = '''
+--- Клиент/Спецы/photo.jpg ---
+Тип документа: Диплом
+Номер документа: А № 0186143
+Кому выдан (ФИО): Зенченко Александр Николаевич
+Организация: Молодечненский политехнический техникум
+Специальность: Электротехника
+Присвоенная квалификация: техник-электрик
+'''
+    order = [{'fio': 'Зенченко Александр Николаевич', 'position': 'главный инженер'}]
+
+    staff = server._merge_spk_staff_rows(order, server._extract_spk_diplomas_from_named_sources(source))
+
+    assert len(staff) == 1
+    assert 'А № 0186143' in staff[0]['diplomas'][0]['full_text']
+    assert 'техник-электрик' in staff[0]['diplomas'][0]['full_text']
+
+
 def test_phone_gallery_overlay_retries_with_document_only_prompt(monkeypatch):
     calls = []
 

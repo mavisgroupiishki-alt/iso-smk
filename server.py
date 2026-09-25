@@ -2851,6 +2851,36 @@ def _extract_spk_staff_from_hiring_orders(text: str) -> list:
     return rows
 
 
+def _extract_spk_diplomas_from_named_sources(text: str) -> list:
+    """Attach a diploma in a shared archive folder only to its named holder."""
+    rows = []
+    for _path, block in _archive_document_blocks(str(text or '')):
+        lower = block.lower().replace('ё', 'е')
+        if 'диплом' not in lower:
+            continue
+        holder = re.search(
+            r'(?im)^\s*(?:кому\s+выдан\s*\(фио\)|фио)\s*:\s*'
+            r'([А-ЯЁ][А-Яа-яЁё-]+(?:\s+[А-ЯЁ][А-Яа-яЁё-]+){2})', block,
+        )
+        if not holder:
+            continue
+        fields = []
+        for label in ('Номер документа', 'Организация', 'Специальность', 'Присвоенная квалификация', 'Дата выдачи'):
+            value = re.search(rf'(?im)^\s*{re.escape(label)}\s*:\s*(.+)$', block)
+            if value:
+                cleaned_value = re.sub(r'\s+', ' ', value.group(1)).strip()
+                fields.append(f'{label}: {cleaned_value}')
+        if not fields:
+            continue
+        rows.append({
+            'fio': re.sub(r'\s+', ' ', holder.group(1)).strip(),
+            'diplomas': [{'full_text': 'Диплом. ' + '; '.join(fields)}],
+            'needs_review': False,
+            'source': 'named_diploma_source',
+        })
+    return rows
+
+
 def _spk_staff_key(fio: str) -> str:
     return re.sub(r'[^а-яa-z0-9]+', '', str(fio or '').lower().replace('ё', 'е'))
 
@@ -4139,7 +4169,10 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             person for person in summary_candidates
             if _spk_staff_key(person.get('fio')) in order_keys
         ]
-        summary_staff = _merge_spk_staff_rows(summary_staff, ordered_candidates, order_staff)
+        named_diplomas = _extract_spk_diplomas_from_named_sources(final_text)
+        summary_staff = _merge_spk_staff_rows(
+            summary_staff, ordered_candidates, order_staff, named_diplomas,
+        )
         # For BISP SPK the director signs the documents but is not a row in the
         # ITR reference.  The archive can mention the director in a diploma or
         # order, so exclude only the person explicitly named in the requisites.
