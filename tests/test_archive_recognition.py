@@ -319,6 +319,65 @@ def test_spk_si_pdf_reads_the_full_register_one_page_at_a_time(monkeypatch):
     assert calls[0]['single_page_batches'] is True
 
 
+def test_spk_si_prompt_bypasses_plain_tesseract_for_exact_certificate_fields(monkeypatch):
+    local_ocr_calls, vision_calls = [], []
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: local_ocr_calls.append(True) or 'обычный OCR текст')
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 1)
+    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['aGVsbG8='])
+
+    class Response:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {'choices': [{'message': {'content': 'ПОВЕРКА | наименование: Термометр | заводской номер: 91526 | номер: 1-000845170-2026 | дата: 30.08.2026 | действует до: 30.08.2030'}}]}
+
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: vision_calls.append(True) or Response())
+
+    text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused', prompt_override=server.SPK_SI_VISION_PROMPT,
+                                 single_page_batches=True)
+
+    assert local_ocr_calls == []
+    assert len(vision_calls) == 1
+    assert '1-000845170-2026' in text
+
+
+def test_spk_si_pages_are_requested_independently_and_returned_in_page_order(monkeypatch):
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 2)
+    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['cGFnZTE=', 'cGFnZTI='])
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: type('Response', (), {
+        'raise_for_status': lambda self: None,
+        'json': lambda self: {'choices': [{'message': {'content': next(
+            block['image_url']['url'].rsplit(',', 1)[-1]
+            for block in kwargs['json']['messages'][0]['content']
+            if block['type'] == 'image_url')}}]},
+    })())
+
+    text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused', prompt_override=server.SPK_SI_VISION_PROMPT,
+                                 single_page_batches=True)
+
+    assert '--- СТРАНИЦЫ 1-1 ---\ncGFnZTE=' in text
+    assert '--- СТРАНИЦЫ 2-2 ---\ncGFnZTI=' in text
+    assert text.index('СТРАНИЦЫ 1-1') < text.index('СТРАНИЦЫ 2-2')
+
+
+def test_spk_si_folder_stays_a_source_block_and_reaches_evidence_parser(monkeypatch):
+    texts = [
+        '--- Клиент/СИ/реестр.pdf ---\nСИ | наименование: Термометр | модель: ТТЖ-М | заводской номер: 91526 | количество: 1',
+        '--- Клиент/СИ/поверка.pdf ---\nПОВЕРКА | наименование: Термометр | заводской номер: 91526 | номер: 1-000845170-2026 | дата: 30.08.2026 | действует до: 30.08.2030',
+    ]
+    monkeypatch.setattr(server, '_simple_ai_call', lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('SI folder must not be sent to person reconciliation')))
+
+    result = '\n\n'.join(server._reconcile_all_people(texts, 'unused'))
+    evidence = server._extract_spk_si_evidence(result)
+
+    assert '--- Клиент/СИ/реестр.pdf ---' in result
+    assert evidence['verification_documents'] == [{
+        'tool': 'Термометр', 'number': '1-000845170-2026', 'date': '30.08.2026',
+        'valid_until': '30.08.2030', 'factory_number': '91526', 'type': 'Поверка',
+        'source': 'verification_or_calibration',
+    }]
+
+
 def test_rar_upload_reports_an_unavailable_extractor(monkeypatch):
     monkeypatch.setattr(server, '_rar_to_zip_bytes', lambda *_: None)
 

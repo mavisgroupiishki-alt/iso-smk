@@ -1646,7 +1646,10 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     active_prompt = prompt_override or VISION_PROMPT
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
 
-    if ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf'):
+    # SI certificates require the strict labelled response in
+    # ``SPK_SI_VISION_PROMPT``. Plain OCR is useful for ordinary documents but
+    # cannot reliably bind a certificate number and date to one instrument.
+    if prompt_override is None and ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf'):
         tesseract_text = _try_tesseract_first(file_bytes, filename, max_pages_override=max_pages_override)
         if tesseract_text:
             print(f"  ✅ vision_extract({filename}): прочитано локальным Tesseract OCR, "
@@ -1671,8 +1674,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # vision response makes its serial/verification facts unambiguously belong
         # to that device instead of a neighbouring certificate in the same batch.
         batch_size = 1 if single_page_batches else 2
-        outputs = []
-        for batch_start in range(0, len(pages_b64), batch_size):
+        def read_batch(batch_start):
             batch = pages_b64[batch_start:batch_start + batch_size]
             first_page = batch_start + 1
             last_page = batch_start + len(batch)
@@ -1721,16 +1723,15 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                             f"  ✅ vision_extract({filename}): стр. {first_page}-{last_page} "
                             f"за {elapsed:.1f} сек, {len(text)} символов"
                         )
-                        outputs.append(f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + text)
                         if progress_cb:
                             progress_cb(f"Прочитаны страницы {first_page}–{last_page} из {len(pages_b64)}")
-                        break
+                        return batch_start, f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + text
                     if attempt == 0:
                         print(f"  ⚠️ vision_extract({filename}): пустой ответ, повторяю только стр. {first_page}-{last_page}")
                         continue
-                    outputs.append(
+                    return batch_start, (
                         f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
-                        f"[Не удалось прочитать страницы PDF: распознавание вернуло пустой ответ.]"
+                        "[Не удалось прочитать страницы PDF: распознавание вернуло пустой ответ.]"
                     )
                 except req_lib.exceptions.Timeout:
                     elapsed = _time.time() - t0
@@ -1738,9 +1739,9 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                         print(f"  ⏱️ vision_extract({filename}): таймаут стр. {first_page}-{last_page} через {elapsed:.1f} сек, повторяю только эти страницы")
                         continue
                     print(f"  ⏱️ vision_extract({filename}): повторный таймаут стр. {first_page}-{last_page}")
-                    outputs.append(
+                    return batch_start, (
                         f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
-                        f"[Не удалось прочитать страницы PDF: распознавание не завершилось вовремя.]"
+                        "[Не удалось прочитать страницы PDF: распознавание не завершилось вовремя.]"
                     )
                 except Exception as e:
                     elapsed = _time.time() - t0
@@ -1748,12 +1749,29 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                         print(f"  ❌ vision_extract({filename}): ошибка стр. {first_page}-{last_page} через {elapsed:.1f} сек — {type(e).__name__}: {e}; повторяю только эти страницы")
                         continue
                     print(f"  ❌ vision_extract({filename}): повторная ошибка стр. {first_page}-{last_page} — {type(e).__name__}: {e}")
-                    outputs.append(
+                    return batch_start, (
                         f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
-                        f"[Не удалось прочитать страницы PDF: распознавание временно недоступно.]"
+                        "[Не удалось прочитать страницы PDF: распознавание временно недоступно.]"
                     )
                 finally:
                     VISION_SEMAPHORE.release()
+
+        starts = list(range(0, len(pages_b64), batch_size))
+        # Each SI certificate still has its own request and response. Running two
+        # independent pages at once uses the existing global limit of two Vision
+        # calls, cutting a long certificate register's wall time without ever
+        # mixing its official numbers or dates.
+        if single_page_batches and len(starts) > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                outputs_by_start = {}
+                futures = [executor.submit(read_batch, start) for start in starts]
+                for future in as_completed(futures):
+                    start, output = future.result()
+                    outputs_by_start[start] = output
+            outputs = [outputs_by_start[start] for start in starts]
+        else:
+            outputs = [read_batch(start)[1] for start in starts]
 
         if total_pages > len(pages_b64):
             outputs.append(
@@ -2300,6 +2318,12 @@ def _looks_like_person_folder(folder_name, blocks):
         return False
     leaf = str(folder_name).replace('\\', '/').rstrip('/').split('/')[-1].strip()
     normalized = re.sub(r'^\s*\d+[.)_-]*\s*', '', leaf.lower().replace('ё', 'е'))
+    # ``СИ``/``СИЗ`` are conventional archive folders for measurement equipment.
+    # They often contain certificates mentioning people, passports and dates, so
+    # the generic one-word-folder heuristic below must never treat them as a
+    # single employee and send the entire calibration register to a person prompt.
+    if normalized in {'си', 'сиз', 'средство измерений', 'средства измерений'}:
+        return False
     category_keywords = (
         'оборудован', 'техника', 'машин', 'механизм', 'инструмент', 'оснастк',
         'средств измер', 'поверк', 'калибров', 'лаборатор', 'объект', 'поставщик',
@@ -2465,22 +2489,34 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
     """
     value = str(text or '').replace('\r\n', '\n')
     # Archive source documents can contain ordinary numbered clauses (for example
-    # an аренда agreement).  The reconciler's staff cards start with ``ФИО:``;
-    # when that marker exists, no preceding source-document clause is a person.
-    first_staff_card = re.search(r'(?im)^\s*1[.)]\s*фио\s*:', value)
-    if first_staff_card:
-        value = value[first_staff_card.start():]
-    # The reconciliation prompt asks for ``1) ФИО``, but the model sometimes
-    # returns ``1. ФИО``. Both are the same card, and rejecting the latter loses
-    # every diploma while orders and labour-book text remain visible elsewhere.
+    # an аренда agreement).  Accept only the stable card format emitted by the
+    # person reconciler: it always has both a SPK role and a diplomas line.  The
+    # name may be printed either beside ``ФИО:`` or on the following line.
     card_re = re.compile(
-        r'(?ms)^\s*\d+[.)]\s*(?P<fio>[^\n]+)\n(?P<body>.*?)(?=^\s*\d+[.)]\s*[^\n]+\n|\Z)'
+        r'(?ms)^\s*\d+[.)]\s*(?:'
+        r'фио\s*:\s*(?P<fio_inline>[^\n]+)|'
+        r'фио\s*\n\s*(?P<fio_next>[^\n]+)|'
+        r'(?P<fio_plain>[^\n]+))\n'
+        r'(?P<body>.*?)(?=^\s*\d+[.)]\s*(?:фио\b|(?-i:[А-ЯЁ][А-Яа-яЁё-]+(?:\s+[А-ЯЁ][А-Яа-яЁё-]+){1,2})\s*\n\s*Должность/роль)|\Z)',
+        re.IGNORECASE,
     )
     people = []
     seen = set()
     for match in card_re.finditer(value):
-        fio = re.sub(r'^\s*фио\s*:\s*', '', match.group('fio'), flags=re.I)
+        body = match.group('body')
+        if not (re.search(r'(?im)^\s*должность/роль\s+для\s+спк\s*:', body)
+                and re.search(r'(?im)^\s*(?:дипломы?|образование)\s*:', body)):
+            continue
+        fio = next((match.group(name) for name in ('fio_inline', 'fio_next', 'fio_plain')
+                    if match.group(name)), '')
+        fio = re.sub(r'^\s*фио\s*:\s*', '', fio, flags=re.I)
+        # Reconciliation sometimes appends a note about a conflicting scan to the
+        # FIO itself.  Keep the actual name in the structured card; the full note
+        # remains in the source text for the operator to verify.
+        fio = re.sub(r'\s*\([^)]*\)\s*$', '', fio)
         fio = re.sub(r'\s+', ' ', fio).strip(' -–—')
+        if fio.isupper():
+            fio = fio.title()
         fio_key = re.sub(r'[^а-яa-z0-9]+', '', fio.lower().replace('ё', 'е'))
         name_words = fio.split()
         valid_name_word = re.compile(r'^[А-ЯЁ][а-яё-]+$|^[А-ЯЁ]\.$')
@@ -2492,11 +2528,23 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
                 or not 2 <= len(name_words) <= 3
                 or not all(valid_name_word.fullmatch(word) for word in name_words)):
             continue
-        body = match.group('body')
         position_match = re.search(
             r'(?im)^\s*(?:должность|роль)(?:\s*/\s*роль)?\s*(?:для\s+спк)?\s*:\s*(.+)$',
             body,
         )
+        position = (re.sub(r'\s+', ' ', position_match.group(1)).strip(' .')
+                    if position_match else '')
+        # A card compiled only from a conflicting order and diploma is not a
+        # confirmed specialist.  Do not add it merely because a name occurred in
+        # a shared folder.  A named personal folder may still prove the person
+        # exists while their role needs manual clarification, so retain that card
+        # with an empty role instead of inventing one.
+        if (position.casefold() in ('не найдено', 'нет')
+                and re.search(r'(?im)фио\s+в\s+приказе\s*:', body)):
+            continue
+        needs_review = not position or position.casefold() in ('не найдено', 'нет')
+        if needs_review:
+            position = ''
         diploma_match = re.search(
             r'(?ims)^\s*(?:дипломы?|образование)\s*:?\s*(.+?)\s*'
             r'(?=^\s*(?:трудов\w*\s+книжк\w*|периоды?\s+работы|аттестаты?|паспорт|неуверенн)\b|\Z)',
@@ -2512,6 +2560,7 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
             # recognized wording, but split it into separate diploma records.
             for raw in re.split(r'\s*;\s*|\n\s*(?:[-•]|\d+[.)])\s*', diploma_text):
                 full_text = re.sub(r'\s+', ' ', raw).strip(' ,.;-')
+                full_text = re.sub(r'^\d+[.)]\s*', '', full_text)
                 if full_text and full_text.casefold() not in ('не найдено', 'нет'):
                     diplomas.append({'full_text': full_text})
         workbooks = []
@@ -2522,9 +2571,10 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
                     workbooks.append(number)
         people.append({
             'fio': fio,
-            'position': re.sub(r'\s+', ' ', position_match.group(1)).strip(' .') if position_match else '',
+            'position': position,
             'diplomas': diplomas,
             'trudovye_numbers': workbooks,
+            'needs_review': needs_review,
             'source': 'archive_person_summary',
         })
         seen.add(fio_key)
@@ -2877,7 +2927,7 @@ def _is_spk_si_source_path(filename: str) -> bool:
     """Whether an archive path is a measurement-equipment source for SPK."""
     value = f' {_spk_si_norm(filename)} '
     return any(marker in value for marker in (
-        ' си ', ' сиз ', ' средств измер', ' повер', ' калибр', ' измерительн',
+        ' си ', ' средств измер', ' повер', ' калибр', ' измерительн',
     ))
 
 
@@ -3277,7 +3327,9 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     # The SI register can be a single PDF with one inventory page
                     # followed by a certificate per device.  Eight pages silently
                     # discarded most of that evidence; use a bounded full register
-                    # read for SPK SI sources only.
+                    # read for SPK SI sources only. Certificates remain one page
+                    # per request: mixing two certificates risks assigning an
+                    # official number or date to the neighbouring instrument.
                     max_pages_override=(32 if is_spk_si_source else
                                         (2 if str(product) in ('iso', 'suot', 'iso_suot') else None)),
                     prompt_override=(SPK_SI_VISION_PROMPT if is_spk_si_source else None),

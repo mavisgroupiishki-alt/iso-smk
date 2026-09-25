@@ -1,9 +1,9 @@
 services:
   - type: web
     name: iso-smk-generator
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python server.py"
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     envVars:
       - key: VIBE_API_KEY
         sync: false
