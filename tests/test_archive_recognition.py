@@ -465,6 +465,28 @@ def test_spk_si_prompt_sends_ambiguous_local_ocr_to_vision(monkeypatch):
     assert 'ПОВЕРКА | номер: 123' in text
 
 
+def test_spk_si_fallback_requests_only_structured_facts_with_bounded_response(monkeypatch):
+    """A weak SI page must not spend a minute transcribing a whole form."""
+    monkeypatch.setattr(server, '_tesseract_pdf_pages', lambda *_args, **_kwargs: (1, ['aGVsbG8='], ['неразборчивый скан']))
+    payloads = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {'choices': [{'message': {'content': 'ПОВЕРКА | наименование: Термометр | заводской номер: 1 | номер: 2'}}]}
+
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: payloads.append(kwargs['json']) or Response())
+
+    server.vision_extract(b'pdf', 'поверка.pdf', 'unused', prompt_override=server.SPK_SI_VISION_PROMPT,
+                          single_page_batches=True)
+
+    assert payloads[0]['max_tokens'] == 2000
+    prompt = payloads[0]['messages'][0]['content'][-1]['text']
+    assert 'Извлеки весь текст' not in prompt
+    assert 'Верни только структурированные строки' in prompt
+
+
 def test_spk_si_local_ocr_accepts_inventory_and_certificate_without_issue_date():
     inventory = (
         '--- СТРАНИЦА 1 ---\nКвитанция возврата средств измерений\n'
