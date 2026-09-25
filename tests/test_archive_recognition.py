@@ -418,16 +418,14 @@ def test_spk_si_pdf_reads_the_full_register_one_page_at_a_time(monkeypatch):
 
 
 def test_spk_si_prompt_uses_complete_local_ocr_for_exact_certificate_fields(monkeypatch):
-    local_ocr_calls, vision_calls = [], []
+    vision_calls = []
     monkeypatch.setattr(
-        server, '_try_tesseract_first',
-        lambda *_args, **_kwargs: local_ocr_calls.append(True) or (
-            '--- СТРАНИЦА 1 ---\nТермометр. Свидетельство о поверке № '
+        server, '_tesseract_pdf_pages',
+        lambda *_args, **_kwargs: (1, ['aGVsbG8='], [
+            'Термометр. Свидетельство о поверке № '
             '1-000845170-2026 от 30.08.2026 действует до 30.08.2030'
-        ),
+        ]),
     )
-    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 1)
-    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['aGVsbG8='])
 
     class Response:
         def raise_for_status(self):
@@ -443,16 +441,13 @@ def test_spk_si_prompt_uses_complete_local_ocr_for_exact_certificate_fields(monk
     text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused', prompt_override=server.SPK_SI_VISION_PROMPT,
                                  single_page_batches=True)
 
-    assert local_ocr_calls == [True]
     assert vision_calls == []
     assert payloads == []
     assert '1-000845170-2026' in text
 
 
 def test_spk_si_prompt_sends_ambiguous_local_ocr_to_vision(monkeypatch):
-    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: 'обычный OCR текст')
-    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 1)
-    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['aGVsbG8='])
+    monkeypatch.setattr(server, '_tesseract_pdf_pages', lambda *_args, **_kwargs: (1, ['aGVsbG8='], ['обычный OCR текст']))
 
     class Response:
         def raise_for_status(self):
@@ -468,6 +463,28 @@ def test_spk_si_prompt_sends_ambiguous_local_ocr_to_vision(monkeypatch):
 
     assert calls == [True]
     assert 'ПОВЕРКА | номер: 123' in text
+
+
+def test_spk_si_uses_vision_only_for_ambiguous_page(monkeypatch):
+    monkeypatch.setattr(
+        server, '_tesseract_pdf_pages',
+        lambda *_args, **_kwargs: (2, ['cGFnZTE=', 'cGFnZTI='], [
+            'Термометр. Свидетельство о поверке № 7-2026 от 01.09.2026',
+            'неразборчивый скан',
+        ]),
+    )
+    payloads = []
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: payloads.append(kwargs['json']) or type('Response', (), {
+        'raise_for_status': lambda self: None,
+        'json': lambda self: {'choices': [{'message': {'content': 'ПОВЕРКА | номер: 8-2026'}}]},
+    })())
+
+    text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused', prompt_override=server.SPK_SI_VISION_PROMPT,
+                                 single_page_batches=True)
+
+    assert len(payloads) == 1
+    assert '--- СТРАНИЦЫ 1-1 ---\nТермометр' in text
+    assert '--- СТРАНИЦЫ 2-2 ---\nПОВЕРКА | номер: 8-2026' in text
 
 
 def test_spk_si_image_uses_complete_response_budget(monkeypatch):

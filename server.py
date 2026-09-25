@@ -1595,6 +1595,32 @@ def _tesseract_ocr_image(pil_image):
     return text
 
 
+def _tesseract_pdf_pages(file_bytes, filename, max_pages_override=None):
+    """Render a PDF once and return local OCR for each page when available.
+
+    Callers can keep a good local page and send only the unreadable or ambiguous
+    pages to the visual model. The tuple is ``(total_pages, images, texts)``;
+    ``texts`` has one entry per image and can contain ``None``.
+    """
+    status = _check_tesseract()
+    if not (status['available'] and status['has_rus']):
+        return None
+    try:
+        from PIL import Image
+        import io as _io5
+        max_pages = int(max_pages_override or _pdf_page_limit(filename))
+        total_pages = _pdf_total_pages(file_bytes)
+        pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
+        texts = []
+        for b64 in pages_b64:
+            img = Image.open(_io5.BytesIO(base64.b64decode(b64)))
+            texts.append(_tesseract_ocr_image(img))
+        return total_pages, pages_b64, texts
+    except Exception as e:
+        print(f"  ⚠️ Tesseract OCR упал с ошибкой на {filename} ({type(e).__name__}: {e}) — иду в vision")
+        return None
+
+
 def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
     """Пытается прочитать файл локальным OCR ПЕРЕД тем как идти во внешний vision API.
     Работает только для ПЕЧАТНОГО текста (дипломы/справки/официальные бланки — почти
@@ -1611,29 +1637,19 @@ def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
         if ext == 'pdf' and _is_labour_book_filename(filename):
             return None
         if ext == 'pdf':
-            max_pages = int(max_pages_override or _pdf_page_limit(filename))
-            total_pages = _pdf_total_pages(file_bytes)
-            pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
-            texts = []
-            unreadable_pages = []
-            for page_index, b64 in enumerate(pages_b64, start=1):
-                img = Image.open(_io5.BytesIO(base64.b64decode(b64)))
-                t = _tesseract_ocr_image(img)
-                if t:
-                    texts.append(f'--- СТРАНИЦА {page_index} ---\n{t}')
-                else:
-                    unreadable_pages.append(page_index)
-            if not texts:
+            page_result = _tesseract_pdf_pages(file_bytes, filename, max_pages_override)
+            if not page_result:
                 return None
-            # A partial local result is not safe for personnel records or SI
-            # certificates: the missing page can contain the only diploma or the
-            # certificate number. Let Vision read the document in that case.
-            if unreadable_pages:
-                print(
-                    f"  ℹ️ Tesseract OCR: в {filename} не прочитал страницы "
-                    f"{', '.join(map(str, unreadable_pages))}; передаю файл на точное распознавание"
-                )
+            total_pages, pages_b64, page_texts = page_result
+            if not any(page_texts) or any(not text for text in page_texts):
+                unreadable_pages = [str(index) for index, text in enumerate(page_texts, 1) if not text]
+                if unreadable_pages:
+                    print(
+                        f"  ℹ️ Tesseract OCR: в {filename} не прочитал страницы "
+                        f"{', '.join(unreadable_pages)}; передаю файл на точное распознавание"
+                    )
                 return None
+            texts = [f'--- СТРАНИЦА {index} ---\n{text}' for index, text in enumerate(page_texts, 1)]
             if total_pages > len(pages_b64):
                 texts.append(
                     f'[⚠️ PDF ОБРАБОТАН НЕ ПОЛНОСТЬЮ: распознаны первые {len(pages_b64)} '
@@ -1660,17 +1676,25 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     import base64 as _b64, time as _time
     active_prompt = prompt_override or VISION_PROMPT
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-    if ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf'):
+    local_spk_si_pages = None
+    local_page_outputs = {}
+    if ext == 'pdf' and prompt_override == SPK_SI_VISION_PROMPT:
+        # Keep every locally verified certificate page and ask Vision only for
+        # pages that Tesseract could not prove. This avoids a single faint scan
+        # making the complete SI register wait for twenty external calls.
+        local_spk_si_pages = _tesseract_pdf_pages(file_bytes, filename, max_pages_override)
+        if local_spk_si_pages:
+            _, _, page_texts = local_spk_si_pages
+            for index, page_text in enumerate(page_texts):
+                marked_page = f'--- СТРАНИЦА {index + 1} ---\n{page_text or ""}'
+                if page_text and _spk_si_tesseract_result_is_complete(marked_page):
+                    local_page_outputs[index] = f'--- СТРАНИЦЫ {index + 1}-{index + 1} ---\n{page_text}'
+            if page_texts and len(local_page_outputs) == len(page_texts):
+                print(f"  ✅ vision_extract({filename}): все {len(page_texts)} страницы СИ прочитаны локальным Tesseract OCR")
+                return '\n\n'.join(local_page_outputs[index] for index in range(len(page_texts)))
+    elif ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf'):
         tesseract_text = _try_tesseract_first(file_bytes, filename, max_pages_override=max_pages_override)
-        # A raw OCR result is enough for ordinary documents. For SPK SI we use
-        # it only when every certificate fact can be deterministically checked:
-        # this keeps the local, fast path without ever replacing a number/date
-        # with a guess. Ambiguous scans still go through the exact Vision path.
-        local_result_is_safe = (
-            prompt_override is None or
-            (prompt_override == SPK_SI_VISION_PROMPT and _spk_si_tesseract_result_is_complete(tesseract_text))
-        )
-        if tesseract_text and local_result_is_safe:
+        if tesseract_text:
             print(f"  ✅ vision_extract({filename}): прочитано локальным Tesseract OCR, "
                   f"{len(tesseract_text)} символов — в vision API не ходили")
             return tesseract_text
@@ -1681,8 +1705,11 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # overflow Render memory or the model context.
         max_pages = int(max_pages_override or _pdf_page_limit(filename))
         try:
-            total_pages = _pdf_total_pages(file_bytes)
-            pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
+            if local_spk_si_pages:
+                total_pages, pages_b64, _ = local_spk_si_pages
+            else:
+                total_pages = _pdf_total_pages(file_bytes)
+                pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
         except Exception as e:
             print(f"  ❌ vision_extract({filename}): не удалось конвертировать PDF в изображения — {type(e).__name__}: {e}")
             return '[Не удалось подготовить страницы PDF для распознавания.]'
@@ -1775,7 +1802,8 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 finally:
                     VISION_SEMAPHORE.release()
 
-        starts = list(range(0, len(pages_b64), batch_size))
+        all_starts = list(range(0, len(pages_b64), batch_size))
+        starts = [start for start in all_starts if start not in local_page_outputs]
         # Independent page groups can share the two existing Vision slots.  This
         # is also safe for a short ordinary PDF (for example a four-page labour
         # book or lease): the groups remain separate in the result and are put
@@ -1783,14 +1811,17 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         if (single_page_batches or parallel_page_batches) and len(starts) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=2) as executor:
-                outputs_by_start = {}
+                outputs_by_start = dict(local_page_outputs)
                 futures = [executor.submit(read_batch, start) for start in starts]
                 for future in as_completed(futures):
                     start, output = future.result()
                     outputs_by_start[start] = output
-            outputs = [outputs_by_start[start] for start in starts]
+            outputs = [outputs_by_start[start] for start in all_starts]
         else:
-            outputs = [read_batch(start)[1] for start in starts]
+            outputs_by_start = dict(local_page_outputs)
+            for start in starts:
+                outputs_by_start[start] = read_batch(start)[1]
+            outputs = [outputs_by_start[start] for start in all_starts]
 
         if total_pages > len(pages_b64):
             outputs.append(
