@@ -406,6 +406,34 @@ def test_rar_upload_reports_an_unavailable_extractor(monkeypatch):
     assert 'не удалось открыть' in result['text'].lower()
 
 
+def test_durable_archive_task_can_finish_after_process_restart(monkeypatch, tmp_path):
+    uploads = tmp_path / 'uploads'
+    tasks_dir = tmp_path / 'tasks'
+    uploads.mkdir()
+    tasks_dir.mkdir()
+    task_id = 'recover01'
+    (uploads / f'{task_id}.upload').write_bytes(b'archive')
+    task = {
+        'status': 'running', 'kind': 'archive', 'owner_user_id': 'owner',
+        'filename': 'Белеогрин.rar', 'product': 'spk_bisp',
+        'archive_upload': f'{task_id}.upload', 'progress': [],
+    }
+    monkeypatch.setattr(server, 'ARCHIVE_UPLOAD_DIR', uploads)
+    monkeypatch.setattr(server, 'TASKS_DIR', tasks_dir)
+    monkeypatch.setattr(server, 'TASKS', {task_id: task})
+    monkeypatch.setenv('VIBE_API_KEY', 'test-key')
+    monkeypatch.setattr(server, 'extract_archive_with_vision', lambda data, filename, key, **kwargs: {
+        'text': 'архив прочитан', 'analysis_text': 'анализ', 'summary': 'сводка',
+        'structured_data': {'staff': []},
+    })
+
+    server._run_archive_task(task_id)
+
+    assert server.TASKS[task_id]['status'] == 'done'
+    assert server.TASKS[task_id]['text'] == 'архив прочитан'
+    assert not (uploads / f'{task_id}.upload').exists()
+
+
 def test_visual_ocr_does_not_repeat_a_successful_read(monkeypatch):
     """A normal passport/certificate upload must make one recognition call."""
     calls = []
