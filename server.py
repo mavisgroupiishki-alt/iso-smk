@@ -2579,12 +2579,11 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
                     'не найдено', 'нет', 'не указаны', 'не указана', 'неизвестно',
                 ):
                     workbooks.append(number)
-        # A folder name alone does not prove that a specialist belongs in the
-        # SPK reference.  If the only diploma explicitly names another person,
-        # while no role or labour-book record was found, keep the conflict in
-        # the source text but do not create a false ITR row.
-        if (needs_review and not workbooks
-                and re.search(r'(?is)фио\s+в\s+дипломе.*?(?:друг|другой|не совпада|указан)', body)):
+        # A folder name and a diploma alone do not prove that a person belongs
+        # in the ITR reference. A confirmed specialist must have either an SPK
+        # role or a labour-book number; otherwise the client has no reliable
+        # basis for adding that person to official forms.
+        if needs_review and not workbooks:
             continue
         people.append({
             'fio': fio,
@@ -2715,6 +2714,20 @@ def _compact_archive_summary(result_text):
     review = []
     for path in _archive_read_warnings(text)[:5]:
         review.append(f'не удалось надёжно прочитать: {path.strip()}')
+
+    # A file can be physically read while still lacking a key personnel fact.
+    # Do not tell the operator that everything is fine in that case: the
+    # generated forms would otherwise hide missing labour-book data behind a
+    # misleading green success message.
+    missing_personnel = bool(re.search(
+        r'(?im)^\s*трудов(?:ая|ые)\s+книжк[аи].*?:\s*(?:не найдено|не указано|не указаны|нет)\s*$',
+        text,
+    ))
+    uncertain_scans = 'неуверенные поля:' in text.casefold()
+    if missing_personnel:
+        review.append('не для всех специалистов найден номер трудовой книжки')
+    if uncertain_scans:
+        review.append('в отдельных сканах есть неразборчивые сведения — проверьте выделенные поля в документах')
 
     # Detect a common and dangerous conflict: a surname in the certificate file
     # name differs from the surname printed inside the certificate.
@@ -3012,7 +3025,14 @@ def _extract_spk_tools_from_copy_list(text: str) -> list:
     У такого списка часто нет заводских номеров и поверок. Это не причина терять
     прибор: Справка СИ выводит его с жёлтой отметкой для последующего дополнения.
     """
-    value = str(text or '').replace('\xa0', ' ').lower().replace('ё', 'е')
+    raw_value = str(text or '')
+    # A commercial proposal in the same archive can contain a generic equipment
+    # list. The named «Перечень копий СПК» is the approved client baseline;
+    # reading both documents doubled instruments in the SI reference.
+    named_lists = [body for path, body in _archive_document_blocks(raw_value)
+                   if re.search(r'перечень\s+копи', path, re.IGNORECASE)]
+    value = '\n\n'.join(named_lists) if named_lists else raw_value
+    value = value.replace('\xa0', ' ').lower().replace('ё', 'е')
     anchor = re.search(
         r'(?:перечень\s+коп(?:ий|ии)[\s\S]{0,240})?'
         r'(?:сведени\w*\s+по\s+(?:инструмент|средств\w*\s+измер)'
@@ -3026,6 +3046,10 @@ def _extract_spk_tools_from_copy_list(text: str) -> list:
     list_heading = re.search(r'перечень\s+средств\w*\s+измер', value)
     section_start = list_heading.start() if list_heading else anchor.start()
     section = value[section_start:section_start + 5000]
+    # Some DOC conversions leave the first bullet on the same line as the
+    # heading («Перечень…: - нивелир»). Make it a regular bullet so the first
+    # instrument is not silently dropped.
+    section = re.sub(r'(:)\s*[-–]\s+', r'\1\n- ', section, count=1)
     tools = []
     # The client list is a checklist, not a set: two thermometers with different
     # ranges are two different rows.  Parse its bullets in order and keep each
@@ -3265,12 +3289,20 @@ def _merge_spk_si_evidence(spk: dict, evidence: dict) -> dict:
     return merged
 
 
-def _merge_spk_copy_list_baseline(spk: dict, copy_list_tools: list) -> dict:
-    """Keep the mandatory SI list and enrich certificate rows with its characteristics."""
-    merged = dict(spk or {})
-    tools = [dict(item) for item in (merged.get('measurement_tools') or []) if isinstance(item, dict)]
-    # The mandatory copy list is the baseline. Certificate facts may enrich it,
-    # but must never remove instruments that have no current calibration.
+def _merge_spk_copy_list_baseline(spk: dict, evidence: dict, copy_list_tools: list) -> dict:
+    """Use the approved copy list as SI rows and add only confirmed certificate facts."""
+    # Certificate registers can contain obsolete, duplicate, or OCR-damaged
+    # inventory lines. They confirm a certificate but must not expand the
+    # client's approved list of instruments.
+    merged = _merge_spk_si_evidence(
+        spk or {},
+        {
+            'measurement_tools': [],
+            'verification_documents': (evidence or {}).get('verification_documents') or [],
+            'calibration_documents': (evidence or {}).get('calibration_documents') or [],
+        },
+    )
+    tools = []
     for tool in copy_list_tools or []:
         existing_tool = _spk_si_match_tool(tools, tool)
         if existing_tool:
@@ -3282,6 +3314,22 @@ def _merge_spk_copy_list_baseline(spk: dict, copy_list_tools: list) -> dict:
                     existing_tool[key] = tool[key]
         else:
             tools.append(dict(tool))
+    # Only a verification/calibration record can fill a baseline row. An
+    # unmatched certificate remains available for review but cannot silently
+    # create a new instrument in the reference.
+    certificate_tools = [
+        {'name': item.get('tool'), 'factory_number': item.get('factory_number')}
+        for key in ('verification_documents', 'calibration_documents')
+        for item in (evidence or {}).get(key) or []
+        if item.get('tool')
+    ]
+    for tool in certificate_tools:
+        existing_tool = _spk_si_match_tool(tools, tool)
+        if not existing_tool:
+            continue
+        for key in ('model', 'factory_number', 'quantity'):
+            if tool.get(key) and not existing_tool.get(key):
+                existing_tool[key] = tool[key]
     merged['measurement_tools'] = tools
     return merged
 
@@ -3659,8 +3707,12 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     copy_list_tools = _extract_spk_tools_from_copy_list(final_text)
     si_evidence = _extract_spk_si_evidence(final_text)
     if copy_list_tools or any(si_evidence.values()):
-        spk_data = _merge_spk_si_evidence(structured_data.get('spk') or {}, si_evidence)
-        structured_data['spk'] = _merge_spk_copy_list_baseline(spk_data, copy_list_tools)
+        if copy_list_tools:
+            structured_data['spk'] = _merge_spk_copy_list_baseline(
+                structured_data.get('spk') or {}, si_evidence, copy_list_tools,
+            )
+        else:
+            structured_data['spk'] = _merge_spk_si_evidence(structured_data.get('spk') or {}, si_evidence)
     if str(product) in ('spk_stroy', 'spk_bisp'):
         summary_staff = _extract_spk_staff_from_person_summaries(final_text)
         # For BISP SPK the director signs the documents but is not a row in the

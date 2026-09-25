@@ -345,7 +345,7 @@ def test_spk_person_summary_accepts_dot_numbering_and_multiline_diplomas():
     ]
 
 
-def test_spk_staff_marks_missing_role_and_ignores_placeholder_labour_number():
+def test_spk_staff_omits_person_without_role_or_labour_number():
     archive_text = '''
 1) Луневич Алексей Евневич
 Должность/роль для СПК: не указана
@@ -355,10 +355,7 @@ def test_spk_staff_marks_missing_role_and_ignores_placeholder_labour_number():
 
     staff = server._extract_spk_staff_from_person_summaries(archive_text)
 
-    assert staff[0]['position'] == ''
-    assert staff[0]['needs_review'] is True
-    assert staff[0]['trudovye_numbers'] == []
-    assert staff[0]['diplomas'] == [{'full_text': 'А № 0083147, Витебский педагогический техникум'}]
+    assert staff == []
 
 
 def test_spk_staff_omits_person_when_folder_conflicts_with_only_diploma():

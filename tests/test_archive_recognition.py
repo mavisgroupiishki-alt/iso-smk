@@ -296,14 +296,44 @@ def test_spk_copy_list_keeps_ranges_for_two_verified_thermometers():
         {'name': 'Термометр', 'range': 'Диапазон измерений: (0 +200) °С', 'quantity': 1},
     ]
 
-    merged = server._merge_spk_copy_list_baseline(
-        server._merge_spk_si_evidence({}, evidence), baseline,
-    )
+    merged = server._merge_spk_copy_list_baseline({}, evidence, baseline)
 
     assert [(item['factory_number'], item['range']) for item in merged['measurement_tools']] == [
         ('91526', 'Диапазон измерений: (-50 +50) °С'),
         ('102', 'Диапазон измерений: (0 +200) °С'),
     ]
+
+
+def test_spk_copy_list_is_authoritative_over_extra_ocr_inventory_rows():
+    evidence = server._extract_spk_si_evidence('''
+СИ | наименование: Термометр | заводской номер: 111 | количество: 1
+СИ | наименование: Термометр | заводской номер: 222 | количество: 1
+СИ | наименование: Влагомер | заводской номер: 333 | количество: 1
+ПОВЕРКА | наименование: Термометр | заводской номер: 111 | номер: П-1 | дата: 01.01.2026
+''')
+    baseline = [{'name': 'Термометр', 'range': 'Диапазон измерений: (-50 +50) °С', 'quantity': 1}]
+
+    merged = server._merge_spk_copy_list_baseline({}, evidence, baseline)
+
+    assert merged['measurement_tools'] == [{
+        'name': 'Термометр', 'range': 'Диапазон измерений: (-50 +50) °С',
+        'quantity': 1, 'factory_number': '111',
+    }]
+    assert merged['verification_documents'][0]['number'] == 'П-1'
+
+
+def test_spk_copy_list_prefers_the_named_document_over_generic_proposal():
+    source = '''
+--- Коммерческое предложение.docx ---
+Перечень средств измерения: - термометр -50 °С - +50 °С; - влагомер;
+
+--- Перечень копий СПК.doc ---
+Перечень средств измерения: - нивелир; - рейка нивелирная;
+'''
+
+    tools = server._extract_spk_tools_from_copy_list(source)
+
+    assert [tool['name'] for tool in tools] == ['Нивелир', 'Рейка нивелирная']
 
 
 def test_archive_warning_names_parent_pdf_not_internal_page_heading():
@@ -314,6 +344,23 @@ def test_archive_warning_names_parent_pdf_not_internal_page_heading():
 
     assert server._archive_read_warnings(text) == ['СИ/4.СИЗ.pdf']
     assert 'СИ/4.СИЗ.pdf' in server._compact_archive_summary(text)
+
+
+def test_archive_summary_does_not_claim_success_when_personnel_facts_are_missing():
+    text = '''
+=== 📦 СОСТАВ АРХИВА — ФАЙЛЫ ФИЗИЧЕСКИ НАЙДЕНЫ ===
+- Спецы/трудовая.pdf (30 КБ) — прочитан/передан в анализ
+
+1) Иванов Иван Иванович
+Трудовая книжка и вкладыши: не найдено
+НЕУВЕРЕННЫЕ ПОЛЯ:
+- номер трудовой неразборчив
+'''
+
+    summary = server._compact_archive_summary(text)
+
+    assert 'не для всех специалистов найден номер трудовой книжки' in summary
+    assert 'Критических ошибок чтения не обнаружено.' not in summary
 
 
 def test_rar_scans_reach_the_pdf_and_image_recognition_path(monkeypatch):
