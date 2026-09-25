@@ -3190,38 +3190,71 @@ def _spk_si_tool_from_text(text: str) -> str:
     return ''
 
 
+def _spk_si_certificate_number(text: str) -> str:
+    """Read the actual certificate number, not an unrelated form number."""
+    value = re.sub(r'\s+', ' ', str(text or '').replace('\xa0', ' '))
+    # On Belarusian verification forms an authorisation number often appears
+    # above the certificate. Anchor to the *verification* heading so that it
+    # cannot replace the certificate number in the SI table.
+    match = re.search(
+        r'свидетельств\w*\s+о\s+(?:государственн\w*\s+)?поверк\w*[^№#]{0,220}'
+        r'[№#]\s*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})',
+        value, re.IGNORECASE,
+    )
+    if not match:
+        match = re.search(
+            r'(?:поверк\w*|калибров\w*|свидетельств\w*|сертификат\w*)[^№#]{0,100}'
+            r'[№#]\s*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})',
+            value, re.IGNORECASE,
+        )
+    return match.group(1).strip('.,;') if match else ''
+
+
+def _spk_si_is_certificate_text(value: str) -> bool:
+    """Do not confuse a 'поверочный угольник' with a verification document."""
+    lower = str(value or '').lower().replace('ё', 'е')
+    return bool(re.search(
+        r'\b(?:свидетельств\w*|калибров\w*|государственн\w*\s+поверк\w*'
+        r'|поверк(?:а|и|е|у|ой|ок|ами|ах)?)\b', lower,
+    ))
+
+
 def _spk_si_tesseract_result_is_complete(text: str | None) -> bool:
     """Whether local OCR is safe to use for SPK SI certificates.
 
     Tesseract is much faster than the visual model, but a partly recognised
     certificate must not make its number/date disappear. A local result is
-    accepted only when each page mentioning verification/calibration contains a
-    recognisable tool plus a certificate number and date. Inventory-only pages
-    remain valid because their rows are taken from the approved copy list.
+    accepted only when each certificate page contains a recognisable tool and
+    its certificate number. A date is deliberately optional: many official
+    forms show only the validity date, which must not be invented. Inventory
+    pages are accepted only when they explicitly list several known SI.
     """
     value = str(text or '')
     if not value.strip():
         return False
-    pages = re.split(r'(?=^--- СТРАНИЦА\s+\d+\s+---)', value, flags=re.MULTILINE)
+    pages = [page for page in re.split(
+        r'(?=^--- СТРАНИЦА\s+\d+\s+---)', value, flags=re.MULTILINE,
+    ) if page.strip()]
     saw_certificate = False
+    saw_inventory = False
     for page in pages:
         compact = re.sub(r'\s+', ' ', page.replace('\xa0', ' '))
         lower = compact.lower().replace('ё', 'е')
-        if not re.search(r'\b(?:поверк\w*|калибров\w*|свидетельств\w*)', lower):
-            continue
+        if not _spk_si_is_certificate_text(compact):
+            inventory_tools = sum(
+                1 for _, pattern in _SPK_COPY_LIST_TOOLS
+                if re.search(pattern, lower, re.IGNORECASE)
+            )
+            if inventory_tools >= 2 and re.search(r'средств\w*\s+измер', lower):
+                saw_inventory = True
+                continue
+            return False
         saw_certificate = True
         has_tool = bool(_spk_si_tool_from_text(compact))
-        has_number = bool(re.search(
-            r'(?:поверк\w*|калибров\w*|свидетельств\w*|сертификат\w*)[^№#]{0,100}[№#]\s*'
-            r'[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80}', compact, re.IGNORECASE,
-        ))
-        has_date = bool(re.search(
-            r'(?:\bот\b|дата)\s*[:№#]?\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}',
-            compact, re.IGNORECASE,
-        ))
-        if not (has_tool and has_number and has_date):
+        has_number = bool(_spk_si_certificate_number(compact))
+        if not (has_tool and has_number):
             return False
-    return saw_certificate
+    return saw_certificate or saw_inventory
 
 
 def _is_spk_si_source_path(filename: str) -> bool:
@@ -3357,7 +3390,7 @@ def _extract_spk_si_evidence(text: str) -> dict:
             # The labelled form is more reliable than generic regex and should not
             # be parsed again as prose (which would create a second, weaker record).
             continue
-        if not re.search(r'\b(?:поверк\w*|калибров\w*|свидетельств\w*)', lower):
+        if not _spk_si_is_certificate_text(compact):
             continue
         tool = _spk_si_tool_from_text(compact)
         if not tool:
@@ -3365,10 +3398,7 @@ def _extract_spk_si_evidence(text: str) -> dict:
             # cannot be identified. The operator can then send just that file.
             continue
         kind = 'Калибровка' if re.search(r'\bкалибров\w*', lower) else 'Поверка'
-        number_match = re.search(
-            r'(?:поверк\w*|калибров\w*|свидетельств\w*|сертификат\w*)[^№#]{0,100}[№#]\s*'
-            r'([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})', compact, re.IGNORECASE,
-        )
+        certificate_number = _spk_si_certificate_number(compact)
         date_match = re.search(
             r'(?:\bот\b|дата)\s*[:№#]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})', compact, re.IGNORECASE,
         )
@@ -3387,7 +3417,7 @@ def _extract_spk_si_evidence(text: str) -> dict:
         })
         document = {
             'tool': tool,
-            'number': number_match.group(1).strip('.,;') if number_match else '',
+            'number': certificate_number,
             'date': date_match.group(1) if date_match else '',
             'valid_until': valid_match.group(1) if valid_match else '',
             'factory_number': factory_number,

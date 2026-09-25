@@ -465,6 +465,25 @@ def test_spk_si_prompt_sends_ambiguous_local_ocr_to_vision(monkeypatch):
     assert 'ПОВЕРКА | номер: 123' in text
 
 
+def test_spk_si_local_ocr_accepts_inventory_and_certificate_without_issue_date():
+    inventory = (
+        '--- СТРАНИЦА 1 ---\nКвитанция возврата средств измерений\n'
+        'Термометры жидкостные ТТЖ-М\nМанометр\nРулетка измерительная\n'
+    )
+    certificate = (
+        '--- СТРАНИЦА 2 ---\nСвидетельство об уполномочивании № 1\n'
+        'Свидетельство о государственной поверке средств измерений № 1-000845170-2026\n'
+        'Действительно до 30 августа 2030 г.\nТермометры технические жидкостные ТТЖ-М\n'
+        'Заводской номер 91526'
+    )
+
+    assert server._spk_si_tesseract_result_is_complete(inventory)
+    assert server._spk_si_tesseract_result_is_complete(certificate)
+    evidence = server._extract_spk_si_evidence(certificate)
+    assert evidence['verification_documents'][0]['number'] == '1-000845170-2026'
+    assert evidence['verification_documents'][0]['date'] == ''
+
+
 def test_spk_si_uses_vision_only_for_ambiguous_page(monkeypatch):
     monkeypatch.setattr(
         server, '_tesseract_pdf_pages',
