@@ -2605,7 +2605,7 @@ def _reconcile_all_people(texts, api_key, fast_mode=False):
     return final_parts
 
 
-def _extract_spk_staff_from_person_summaries(text: str) -> list:
+def _extract_spk_staff_from_person_summaries(text: str, include_unconfirmed: bool = False) -> list:
     """Convert existing archive person summaries into safe SPK staff facts.
 
     The reconciliation call already reads each person's scans.  Keeping its
@@ -2721,7 +2721,7 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
         # in the ITR reference. A confirmed specialist must have either an SPK
         # role or a labour-book number; otherwise the client has no reliable
         # basis for adding that person to official forms.
-        if needs_review and not workbooks:
+        if needs_review and not workbooks and not include_unconfirmed:
             continue
         people.append({
             'fio': fio,
@@ -2733,6 +2733,69 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
         })
         seen.add(fio_key)
     return people
+
+
+def _extract_spk_staff_from_hiring_orders(text: str) -> list:
+    """Read current SPK personnel from an explicit hiring order.
+
+    A personal folder may contain only a diploma and passport, while the role is
+    stated in a shared ``Приказы.pdf``.  The order is a direct source of both
+    affiliation and position, so it must not be lost merely because it is not
+    nested under the employee's folder.
+    """
+    rows = []
+    pattern = re.compile(
+        r'(?is)\bпринять\s*:\s*'
+        r'(?P<fio>[А-ЯЁ][А-Яа-яЁё-]+(?:\s+[А-ЯЁ][А-Яа-яЁё-]+){2})\s+'
+        r'на\s+должность\s+(?P<position>.+?)'
+        r'(?=\s+с\s+(?:заключени\w*|\d)|\s*(?:основани\w*\s*:|директор\b))'
+    )
+    for match in pattern.finditer(str(text or '')):
+        fio = re.sub(r'\s+', ' ', match.group('fio')).strip()
+        position = re.sub(r'\s+', ' ', match.group('position')).strip(' .;,–—-')
+        if not position:
+            continue
+        rows.append({
+            'fio': fio,
+            'position': position,
+            'is_worker': False,
+            'needs_review': False,
+            'source': 'hiring_order',
+        })
+    return rows
+
+
+def _spk_staff_key(fio: str) -> str:
+    return re.sub(r'[^а-яa-z0-9]+', '', str(fio or '').lower().replace('ё', 'е'))
+
+
+def _merge_spk_staff_rows(*sources: list) -> list:
+    """Merge a person's folder facts with their appointment order facts."""
+    merged, positions = [], {}
+    for source in sources:
+        for row in source or []:
+            if not isinstance(row, dict) or not row.get('fio'):
+                continue
+            key = _spk_staff_key(row.get('fio'))
+            if not key:
+                continue
+            if key not in positions:
+                positions[key] = len(merged)
+                merged.append(dict(row))
+                continue
+            current = merged[positions[key]]
+            for field in ('position', 'is_worker', 'employment_type'):
+                if row.get(field) not in ('', None, False):
+                    current[field] = row[field]
+            current['needs_review'] = bool(current.get('needs_review')) and bool(row.get('needs_review'))
+            for field in ('diplomas', 'trudovye_numbers'):
+                values = list(current.get(field) or [])
+                for value in row.get(field) or []:
+                    if value not in values:
+                        values.append(value)
+                if values:
+                    current[field] = values
+    return merged
 
 
 def _spk_director_reference(text: str) -> str:
@@ -3367,6 +3430,31 @@ def _spk_si_factory_number(value: str) -> str:
     return number
 
 
+def _spk_si_document_factory_number(block: str, compact: str) -> str:
+    """Read a serial number from common Belarusian verification/calibration forms."""
+    direct = re.search(
+        r'(?:заводск\w*|серийн\w*|учетн\w*|зав(?:одск\w*)?\.?)\s*(?:номер|№|#)?\s*[:№#]?\s*'
+        r'([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})', compact, re.IGNORECASE,
+    )
+    value = _spk_si_factory_number(direct.group(1) if direct else '')
+    # A lone lower-case Cyrillic letter is an OCR fragment, not a serial number.
+    if value and not (len(value) == 1 and value.islower()):
+        return value
+    calibration = re.search(
+        r'объект\s+калибровки\s*[-–—:]?\s*.+?\s+№\s*'
+        r'([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})', block, re.IGNORECASE,
+    )
+    if calibration:
+        return _spk_si_factory_number(calibration.group(1))
+    # On the state-verification form the value appears immediately above the
+    # printed explanation of the serial-number column.
+    verification = re.search(
+        r'\n\s*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})\s*\n\s*'
+        r'заводской\s*\(серийный\)\s*номер\s+средства', block, re.IGNORECASE,
+    )
+    return _spk_si_factory_number(verification.group(1) if verification else '')
+
+
 def _spk_si_add_tool(result: dict, tool: dict) -> None:
     existing = _spk_si_match_tool(result['measurement_tools'], tool)
     if existing:
@@ -3479,17 +3567,14 @@ def _extract_spk_si_evidence(text: str) -> dict:
         kind = 'Калибровка' if re.search(r'\bкалибров\w*', lower) else 'Поверка'
         certificate_number = _spk_si_certificate_number(compact)
         date_match = re.search(
-            r'(?:\bот\b|дата)\s*[:№#]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})', compact, re.IGNORECASE,
+            r'(?:\bот\b|дата(?:\s+(?:калибровки|поверки|выдачи))?)'
+            r'[^\d]{0,30}(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})', compact, re.IGNORECASE,
         )
         valid_match = re.search(
             r'(?:действ\w*\s+до|год(?:ен|на)\s+до|срок\s+действ\w*)[^\d]{0,24}'
             r'(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})', compact, re.IGNORECASE,
         )
-        factory_match = re.search(
-            r'(?:заводск\w*|серийн\w*|учетн\w*|зав(?:одск\w*)?\.?)\s*(?:номер|№|#)?\s*[:№#]?\s*'
-            r'([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})', compact, re.IGNORECASE,
-        )
-        factory_number = _spk_si_factory_number(factory_match.group(1) if factory_match else '')
+        factory_number = _spk_si_document_factory_number(block, compact)
         _spk_si_add_tool(result, {
             'name': tool, 'factory_number': factory_number, 'quantity': 1,
             'source': 'verification_or_calibration',
@@ -3956,6 +4041,19 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             structured_data['spk'] = _merge_spk_si_evidence(structured_data.get('spk') or {}, si_evidence)
     if str(product) in ('spk_stroy', 'spk_bisp'):
         summary_staff = _extract_spk_staff_from_person_summaries(final_text)
+        # A hiring order can provide the missing role for a person whose folder
+        # has only a diploma/passport. Keep those document facts only when the
+        # same person is explicitly appointed by an order.
+        summary_candidates = _extract_spk_staff_from_person_summaries(
+            final_text, include_unconfirmed=True,
+        )
+        order_staff = _extract_spk_staff_from_hiring_orders(final_text)
+        order_keys = {_spk_staff_key(person.get('fio')) for person in order_staff}
+        ordered_candidates = [
+            person for person in summary_candidates
+            if _spk_staff_key(person.get('fio')) in order_keys
+        ]
+        summary_staff = _merge_spk_staff_rows(summary_staff, ordered_candidates, order_staff)
         # For BISP SPK the director signs the documents but is not a row in the
         # ITR reference.  The archive can mention the director in a diploma or
         # order, so exclude only the person explicitly named in the requisites.

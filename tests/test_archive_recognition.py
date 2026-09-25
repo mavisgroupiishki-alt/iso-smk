@@ -538,6 +538,46 @@ def test_spk_si_local_ocr_accepts_certificate_for_tool_outside_approved_copy_lis
     assert server._extract_spk_si_evidence(certificate)['measurement_tools'] == []
 
 
+def test_spk_si_extracts_date_and_serial_from_calibration_form():
+    certificate = '''
+Свидетельство о калибровке
+Номер свидетельства ВУ 01 № 0023915-4126-В  Дата калибровки — _04.09.2026 г.
+Объект калибровки - Рулетка измерительная металлическая № Б-10
+'''
+
+    document = server._extract_spk_si_evidence(certificate)['calibration_documents'][0]
+
+    assert document['number'] == '0023915-4126-В'
+    assert document['date'] == '04.09.2026'
+    assert document['factory_number'] == 'Б-10'
+
+
+def test_spk_hiring_order_enriches_personal_folder_without_labour_book():
+    summary = '''
+1) ФИО
+Евневич Алексей Александрович
+Должность/роль для СПК: не найдено
+Дипломы: А № 0083147, Белорусский технический техникум
+Трудовая книжка и вкладыши: не найдено
+'''
+    order = '''
+ПРИКАЗ
+ПРИНЯТЬ:
+Евневич Алексей Александрович на должность производитель работ
+(сантехник) с заключением трудового договора с 21.09.2026.
+'''
+
+    candidates = server._extract_spk_staff_from_person_summaries(summary, include_unconfirmed=True)
+    orders = server._extract_spk_staff_from_hiring_orders(order)
+    staff = server._merge_spk_staff_rows(candidates, orders)
+
+    assert len(staff) == 1
+    assert staff[0]['fio'] == 'Евневич Алексей Александрович'
+    assert staff[0]['position'] == 'производитель работ (сантехник)'
+    assert staff[0]['needs_review'] is False
+    assert staff[0]['diplomas'] == [{'full_text': 'А № 0083147, Белорусский технический техникум'}]
+
+
 def test_spk_si_retries_only_an_ambiguous_page_in_the_correct_orientation(monkeypatch):
     calls = []
 
