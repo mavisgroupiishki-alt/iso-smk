@@ -1439,7 +1439,63 @@ def _vision_result_needs_retry(text):
     """A second external read is useful only after a transient recognition failure."""
     value = str(text or '').strip().casefold()
     return ('повторная попытка чтения требуется' in value
-            or value.startswith(('[vision:', '[vision ошибка:', '[vision error:')))
+            or value.startswith(('[vision:', '[vision ошибка:', '[vision error:'))
+            or _vision_result_is_phone_preview_chrome(value))
+
+
+def _vision_result_is_phone_preview_chrome(value: str) -> bool:
+    """Detect a phone-gallery overlay mistaken for the underlying document."""
+    compact = re.sub(r'\s+', ' ', str(value or '').casefold()).strip()
+    return ('закрыть' in compact and 'мультимедиа' in compact and len(compact) < 180)
+
+
+def _crop_phone_preview_bars(file_bytes: bytes) -> bytes:
+    """Remove solid phone-gallery bars before a retry, retaining the document area."""
+    try:
+        from PIL import Image
+        import io as _io_preview
+        image = Image.open(_io_preview.BytesIO(file_bytes)).convert('RGB')
+        width, height = image.size
+        if width < 160 or height < 300:
+            return file_bytes
+        sample = image.resize((min(240, width), min(480, height)))
+        rows = []
+        for y in range(sample.height):
+            bright = sum(
+                1 for x in range(sample.width)
+                if max(sample.getpixel((x, y))) >= 100
+            )
+            rows.append(bright / sample.width >= 0.28)
+        runs, start = [], None
+        for index, is_document in enumerate(rows + [False]):
+            if is_document and start is None:
+                start = index
+            elif not is_document and start is not None:
+                if index - start >= max(8, sample.height // 30):
+                    runs.append((start, index))
+                start = None
+        if not runs:
+            return file_bytes
+        # A gallery screenshot can contain two document pages separated by a
+        # narrow dark seam. Join nearby bright runs before selecting the page
+        # area so the retry does not cut away the lower diploma.
+        joined_runs = []
+        for top, bottom in runs:
+            if joined_runs and top - joined_runs[-1][1] <= max(12, sample.height // 7):
+                joined_runs[-1] = (joined_runs[-1][0], bottom)
+            else:
+                joined_runs.append((top, bottom))
+        top, bottom = max(joined_runs, key=lambda run: run[1] - run[0])
+        top = max(0, int(top * height / sample.height) - 12)
+        bottom = min(height, int(bottom * height / sample.height) + 12)
+        if bottom - top < height * 0.25 or bottom - top > height * 0.94:
+            return file_bytes
+        cropped = image.crop((0, top, width, bottom))
+        output = _io_preview.BytesIO()
+        cropped.save(output, format='JPEG', quality=92)
+        return output.getvalue()
+    except Exception:
+        return file_bytes
 
 
 def vision_extract_with_retry(file_bytes, filename, api_key, **kwargs):
@@ -1457,7 +1513,17 @@ def vision_extract_with_retry(file_bytes, filename, api_key, **kwargs):
     if str(filename or '').lower().endswith('.pdf') and '--- СТРАНИЦЫ ' in str(first):
         return first, False
 
-    second = vision_extract(file_bytes, filename, api_key, **kwargs)
+    retry_bytes = file_bytes
+    retry_kwargs = dict(kwargs)
+    if _vision_result_is_phone_preview_chrome(first):
+        retry_bytes = _crop_phone_preview_bars(file_bytes)
+        retry_kwargs['media_type'] = 'image/jpeg'
+        retry_kwargs['prompt_override'] = (
+            VISION_PROMPT
+            + '\nНа изображении может быть рамка или кнопки галереи телефона. '
+              'Игнорируй интерфейс телефона и читай только документ внутри фотографии.'
+        )
+    second = vision_extract(retry_bytes, filename, api_key, **retry_kwargs)
     if not _vision_result_needs_retry(second):
         return second, True
     reason = ('распознавание не завершилось вовремя'

@@ -578,6 +578,22 @@ def test_spk_hiring_order_enriches_personal_folder_without_labour_book():
     assert staff[0]['diplomas'] == [{'full_text': 'А № 0083147, Белорусский технический техникум'}]
 
 
+def test_phone_gallery_overlay_retries_with_document_only_prompt(monkeypatch):
+    calls = []
+
+    def fake_vision(file_bytes, filename, api_key, **kwargs):
+        calls.append((file_bytes, kwargs))
+        return 'Закрыть   Мультимедиа   диплом' if len(calls) == 1 else 'ДИПЛОМ № 0186143'
+
+    monkeypatch.setattr(server, 'vision_extract', fake_vision)
+
+    text, retried = server.vision_extract_with_retry(b'not-an-image', 'diplom.jpg', 'unused')
+
+    assert text == 'ДИПЛОМ № 0186143'
+    assert retried is True
+    assert 'Игнорируй интерфейс телефона' in calls[1][1]['prompt_override']
+
+
 def test_spk_si_retries_only_an_ambiguous_page_in_the_correct_orientation(monkeypatch):
     calls = []
 
