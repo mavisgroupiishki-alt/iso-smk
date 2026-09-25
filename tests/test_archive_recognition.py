@@ -200,6 +200,19 @@ def test_shared_specialists_folder_groups_named_files_and_one_unnamed_photo():
     assert groups['Спецы'] == []
 
 
+def test_person_folder_surname_wins_over_unclear_labour_book_reading(monkeypatch):
+    monkeypatch.setattr(server, '_simple_ai_call', lambda *_args, **_kwargs: '''
+1) ФИО: Бирон Федор Александрович
+Должность/роль для СПК: главный инженер
+Дипломы: Диплом № 1
+Трудовая книжка и вкладыши: ГТ-I № 7166864
+''')
+
+    summary = server._reconcile_person_summary('Трон', ['--- Трон Ф.А..docx ---\nДиплом'], 'unused', 1)
+
+    assert '1) ФИО: Трон Федор Александрович' in summary
+
+
 def test_spk_si_certificate_facts_are_extracted_without_waiting_for_chat_model():
     source = '''
 --- СИ/Калибровка манометра.pdf ---

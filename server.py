@@ -2233,8 +2233,9 @@ def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
         f"«год 1986, день/месяц не видны» в строке НЕУВЕРЕННЫЕ ПОЛЯ.\n"
         f"2. Не пропускай записи о переводе/совмещении: они определяют, можно ли засчитать "
         f"директора как прораба/главного инженера.\n"
-        f"3. Название папки «{person_name}» — надёжный ориентир для ФИО, но все даты, номера "
-        f"и должности бери из документов.\n"
+        f"3. Название папки «{person_name}» — надёжный ориентир для ФИО. Если фамилия в скане "
+        f"читается иначе, в строке ФИО оставь фамилию из папки, а расхождение укажи в "
+        f"«НЕУВЕРЕННЫЕ ПОЛЯ»; все даты, номера и должности бери из документов.\n"
         f"4. При расхождении не выбирай вариант молча: укажи оба варианта в НЕУВЕРЕННЫХ ПОЛЯХ.\n"
         f"5. Отвечай только карточкой, без расчёта стажа и без вступления."
     )
@@ -2245,7 +2246,26 @@ def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
             f"  ⚠️ Сверка по «{person_name}»: ответ короче ожидаемого ({line_count} строк). "
             f"Полный сырой ответ модели: {result!r}"
         )
-    return result
+    return _prefer_person_folder_surname(person_name, result)
+
+
+def _prefer_person_folder_surname(person_name: str, summary: str) -> str:
+    """Keep the user-labelled personal folder authoritative over an unclear scan surname."""
+    expected = _person_surname_from_loose_filename(person_name)
+    if not expected:
+        return summary
+    card = re.search(
+        r'(?im)^(?P<prefix>\s*\d+[.)]\s*(?:фио\s*:\s*)?)(?P<fio>[А-ЯЁ][А-Яа-яЁё-]+(?:\s+[А-ЯЁ][А-Яа-яЁё-]+){1,2})(?:\s*\([^\n]*\))?\s*$',
+        str(summary or ''),
+    )
+    if not card:
+        return summary
+    fio = card.group('fio')
+    parts = fio.split()
+    if not parts or parts[0].casefold() == expected.casefold():
+        return summary
+    corrected = ' '.join([expected, *parts[1:]])
+    return summary[:card.start('fio')] + corrected + summary[card.end('fio'):]
 
 
 def _extract_company_details(general_blocks, api_key):
