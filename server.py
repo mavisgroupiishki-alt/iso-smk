@@ -3314,6 +3314,12 @@ def _spk_si_tesseract_result_is_complete(text: str | None) -> bool:
         saw_certificate = True
         has_tool = bool(_spk_si_tool_from_text(compact))
         has_number = bool(_spk_si_certificate_number(compact))
+        if has_number and not has_tool:
+            # A readable certificate for an instrument absent from the approved
+            # copy list is still a processed source page.  It must not trigger a
+            # slow visual retry, and it must not silently add a new SI row.
+            saw_supporting_document = True
+            continue
         if not (has_tool and has_number):
             return False
     return saw_certificate or saw_inventory or saw_supporting_document

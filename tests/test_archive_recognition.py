@@ -523,6 +523,21 @@ def test_spk_si_local_ocr_accepts_supporting_attestation_without_turning_it_into
     assert server._extract_spk_si_evidence(attestation)['verification_documents'] == []
 
 
+def test_spk_si_local_ocr_accepts_certificate_for_tool_outside_approved_copy_list():
+    certificate = (
+        'Свидетельство о калибровке\n'
+        'Номер свидетельства ВУ 01 № 0023520-4126-В\n'
+        'Дата калибровки 26.08.2026 г.\n'
+        'Объект калибровки Угломер с нониусом № 4-11100374\n'
+        'Диапазон измерений 0° – 360°'
+    )
+
+    assert server._spk_si_tesseract_result_is_complete(certificate)
+    # The approved copy list remains the only source of SI rows.  A readable
+    # certificate for a different device must neither cause a retry nor add it.
+    assert server._extract_spk_si_evidence(certificate)['measurement_tools'] == []
+
+
 def test_spk_si_retries_only_an_ambiguous_page_in_the_correct_orientation(monkeypatch):
     calls = []
 
