@@ -1364,6 +1364,8 @@ SPK_SI_VISION_PROMPT = VISION_PROMPT + (
     "Если это свидетельство о поверке или калибровке, выведи одну строку строго так:\n"
     "ПОВЕРКА | наименование: … | заводской номер: … | номер: … | дата: ДД.ММ.ГГГГ | действует до: ДД.ММ.ГГГГ\n"
     "или КАЛИБРОВКА | наименование: … | заводской номер: … | номер: … | дата: ДД.ММ.ГГГГ | действует до: ДД.ММ.ГГГГ.\n"
+    "В поле «дата» обязательно укажи дату самого свидетельства или поверки (не срок действия). "
+    "Если на бланке есть только срок действия, дату оставь пустой.\n"
     "Не подменяй неразборчивые цифры догадкой: оставь соответствующее значение пустым."
 )
 
@@ -2543,7 +2545,9 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
         if (position.casefold() in ('не найдено', 'нет')
                 and re.search(r'(?im)фио\s+в\s+приказе\s*:', body)):
             continue
-        needs_review = not position or position.casefold() in ('не найдено', 'нет')
+        needs_review = not position or position.casefold() in (
+            'не найдено', 'нет', 'не указана', 'не указано', 'неизвестно',
+        )
         if needs_review:
             position = ''
         diploma_match = re.search(
@@ -2562,14 +2566,26 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
             for raw in re.split(r'\s*;\s*|\n\s*(?:[-•]|\d+[.)])\s*', diploma_text):
                 full_text = re.sub(r'\s+', ' ', raw).strip(' ,.;-')
                 full_text = re.sub(r'^\d+[.)]\s*', '', full_text)
-                if full_text and full_text.casefold() not in ('не найдено', 'нет'):
+                # A standalone registration number is part of the preceding
+                # diploma, not a second education document.
+                only_registration = re.fullmatch(r'(?:рег\.?\s*)?номер\s*№?\s*[\w/-]+', full_text, re.I)
+                if full_text and not only_registration and full_text.casefold() not in ('не найдено', 'нет'):
                     diplomas.append({'full_text': full_text})
         workbooks = []
         if workbook_match:
             for raw in workbook_match.group(1).split(';'):
                 number = re.sub(r'\s+', ' ', raw).strip(' ,.;')
-                if number and number.casefold() not in ('не найдено', 'нет'):
+                if number and number.casefold() not in (
+                    'не найдено', 'нет', 'не указаны', 'не указана', 'неизвестно',
+                ):
                     workbooks.append(number)
+        # A folder name alone does not prove that a specialist belongs in the
+        # SPK reference.  If the only diploma explicitly names another person,
+        # while no role or labour-book record was found, keep the conflict in
+        # the source text but do not create a false ITR row.
+        if (needs_review and not workbooks
+                and re.search(r'(?is)фио\s+в\s+дипломе.*?(?:друг|другой|не совпада|указан)', body)):
+            continue
         people.append({
             'fio': fio,
             'position': position,
@@ -2580,6 +2596,26 @@ def _extract_spk_staff_from_person_summaries(text: str) -> list:
         })
         seen.add(fio_key)
     return people
+
+
+def _spk_director_reference(text: str) -> str:
+    """Return the director named in the archive requisites block, if present."""
+    match = re.search(
+        r'(?ims)^===\s*🏢\s*реквизиты\s+компании\s*===.*?^\s*директор\s*:\s*([^\n]+)$',
+        str(text or ''),
+    )
+    return re.sub(r'\s+', ' ', match.group(1)).strip() if match else ''
+
+
+def _spk_same_person(full_name: str, abbreviated_name: str) -> bool:
+    """Match a full Russian name with an archive reference such as «Иванов И.В.»."""
+    full = re.findall(r'[А-ЯЁа-яё-]+', str(full_name or '').replace('ё', 'е'))
+    ref = re.findall(r'[А-ЯЁа-яё-]+|[А-ЯЁ]\.', str(abbreviated_name or '').replace('ё', 'е'))
+    if len(full) < 2 or not ref or full[0].casefold() != ref[0].casefold():
+        return False
+    initials = ''.join(part[0].casefold() for part in full[1:] if part)
+    ref_initials = ''.join(part[0].casefold() for part in ref[1:] if part)
+    return not ref_initials or initials.startswith(ref_initials)
 
 
 def _is_extraction_error_text(text):
@@ -3580,6 +3616,13 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         structured_data['spk'] = spk_data
     if str(product) in ('spk_stroy', 'spk_bisp'):
         summary_staff = _extract_spk_staff_from_person_summaries(final_text)
+        # For BISP SPK the director signs the documents but is not a row in the
+        # ITR reference.  The archive can mention the director in a diploma or
+        # order, so exclude only the person explicitly named in the requisites.
+        director_ref = _spk_director_reference(final_text)
+        if director_ref:
+            summary_staff = [person for person in summary_staff
+                             if not _spk_same_person(person.get('fio', ''), director_ref)]
         if summary_staff:
             structured_data['staff'] = summary_staff
     return {

@@ -345,6 +345,45 @@ def test_spk_person_summary_accepts_dot_numbering_and_multiline_diplomas():
     ]
 
 
+def test_spk_staff_marks_missing_role_and_ignores_placeholder_labour_number():
+    archive_text = '''
+1) Луневич Алексей Евневич
+Должность/роль для СПК: не указана
+Дипломы: А № 0083147, Витебский педагогический техникум; Рег. номер № 450
+Трудовая книжка и вкладыши: не указаны
+'''
+
+    staff = server._extract_spk_staff_from_person_summaries(archive_text)
+
+    assert staff[0]['position'] == ''
+    assert staff[0]['needs_review'] is True
+    assert staff[0]['trudovye_numbers'] == []
+    assert staff[0]['diplomas'] == [{'full_text': 'А № 0083147, Витебский педагогический техникум'}]
+
+
+def test_spk_staff_omits_person_when_folder_conflicts_with_only_diploma():
+    archive_text = '''
+1) Луневич Алексей Евневич
+Должность/роль для СПК: не указана
+Дипломы: А № 0083147, Витебский педагогический техникум
+Трудовая книжка и вкладыши: не указаны
+НЕУВЕРЕННЫЕ ПОЛЯ:
+- ФИО в дипломе: в документе указана Дзюбе Виктория Александровна
+'''
+
+    assert server._extract_spk_staff_from_person_summaries(archive_text) == []
+
+
+def test_spk_director_reference_matches_initials_without_removing_other_staff():
+    assert server._spk_director_reference('''
+=== 🏢 Реквизиты компании ===
+Название: ООО «Тест»
+Директор: Гринкевич В.Н.
+''') == 'Гринкевич В.Н.'
+    assert server._spk_same_person('Гринкевич Валентин Николаевич', 'Гринкевич В.Н.')
+    assert not server._spk_same_person('Петров Василий Николаевич', 'Гринкевич В.Н.')
+
+
 def test_spk_person_summary_ignores_numbered_contract_clauses_before_staff_cards():
     archive_text = '''
 --- договор аренды.docx ---
