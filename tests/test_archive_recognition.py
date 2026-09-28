@@ -614,6 +614,21 @@ def test_spk_named_diploma_accepts_markdown_labels_from_vision():
     assert 'техник-электрик' in rows[0]['diplomas'][0]['full_text']
 
 
+def test_spk_named_diploma_accepts_real_kumu_vydano_label():
+    source = '''
+--- Клиент/Спецы/photo_2026-09-24.jpg ---
+**Тип документа:** ДИПЛОМ
+**Номер документа:** № 0186143
+**Кому выдано (ФИО):** Зенченко Александру Николаевичу
+**Квалификация:** техник-электрик
+'''
+
+    rows = server._extract_spk_diplomas_from_named_sources(source)
+
+    assert rows[0]['fio'] == 'Зенченко Александру Николаевичу'
+    assert '№ 0186143' in rows[0]['diplomas'][0]['full_text']
+
+
 def test_spk_diploma_holder_in_dative_case_merges_with_hiring_order():
     order = [{'fio': 'Зенченко Александр Николаевич', 'position': 'главный инженер'}]
     diploma = [{

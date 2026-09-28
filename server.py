@@ -2860,7 +2860,7 @@ def _extract_spk_diplomas_from_named_sources(text: str) -> list:
         if 'диплом' not in lower:
             continue
         holder = re.search(
-            r'(?im)^\s*(?:кому\s+выдан\s*\(фио\)|фио)\s*:\s*'
+            r'(?im)^\s*(?:кому\s+выдан(?:о)?\s*\(фио\)|фио)\s*:\s*'
             r'([А-ЯЁ][А-Яа-яЁё-]+(?:\s+[А-ЯЁ][А-Яа-яЁё-]+){2})', plain_block,
         )
         if not holder:
