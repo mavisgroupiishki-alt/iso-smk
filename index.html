@@ -3228,7 +3228,7 @@ function aiArchiveProductForRequest(text, currentProduct) {
 
 function aiBuildArchivePeriodikaContext(text, filesContent) {
   if (!aiIsPeriodikaRequest(text) || !String(filesContent || '').trim()) return '';
-  return 'НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ ИЗ ЗАГРУЖЕННОГО ПРЕДЫДУЩЕГО ПАКЕТА. '
+  return 'ЭТО ПЕРИОДИКА ИСО/СУОТ. НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ ИЗ ЗАГРУЖЕННОГО ПРЕДЫДУЩЕГО ПАКЕТА. '
     + 'Это периодика ИСО/СУОТ: используй загруженный пакет как базу карточки, извлеки из него реквизиты, '
     + 'область, штат, рабочие профессии, объекты, поставщиков и сведения по охране труда. '
     + 'Не создавай пустую новую компанию и не теряй сведения из пакета. '
@@ -3443,7 +3443,7 @@ async function aiSend() {
         const r = await kvGet(found.key);
         if (r) {
           const payload = JSON.parse(r.value);
-          savedCompanyContext = 'НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ «' + foundName + '» (используй как базу, пользователь будет вносить корректировки поверх этих данных, например для периодики — обнови даты, штат, объекты по новым вводным):\n'
+          savedCompanyContext = 'СОХРАНЁННАЯ КАРТОЧКА КОМПАНИИ «' + foundName + '» (используй как базу для реквизитов и текущих данных. Это НЕ периодика, если пользователь прямо не написал «периодика»):\n'
             + JSON.stringify(payload.data, null, 2) + '\n\n';
           // Сразу подгружаем найденные данные в текущую карточку
           aiCurrentData = JSON.parse(JSON.stringify(payload.data));

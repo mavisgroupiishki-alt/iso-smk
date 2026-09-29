@@ -146,6 +146,30 @@ def test_generator_uses_periodika_mode_from_card_data():
     assert not any('Приказ' in name for name in names)
 
 
+def test_initial_suot_keeps_orders_and_instructions_without_periodika_flag():
+    data = sample_data()
+    result = generator.generate_package(data, 'dummy', 'suot')
+    names = [doc['name'] for doc in result['docs']]
+
+    assert any('Приказ 4-OH&S' in name for name in names)
+    assert any('Перечень инструкций по ОТ' in name for name in names)
+    assert any('ИОТ Штукатур' in name for name in names)
+
+
+def test_generator_uses_only_company_director_in_suot_orders():
+    data = sample_data()
+    data['staff'].append({
+        'fio': 'Ошибочный Директор Иванович', 'position': 'Директор',
+        'is_worker': False, 'ot_certificate': True,
+    })
+
+    result = generator.generate_package(data, 'dummy', 'suot')
+    combined = '\n'.join(xml_text(doc['bytes']) for doc in result['docs'] if 'Приказ' in doc['name'])
+
+    assert 'Глушинский Олег Иванович' in combined
+    assert 'Ошибочный Директор Иванович' not in combined
+
+
 def test_nonstandard_scope_is_visible_in_smk_orders_and_customer_report():
     data = sample_data()
     scope = 'Производство металлоконструкций и разработка проектной документации'

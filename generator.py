@@ -1050,17 +1050,31 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
             if kw in scope:
                 workers.append({'fio':'','position':prof,'is_worker':True})
 
-    if not any(p.get('role','') == 'director' or 'директор' in p.get('position','').lower() for p in itr):
-        if company.get('director_fio'):
-            itr.insert(0, {
-                'fio': company['director_fio'],
-                'position': company.get('director_position', 'Директор'),
-                'role': 'director',
-                'is_worker': False,
-                'ot_certificate': True,
-                'ot_certificate_date': '',
-                'hire_date': ''
-            })
+    # The company card is the sole source of the signing director.  A partial
+    # chat answer can leave an old or misread director inside staff; previously
+    # that person was then selected as an auditor and appeared as a second
+    # director in some appointment orders.
+    def _is_primary_director(person):
+        position = str(person.get('position') or '').lower().replace('ё', 'е')
+        return (str(person.get('role') or '').lower() == 'director' or 'директор' in position) and 'замест' not in position
+
+    director_fio = str(company.get('director_fio') or '').strip()
+    if director_fio:
+        director_key = re.sub(r'[^а-яa-z0-9]+', '', director_fio.lower().replace('ё', 'е'))
+        source_director = next((person for person in itr if re.sub(
+            r'[^а-яa-z0-9]+', '', str(person.get('fio') or '').lower().replace('ё', 'е')
+        ) == director_key), {})
+        canonical_director = dict(source_director)
+        canonical_director.update({
+            'fio': director_fio,
+            'position': company.get('director_position') or 'Директор',
+            'role': 'director',
+            'is_worker': False,
+        })
+        if 'ot_certificate' not in canonical_director:
+            canonical_director['ot_certificate'] = True
+        itr = [person for person in itr if not _is_primary_director(person)]
+        itr.insert(0, canonical_director)
 
     resp = select_responsible(itr)
 
