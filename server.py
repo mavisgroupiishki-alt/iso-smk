@@ -1547,6 +1547,15 @@ def _is_labour_book_filename(filename: str) -> bool:
     ))
 
 
+def _is_labour_book_text(text: str) -> bool:
+    """Recognise a labour-book scan even when a client gave the file a wrong name."""
+    value = str(text or '').casefold().replace('ё', 'е')
+    return any(marker in value for marker in (
+        'трудовая книжка', 'трудовая кн', 'сведения о работе',
+        'сведения о награждениях', 'вкладыш в трудовую',
+    ))
+
+
 def _pdf_page_limit(filename: str) -> int:
     """Use a larger safe page limit for labour books than for ordinary PDFs."""
     return 40 if _is_labour_book_filename(filename) else 8
@@ -1742,6 +1751,12 @@ def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
                         f"  ℹ️ Tesseract OCR: в {filename} не прочитал страницы "
                         f"{', '.join(unreadable_pages)}; передаю файл на точное распознавание"
                     )
+                return None
+            # A client can call a PDF «Диплом», while the scan itself is a
+            # labour book. Typed OCR is not reliable for handwritten entries,
+            # so recognise the document by its visible heading and use the
+            # visual reader instead of accepting a partial local transcript.
+            if any(_is_labour_book_text(text) for text in page_texts):
                 return None
             texts = [f'--- СТРАНИЦА {index} ---\n{text}' for index, text in enumerate(page_texts, 1)]
             if total_pages > len(pages_b64):
@@ -2429,7 +2444,11 @@ def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
         f"читается иначе, в строке ФИО оставь фамилию из папки, а расхождение укажи в "
         f"«НЕУВЕРЕННЫЕ ПОЛЯ»; все даты, номера и должности бери из документов.\n"
         f"4. При расхождении не выбирай вариант молча: укажи оба варианта в НЕУВЕРЕННЫХ ПОЛЯХ.\n"
-        f"5. Отвечай только карточкой, без расчёта стажа и без вступления."
+        f"5. Название файла не доказывает его тип. Дипломом считай только страницу с самим "
+        f"дипломом и сведениями об образовании. Если файл назван «диплом», но содержит "
+        f"трудовую книжку, внеси его только в «Трудовая книжка и вкладыши» и укажи в "
+        f"НЕУВЕРЕННЫХ ПОЛЯХ: «диплом не предоставлен».\n"
+        f"6. Отвечай только карточкой, без расчёта стажа и без вступления."
     )
     result = _simple_ai_call(prompt, api_key, max_tokens=2600)
     line_count = len([line for line in result.split('\n') if line.strip()])
@@ -4022,14 +4041,13 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                             return image_index, f"[Вложенное изображение {image_index}]\n{visual_text}"
                         return image_index, ''
 
-                    # A DOCX may contain several full-resolution scan pages. They
-                    # must be read one at a time: decoding two pages alongside a
-                    # vision request can exceed the web service memory limit and
-                    # restart the whole archive job. A completed archive is more
-                    # important than a small speed gain on one labour book.
+                    # A DOCX often stores consecutive pages of the same scanned
+                    # labour book as separate images. They are independent reads;
+                    # run at most two while the global semaphore keeps the whole
+                    # service within its memory/API limit.
                     from concurrent.futures import ThreadPoolExecutor, as_completed
                     image_text_by_index = {}
-                    with ThreadPoolExecutor(max_workers=1) as executor:
+                    with ThreadPoolExecutor(max_workers=min(2, len(embedded))) as executor:
                         futures = [
                             executor.submit(read_embedded_image, index, image_name, image_bytes)
                             for index, (image_name, image_bytes) in enumerate(embedded, 1)

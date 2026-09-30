@@ -446,6 +446,22 @@ def test_spk_si_prompt_uses_complete_local_ocr_for_exact_certificate_fields(monk
     assert '1-000845170-2026' in text
 
 
+def test_wrongly_named_labour_book_pdf_uses_visual_reader(monkeypatch):
+    monkeypatch.setattr(
+        server, '_check_tesseract',
+        lambda: {'available': True, 'has_rus': True, 'data_dir': '/tmp'},
+    )
+    monkeypatch.setattr(
+        server,
+        '_tesseract_pdf_pages',
+        lambda *_args, **_kwargs: (1, ['aGVsbG8='], [
+            'ТРУДОВАЯ КНИЖКА\nСведения о работе\nКремень Таиса Леонидовна'
+        ]),
+    )
+
+    assert server._try_tesseract_first(b'pdf', 'Диплом зам директора.pdf') is None
+
+
 def test_spk_si_prompt_sends_ambiguous_local_ocr_to_vision(monkeypatch):
     monkeypatch.setattr(server, '_tesseract_pdf_pages', lambda *_args, **_kwargs: (1, ['aGVsbG8='], ['обычный OCR текст']))
 
