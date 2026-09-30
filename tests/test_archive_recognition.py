@@ -467,6 +467,30 @@ def test_vision_prompt_classifies_document_by_its_contents_not_filename():
     assert 'ВИД ДОКУМЕНТА:' in server.VISION_PROMPT
 
 
+def test_generic_pdf_fallback_uses_detailed_page_render(monkeypatch):
+    rendered = []
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 1)
+    monkeypatch.setattr(
+        server,
+        '_pdf_pages_to_images',
+        lambda *_args, **kwargs: rendered.append(kwargs) or ['aGVsbG8='],
+    )
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': 'ВИД ДОКУМЕНТА: трудовая книжка'}}]}
+
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: Response())
+
+    server.vision_extract(b'%PDF', 'ТК сотрудника.pdf', 'unused')
+
+    assert rendered == [{'max_pages': 8, 'max_dim': 2400}]
+
+
 def test_pdf_page_rendering_releases_native_pdf_resources(monkeypatch):
     """A many-page scan must not retain every PDFium page bitmap in memory."""
     from PIL import Image

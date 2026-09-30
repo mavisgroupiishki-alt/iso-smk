@@ -1350,6 +1350,10 @@ VISION_PROMPT = ("Извлеки весь текст с этого докуме�
                   "0. В первой строке напиши «ВИД ДОКУМЕНТА: ...». Название файла не доказывает вид "
                   "документа: если файл назван дипломом, но на странице трудовая книжка, укажи "
                   "«ВИД ДОКУМЕНТА: трудовая книжка» и не извлекай сведения о дипломе.\n"
+                  "0.1. Если скан повернут или на странице два разворота, сначала мысленно поверни каждый "
+                  "разворот в нормальное положение. В трудовой книжке даты записаны по отдельным колонкам "
+                  "день, месяц и год: перепиши все видимые части даты; не оставляй только год, если день "
+                  "и месяц видны.\n"
                   "1. Если текст НАПЕЧАТАН (типографский шрифт, бланк, штамп) — читай с обычной уверенностью.\n"
                   "2. Если текст РУКОПИСНЫЙ (почерк, особенно старые записи в трудовой книжке) — читай "
                   "внимательнее, но если конкретная цифра или буква неоднозначна (можно прочитать двояко) — "
@@ -1864,7 +1868,14 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 total_pages, pages_b64, _ = local_spk_si_pages
             else:
                 total_pages = _pdf_total_pages(file_bytes)
-                pages_b64 = _pdf_pages_to_images(file_bytes, max_pages=max_pages)
+                # Personal files often combine two rotated pages in one scan.
+                # Send those ordinary PDFs at a larger readable size; the SI
+                # register keeps its lower size and dedicated local pipeline.
+                pages_b64 = _pdf_pages_to_images(
+                    file_bytes,
+                    max_pages=max_pages,
+                    max_dim=2400 if prompt_override != SPK_SI_VISION_PROMPT else 1900,
+                )
         except Exception as e:
             print(f"  ❌ vision_extract({filename}): не удалось конвертировать PDF в изображения — {type(e).__name__}: {e}")
             return '[Не удалось подготовить страницы PDF для распознавания.]'
