@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import zipfile
+from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 import socketserver
@@ -37,6 +38,35 @@ def _docx_with_embedded_scan(image_bytes=b'embedded-scan') -> bytes:
     return buffer.getvalue()
 
 
+def _docx_with_ordered_images(names) -> bytes:
+    buffer = io.BytesIO()
+    rels = []
+    blips = []
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as document:
+        for index, name in enumerate(names, 1):
+            rel_id = f'rId{index}'
+            rels.append(
+                '<Relationship Id="%s" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+                'Target="media/%s"/>' % (rel_id, name)
+            )
+            blips.append('<a:blip r:embed="%s"/>' % rel_id)
+            document.writestr('word/media/' + name, ('scan-' + name).encode())
+        document.writestr(
+            'word/document.xml',
+            '<w:document xmlns:w="urn:test" '
+            'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<w:body>%s</w:body></w:document>' % ''.join(blips),
+        )
+        document.writestr(
+            'word/_rels/document.xml.rels',
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">%s</Relationships>'
+            % ''.join(rels),
+        )
+    return buffer.getvalue()
+
+
 def test_archive_processing_slot_rejects_parallel_jobs():
     server.release_archive_processing()
 
@@ -60,6 +90,69 @@ def test_cancelling_archive_prevents_an_automatic_resume(monkeypatch):
     assert task['status'] == 'cancelled'
     assert saved == [('task-1', 'cancelled')]
     assert 'Файл не внесён' in task['progress'][-1]
+
+
+def test_upload_retry_finds_the_task_already_saved_for_the_same_browser_upload(monkeypatch):
+    task = {
+        'kind': 'archive', 'status': 'running', 'owner_user_id': 'operator-1',
+        'client_upload_id': 'upload-abc',
+    }
+    monkeypatch.setattr(server, 'TASKS', {'task-1': task})
+
+    found = server.find_archive_task_by_upload_id('operator-1', 'upload-abc')
+
+    assert found == ('task-1', task)
+    assert server.find_archive_task_by_upload_id('operator-2', 'upload-abc') is None
+
+
+def test_streamed_archive_upload_saves_docx_without_copying_multipart_to_memory(monkeypatch, tmp_path):
+    boundary = 'test-boundary'
+    docx_bytes = _docx_with_embedded_scan()
+    body = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="product"\r\n\r\nspk_bisp\r\n'.encode()
+        + f'--{boundary}\r\nContent-Disposition: form-data; name="upload_id"\r\n\r\nupload-test\r\n'.encode()
+        + f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="Тагиев ТК.docx"\r\n'
+          f'Content-Type: application/octet-stream\r\n\r\n'.encode()
+        + docx_bytes + f'\r\n--{boundary}--\r\n'.encode()
+    )
+    headers = Message()
+    headers['Content-Type'] = f'multipart/form-data; boundary={boundary}'
+    headers['Content-Length'] = str(len(body))
+
+    class FakeHandler:
+        def _json(self, value, status=200):
+            self.response = (value, status)
+
+    started = []
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            started.append((args, kwargs))
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server, 'ARCHIVE_UPLOAD_DIR', tmp_path)
+    monkeypatch.setattr(server, 'TASKS_DIR', tmp_path / 'tasks')
+    server.TASKS_DIR.mkdir()
+    monkeypatch.setattr(server, 'TASKS', {})
+    monkeypatch.setattr(server.threading, 'Thread', FakeThread)
+    server.release_archive_processing()
+    handler = FakeHandler()
+    handler.rfile = io.BytesIO(body)
+    handler.headers = headers
+    try:
+        server.H._handle_large_archive_upload(handler, {'id': 'operator-1'}, len(body))
+        payload, status = handler.response
+        assert status == 200
+        assert payload['success'] is True
+        assert started
+        task = next(iter(server.TASKS.values()))
+        with zipfile.ZipFile(tmp_path / task['archive_upload']) as archive:
+            assert archive.namelist() == ['Тагиев ТК.docx']
+            assert archive.read('Тагиев ТК.docx') == docx_bytes
+    finally:
+        server.release_archive_processing()
 
 
 def test_archive_keeps_heavy_pdfs_serial_but_reads_small_scans_in_parallel():
@@ -96,11 +189,13 @@ def test_single_pdf_is_packed_for_the_same_background_recognition_pipeline():
         assert archive.read('Иванов трудовая.pdf') == b'%PDF-scan'
 
 
-def test_non_visual_file_is_not_repacked_for_the_archive_worker():
+def test_docx_is_packed_for_the_archive_worker_so_embedded_scans_are_read():
     data, worker_name = server._single_visual_as_zip(b'data', 'штатное расписание.docx')
 
-    assert data == b'data'
-    assert worker_name == 'штатное расписание.docx'
+    assert worker_name.endswith('.zip')
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        assert archive.namelist() == ['штатное расписание.docx']
+        assert archive.read('штатное расписание.docx') == b'data'
 
 
 def test_legacy_doc_is_read_with_antiword(monkeypatch):
@@ -199,6 +294,53 @@ def test_docx_with_only_embedded_scans_uses_vision_in_archive(monkeypatch):
 
     assert calls == [(b'embedded-scan', 'Трон Ф.А._страница_1.jpg')]
     assert 'Диплом инженера-строителя № АБ-1' in result['text']
+
+
+def test_embedded_docx_pages_follow_word_document_order_not_media_filename_order():
+    document = _docx_with_ordered_images(['image1.jpeg', 'image10.jpeg', 'image2.jpeg'])
+
+    pages = server._embedded_docx_images(document, 'трудовая.docx')
+
+    assert [name for name, _data in pages] == ['image1.jpeg', 'image10.jpeg', 'image2.jpeg']
+
+
+def test_scanned_docx_reads_more_than_the_old_twelve_page_limit(monkeypatch):
+    document = _docx_with_ordered_images([f'image{index}.jpeg' for index in range(1, 14)])
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr('Люди/Тагиев ТК.docx', document)
+    calls = []
+    monkeypatch.setattr(server, 'vision_extract_with_retry', lambda data, name, *_args, **_kwargs: (
+        calls.append((data, name)) or ('Сведения о работе', False)
+    ))
+    monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)
+
+    result = server.extract_archive_with_vision(archive.getvalue(), 'люди.zip', 'unused')
+
+    assert len(calls) == 13
+    assert {name for _data, name in calls} == {
+        f'Тагиев ТК_страница_{index}.jpeg' for index in range(1, 14)
+    }
+    assert 'Сведения о работе' in result['text']
+
+
+def test_large_docx_scan_is_not_silently_skipped_at_text_file_limit(monkeypatch):
+    # A DOCX scan can be larger than a normal text document because it stores
+    # a high-resolution page. Its OCR must still run.
+    document = _docx_with_embedded_scan(os.urandom(4 * 1024 * 1024 + 1024))
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr('Люди/Тагиев ТК.docx', document)
+    calls = []
+    monkeypatch.setattr(server, 'vision_extract_with_retry', lambda data, name, *_args, **_kwargs: (
+        calls.append(name) or ('Сведения о работе', False)
+    ))
+    monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)
+
+    result = server.extract_archive_with_vision(archive.getvalue(), 'люди.zip', 'unused')
+
+    assert calls == ['Тагиев ТК_страница_1.jpg']
+    assert 'Сведения о работе' in result['text']
 
 
 def test_shared_specialists_folder_groups_named_files_and_one_unnamed_photo():

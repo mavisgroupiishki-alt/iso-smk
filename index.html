@@ -3483,6 +3483,18 @@ async function aiSend() {
     const last = msgs.lastElementChild;
     if(last && last.textContent.includes('Читаю файлы')) last.remove();
 
+    const unreadFiles = fileData.filter(file => file.read_failed);
+    if(unreadFiles.length) {
+      // Do not send a made-up "file could not be read" marker to the chat
+      // endpoint. It caused a second unrelated error after a failed upload and
+      // made it look as though the file had been submitted to analysis.
+      aiRemoveTyping();
+      aiAddMsg('ai', `Файл не внесён в карточку: ${unreadFiles.map(file => `«${file.name}»`).join(', ')}. Повторите загрузку после сообщения об ошибке.`);
+      aiLoading = false;
+      document.getElementById('ai-send-btn').disabled = false;
+      return;
+    }
+
     filesContent = fileData.map(f =>
       `\n===== ФАЙЛ: ${f.name} =====\n${f.content}\n`
     ).join('\n');
@@ -3617,9 +3629,10 @@ async function aiReadFile(file, productHint = '') {
 
   const imageExts = ['png','jpg','jpeg','webp','heic','heif'];
   const isVisual = imageExts.includes(ext) || ext === 'pdf';
-  // Every scan uses the background pipeline.  The server safely packs a single
-  // PDF/image itself, so reading no longer depends on JSZip loading in a browser.
-  if(isVisual) return aiReadArchiveAsync(file, productHint);
+  const isScannedWord = ext === 'docx' || ext === 'doc';
+  // A DOCX may be nothing but scans pasted into Word. The background worker
+  // distinguishes ordinary Word text from embedded pages and OCRs the latter.
+  if(isVisual || isScannedWord) return aiReadArchiveAsync(file, productHint);
 
   let uploadFile = file;
   if(imageExts.includes(ext) && file.size > 3 * 1024 * 1024) {
@@ -3699,7 +3712,7 @@ async function aiStartArchiveUpload(formData) {
     }).then(response => aiReadJsonResponse(response, 'file'));
   } catch(err) {
     if(err && err.name === 'AbortError') {
-      throw new Error('Файл не был передан на обработку за 2 минуты. Разделите PDF на части или повторите загрузку.');
+      throw new Error('Файл не был передан на обработку за 10 минут. Разделите архив на части или повторите загрузку.');
     }
     throw err;
   } finally {
@@ -3731,6 +3744,17 @@ function aiFileReadError(value) {
 function aiArchiveIsBusyError(value) {
   const text = String(value || '').toLowerCase();
   return text.includes('другой архив') || text.includes('уже разбирается');
+}
+
+function aiArchiveUploadId() {
+  if(window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'upload-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+}
+
+function aiArchiveUploadIsRetryable(value) {
+  const text = String(value || '').toLowerCase();
+  return text.includes('сервер не принял') || text.includes('failed to fetch')
+    || text.includes('networkerror') || text.includes('временно не ответил');
 }
 
 async function aiCompressImageBlob(blob, maxDim, quality) {
@@ -3820,12 +3844,26 @@ async function aiReadArchiveAsync(file, productHint = '') {
     const formData = new FormData();
     formData.append('file', uploadFile);
     formData.append('product', productHint || aiCurrentData?.certification?.standard || 'all');
+    // The same id is sent on a transport retry. The server uses it to return
+    // an already-created task if its JSON response was lost during a restart.
+    formData.append('upload_id', aiArchiveUploadId());
     aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: загружаю ${(uploadFile.size / 1024 / 1024).toFixed(1)} МБ...`);
     let startResp;
     let queuePolls = 0;
+    let transportRetries = 0;
     const MAX_QUEUE_POLLS = 400; // the same 20-minute ceiling as task polling below
     while(queuePolls < MAX_QUEUE_POLLS) {
-      startResp = await aiStartArchiveUpload(formData);
+      try {
+        startResp = await aiStartArchiveUpload(formData);
+      } catch(err) {
+        if(transportRetries < 3 && aiArchiveUploadIsRetryable(err.message)) {
+          transportRetries++;
+          aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: соединение прервалось, повторяю передачу (${transportRetries}/3)...`);
+          await new Promise(res => setTimeout(res, 3000));
+          continue;
+        }
+        throw err;
+      }
       if(startResp.success || !aiArchiveIsBusyError(startResp.error)) break;
       queuePolls++;
       aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ожидаю завершения обработки предыдущего файла...`);
@@ -3834,7 +3872,7 @@ async function aiReadArchiveAsync(file, productHint = '') {
     if(!startResp.success) {
       const reason = aiFileReadError(startResp.error);
       aiUpdateMsg(progressMsgId, `❌ ${file.name}: ${reason}`);
-      return {name: file.name, content: `[${reason}.]`};
+      return {name: file.name, content: `[${reason}.]`, read_failed: true};
     }
     const taskId = startResp.task_id;
     // Архив уже обрабатывается на сервере в фоне.  20 минут недостаточно для
@@ -3871,10 +3909,10 @@ async function aiReadArchiveAsync(file, productHint = '') {
       } else if(tr.status === 'error') {
         const reason = aiFileReadError(tr.error);
         aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${reason}`);
-        return {name: file.name, content: `[${reason}.]`};
+        return {name: file.name, content: `[${reason}.]`, read_failed: true};
       } else if(tr.status === 'not_found') {
         aiUpdateMsg(progressMsgId, `❌ «${file.name}»: обработка прервалась до завершения. Загрузите файл ещё раз.`);
-        return {name: file.name, content: '[Обработка файла прервалась до завершения.]'};
+        return {name: file.name, content: '[Обработка файла прервалась до завершения.]', read_failed: true};
       }
     }
     aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: обработка ещё не завершилась. Файл продолжает обрабатываться на сервере; не загружайте его повторно, пока не появится результат.`);
@@ -3882,7 +3920,7 @@ async function aiReadArchiveAsync(file, productHint = '') {
   } catch(err) {
     const reason = aiFileReadError(err.message);
     aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${reason}`);
-    return {name: file.name, content: `[${reason}.]`};
+    return {name: file.name, content: `[${reason}.]`, read_failed: true};
   }
 }
 

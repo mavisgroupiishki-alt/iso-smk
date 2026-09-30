@@ -611,6 +611,36 @@ def load_task(task_id):
     except: pass
     return None
 
+
+def find_archive_task_by_upload_id(owner_user_id, client_upload_id):
+    """Find the durable task created for a browser upload retry.
+
+    Render can restart after it has accepted an upload but before the browser
+    receives JSON.  A retry with the same client id must resume that task, not
+    upload a second copy or report that the file was never accepted.
+    """
+    upload_id = str(client_upload_id or '').strip()
+    if not upload_id:
+        return None
+    candidates = list(TASKS.items())
+    try:
+        candidates.extend(
+            (path.stem, json.loads(path.read_text('utf-8')))
+            for path in TASKS_DIR.glob('*.json')
+        )
+    except OSError:
+        pass
+    seen = set()
+    for task_id, task in candidates:
+        if task_id in seen or not isinstance(task, dict):
+            continue
+        seen.add(task_id)
+        if (task.get('kind') == 'archive'
+                and task.get('owner_user_id') == owner_user_id
+                and task.get('client_upload_id') == upload_id):
+            return task_id, task
+    return None
+
 # ── Vibe Code AI ─────────────────────────────────────────────
 VIBE_URL   = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
 VIBE_MODEL = "bitrix/bitrixgpt-5.5"
@@ -3926,14 +3956,14 @@ def _merge_spk_copy_list_baseline(spk: dict, evidence: dict, copy_list_tools: li
 
 
 def _single_visual_as_zip(file_bytes, filename):
-    """Make one scanned document compatible with the archive worker.
+    """Make one document compatible with the background archive worker.
 
-    The browser deliberately sends a PDF/photo unchanged.  This avoids a
-    client-side dependency on JSZip and keeps the long OCR request out of the
-    HTTP request that accepted the upload.
+    A DOCX can be nothing but a collection of scanned pages.  Such a document
+    has no Word text to extract, so it must use the same worker as PDFs and
+    photos in order to reach the embedded-image OCR path.
     """
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-    if ext not in ('pdf', 'jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'):
+    if ext not in ('pdf', 'jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'docx', 'doc'):
         return file_bytes, filename
     entry_name = Path(filename).name or f'документ.{ext}'
     packed = io.BytesIO()
@@ -3942,25 +3972,82 @@ def _single_visual_as_zip(file_bytes, filename):
     return packed.getvalue(), f'{Path(entry_name).stem}_для_обработки.zip'
 
 
-def _embedded_docx_images(file_bytes, filename: str) -> list:
-    """Return visual pages embedded in a DOCX scan, in their document order."""
+def _embedded_docx_images(file_bytes, filename: str, limit: int = 40) -> list:
+    """Return pages embedded in a DOCX scan in their visual document order.
+
+    Word's ``word/media`` filenames are implementation details: lexical order
+    turns ``image10`` into the second page.  The relationship references in
+    ``document.xml`` are the actual displayed order and must be used for scans
+    of labour books and attestations.
+    """
     if not str(filename or '').lower().endswith('.docx'):
         return []
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as document:
-            images = []
-            for name in sorted(document.namelist()):
-                if not name.startswith('word/media/'):
-                    continue
-                ext = Path(name).suffix.lower()
-                if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'):
-                    continue
-                content = document.read(name)
-                if content:
-                    images.append((Path(name).name, content))
-            return images[:12]
-    except (zipfile.BadZipFile, KeyError, OSError):
+            import xml.etree.ElementTree as element_tree
+
+            supported = {'.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'}
+            media_names = [
+                name for name in document.namelist()
+                if name.startswith('word/media/') and Path(name).suffix.lower() in supported
+            ]
+            if not media_names:
+                return []
+
+            relation_targets = {}
+            try:
+                rels = element_tree.fromstring(document.read('word/_rels/document.xml.rels'))
+                for relation in rels:
+                    rel_id = relation.attrib.get('Id')
+                    target = relation.attrib.get('Target', '').replace('\\', '/')
+                    if rel_id and target:
+                        relation_targets[rel_id] = 'word/' + target.lstrip('/')
+            except (KeyError, element_tree.ParseError):
+                pass
+
+            ordered_names = []
+            try:
+                root = element_tree.fromstring(document.read('word/document.xml'))
+                for node in root.iter():
+                    rel_id = node.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+                    target = relation_targets.get(rel_id)
+                    if target in media_names and target not in ordered_names:
+                        ordered_names.append(target)
+            except (KeyError, element_tree.ParseError):
+                pass
+
+            # A few exporters omit relationship order. Keep those files useful
+            # with natural numeric ordering rather than ``image1,image10,image2``.
+            def natural_key(value):
+                return [int(part) if part.isdigit() else part.casefold()
+                        for part in re.split(r'(\d+)', value)]
+
+            ordered_names.extend(sorted(
+                (name for name in media_names if name not in ordered_names),
+                key=natural_key,
+            ))
+            return [
+                (Path(name).name, document.read(name))
+                for name in ordered_names[:max(1, int(limit))]
+                if document.getinfo(name).file_size
+            ]
+    except (zipfile.BadZipFile, KeyError, OSError, ValueError):
         return []
+
+
+def _embedded_docx_image_count(file_bytes, filename: str) -> int:
+    """Count OCR-capable embedded DOCX pages without loading their bytes."""
+    if not str(filename or '').lower().endswith('.docx'):
+        return 0
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as document:
+            return sum(
+                1 for name in document.namelist()
+                if name.startswith('word/media/')
+                and Path(name).suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif')
+            )
+    except (zipfile.BadZipFile, OSError):
+        return 0
 
 
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all", _archive_depth=0):
@@ -3988,7 +4075,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 'structured_data': {}}
     TEXT_EXTS = ('docx', 'doc', 'txt', 'csv', 'xlsx', 'xls')  # без pdf — у него своя ветка ниже
     IMAGE_EXTS = ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif')
-    TEXT_INNER_LIMIT = 4 * 1024 * 1024     # текстовые файлы — как раньше, 4 МБ
+    TEXT_INNER_LIMIT = 4 * 1024 * 1024     # обычные текстовые файлы
+    WORD_SCAN_INNER_LIMIT = 30 * 1024 * 1024  # DOCX может быть контейнером сканов
     IMAGE_INNER_LIMIT = 15 * 1024 * 1024   # фото крупнее (сами уменьшаются перед отправкой)
     PDF_INNER_LIMIT = 80 * 1024 * 1024     # PDF-сканы (паспорта/трудовые) часто крупнее — до 20 МБ
     MAX_ITEMS = 60  # защита от архивов с сотнями фото — вышло бы на часы обработки
@@ -4011,7 +4099,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 ext = fixed.rsplit('.', 1)[-1].lower() if '.' in fixed else ''
                 if ext == 'pdf' and info.file_size <= PDF_INNER_LIMIT:
                     entries.append((name, fixed, info.file_size, 'pdf'))
-                elif ext in TEXT_EXTS and info.file_size <= TEXT_INNER_LIMIT:
+                elif (ext in TEXT_EXTS
+                      and info.file_size <= (WORD_SCAN_INNER_LIMIT if ext in ('docx', 'doc') else TEXT_INNER_LIMIT)):
                     entries.append((name, fixed, info.file_size, 'text'))
                 elif ext in IMAGE_EXTS and info.file_size <= IMAGE_INNER_LIMIT:
                     entries.append((name, fixed, info.file_size, 'image'))
@@ -4078,7 +4167,14 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     except Exception as parse_error:
                         print(f"  ⚠️ Не удалось структурно разобрать {short}: {parse_error}")
                 txt = extract_text_from_file(data, short)
-                if txt and len(txt) > 10:
+                embedded_count = _embedded_docx_image_count(data, short)
+                # A Word file can contain a short caption plus twenty scanned
+                # pages.  The caption is not a substitute for the scans; read
+                # them whenever the Word text is absent or clearly incidental.
+                should_read_embedded = embedded_count and (
+                    not txt or len(txt) <= 80 or not _looks_like_real_text(txt)
+                )
+                if txt and len(txt) > 10 and not should_read_embedded:
                     prefix = f"--- {folder + '/' if folder else ''}{short} ---"
                     if _is_extraction_error_text(txt):
                         texts.append(prefix + " ⚠️ ОШИБКА ЧТЕНИЯ\n" + txt)
@@ -4109,19 +4205,31 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     # service within its memory/API limit.
                     from concurrent.futures import ThreadPoolExecutor, as_completed
                     image_text_by_index = {}
+                    image_read_errors = []
                     with ThreadPoolExecutor(max_workers=min(2, len(embedded))) as executor:
                         futures = [
                             executor.submit(read_embedded_image, index, image_name, image_bytes)
                             for index, (image_name, image_bytes) in enumerate(embedded, 1)
                         ]
                         for future in as_completed(futures):
-                            image_index, image_text = future.result()
-                            if image_text:
-                                image_text_by_index[image_index] = image_text
+                            try:
+                                image_index, image_text = future.result()
+                                if image_text:
+                                    image_text_by_index[image_index] = image_text
+                            except Exception:
+                                # One damaged page must not discard OCR already
+                                # obtained from the rest of a scanned Word file.
+                                image_read_errors.append('одна из страниц')
                     image_texts = [image_text_by_index[index] for index in sorted(image_text_by_index)]
                     prefix = f"--- {folder + '/' if folder else ''}{short} ---"
                     if image_texts:
-                        texts.append(prefix + "\n" + "\n\n".join(image_texts))
+                        block = prefix + "\n" + "\n\n".join(image_texts)
+                        if embedded_count > len(embedded):
+                            block += (f"\n\n[⚠️ В документе {embedded_count} сканов; "
+                                      f"прочитаны первые {len(embedded)}. Остальные страницы требуют отдельной загрузки.]")
+                        if image_read_errors:
+                            block += "\n\n[⚠️ Не удалось прочитать одну или несколько страниц внутри документа.]"
+                        texts.append(block)
                     else:
                         texts.append(prefix + " ⚠️ ОШИБКА ЧТЕНИЯ\n[Не удалось прочитать изображения внутри документа.]")
             except Exception as e:
@@ -4660,6 +4768,162 @@ class H(http.server.BaseHTTPRequestHandler):
             else: self.send_response(404); self.end_headers()
         else: self.send_response(404); self.end_headers()
 
+    def _handle_large_archive_upload(self, user, content_length):
+        """Accept a large multipart archive without duplicating it in RAM.
+
+        The legacy parser reads the full request and then splits it, which can
+        temporarily create several copies of a RAR.  Large scans then make a
+        512 MB Render instance restart before it returns the task id.
+        """
+        import uuid as _uuid
+        content_type = self.headers.get('Content-Type', '')
+        if 'multipart/form-data' not in content_type:
+            self._json({'success': False, 'error': 'Файл не найден в запросе.'}, 400)
+            return
+        try:
+            import re as _multipart_re
+            boundary_match = _multipart_re.search(r'boundary=([^;]+)', content_type)
+            if not boundary_match:
+                raise ValueError('boundary is missing')
+            boundary = boundary_match.group(1).strip().strip('"').encode('utf-8')
+            boundary_line = b'--' + boundary
+            delimiter = b'\r\n' + boundary_line
+            pending = b''
+            remaining = int(content_length)
+
+            def fill():
+                nonlocal pending, remaining
+                if remaining <= 0:
+                    return False
+                chunk = self.rfile.read(min(1024 * 1024, remaining))
+                remaining -= len(chunk)
+                pending += chunk
+                return bool(chunk)
+
+            def read_line():
+                nonlocal pending
+                while b'\n' not in pending and fill():
+                    pass
+                if not pending:
+                    return b''
+                end = pending.find(b'\n')
+                if end < 0:
+                    line, pending = pending, b''
+                    return line
+                line, pending = pending[:end + 1], pending[end + 1:]
+                return line
+
+            def read_part_body(output):
+                nonlocal pending
+                while True:
+                    index = pending.find(delimiter)
+                    if index >= 0:
+                        output(pending[:index])
+                        pending = pending[index + 2:]
+                        return
+                    # Retain enough bytes to recognise a boundary split between
+                    # two network chunks; write everything else straight to disk.
+                    keep = len(delimiter) + 4
+                    if len(pending) > keep:
+                        output(pending[:-keep])
+                        pending = pending[-keep:]
+                    if not fill():
+                        raise ValueError('multipart body ended before boundary')
+
+            fields = {}
+            staged_file = None
+            filename = ''
+            while True:
+                marker = read_line().rstrip(b'\r\n')
+                if marker == boundary_line + b'--' or not marker:
+                    break
+                if marker != boundary_line:
+                    continue
+                raw_headers = bytearray()
+                while True:
+                    line = read_line()
+                    if line in (b'\r\n', b'\n', b''):
+                        break
+                    raw_headers.extend(line)
+                header_text = raw_headers.decode('utf-8', 'replace')
+                name_match = _multipart_re.search(r'name="([^"]+)"', header_text)
+                file_match = _multipart_re.search(r'filename="([^"]*)"', header_text)
+                field_name = name_match.group(1) if name_match else ''
+                if file_match and field_name == 'file' and staged_file is None:
+                    filename = Path(file_match.group(1)).name
+                    staged_file = ARCHIVE_UPLOAD_DIR / ('stream-' + str(_uuid.uuid4()) + '.source')
+                    with staged_file.open('wb') as output:
+                        read_part_body(output.write)
+                else:
+                    value = bytearray()
+                    read_part_body(value.extend)
+                    fields[field_name] = value.decode('utf-8', 'replace').strip()
+            if staged_file is None or not filename:
+                raise ValueError('file field is missing')
+            archive_product = str(fields.get('product', 'all') or 'all')
+            client_upload_id = str(fields.get('upload_id', '') or '').strip()[:96]
+        except Exception:
+            self._json({'success': False, 'error': 'Файл не удалось принять. Повторите загрузку.'}, 400)
+            return
+
+        if archive_product == 'all':
+            low_name = filename.lower().replace('ё', 'е')
+            if 'исо' in low_name and 'суот' in low_name:
+                archive_product = 'iso_suot'
+            elif 'суот' in low_name:
+                archive_product = 'suot'
+            elif 'исо' in low_name or 'iso' in low_name:
+                archive_product = 'iso'
+        existing = find_archive_task_by_upload_id(user['id'], client_upload_id)
+        if existing:
+            self._json({'success': True, 'async': True, 'task_id': existing[0]})
+            return
+        if not reserve_archive_processing():
+            self._json({'success': False, 'error': 'Сейчас уже разбирается другой архив. Дождитесь завершения обработки.'}, 429)
+            return
+
+        task_id = str(_uuid.uuid4())[:8]
+        archive_path = ARCHIVE_UPLOAD_DIR / f'{task_id}.upload'
+        staged_path = staged_file
+        max_bytes = 200 * 1024 * 1024
+        try:
+            if staged_path.stat().st_size > max_bytes:
+                raise ValueError('too_large')
+            ext = Path(filename).suffix.lower()
+            if ext in ('.pdf', '.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.docx', '.doc'):
+                entry_name = Path(filename).name
+                with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as packed:
+                    packed.write(staged_path, entry_name)
+                filename = f'{Path(entry_name).stem}_для_обработки.zip'
+                staged_path.unlink(missing_ok=True)
+            else:
+                staged_path.replace(archive_path)
+        except ValueError as exc:
+            staged_path.unlink(missing_ok=True)
+            archive_path.unlink(missing_ok=True)
+            release_archive_processing()
+            if str(exc) == 'too_large':
+                self._json({'success': False, 'error': 'Файл слишком большой для загрузки. Разделите архив на части.'}, 413)
+            else:
+                self._json({'success': False, 'error': 'Файл не удалось сохранить для обработки. Повторите загрузку.'}, 400)
+            return
+        except OSError:
+            staged_path.unlink(missing_ok=True)
+            archive_path.unlink(missing_ok=True)
+            release_archive_processing()
+            self._json({'success': False, 'error': 'Не удалось сохранить файл для обработки. Повторите загрузку.'}, 507)
+            return
+
+        TASKS[task_id] = {
+            'status': 'running', 'kind': 'archive', 'progress': [], 'step': 0, 'total': 100,
+            'owner_user_id': user['id'], 'filename': filename, 'product': archive_product,
+            'archive_upload': archive_path.name, 'client_upload_id': client_upload_id,
+        }
+        save_task(task_id, TASKS[task_id])
+        _prune_tasks()
+        threading.Thread(target=_run_archive_task, args=(task_id,), daemon=True).start()
+        self._json({'success': True, 'async': True, 'task_id': task_id})
+
     def do_POST(self):
         p=self.path.split('?')[0]
         if p == '/api/auth/login':
@@ -4696,7 +4960,13 @@ class H(http.server.BaseHTTPRequestHandler):
         if not auth_route_allowed(user['role'], 'POST', p):
             self._json({'success': False, 'error': 'Недостаточно прав.'}, 403)
             return
-        body=self.rfile.read(int(self.headers.get('Content-Length',0)))
+        content_length = int(self.headers.get('Content-Length', 0))
+        # Stream larger uploads: reading/splitting a 30–100 MB RAR in memory
+        # can otherwise restart the service before the browser gets a task id.
+        if p == '/api/extract-archive-async' and content_length > 15 * 1024 * 1024:
+            self._handle_large_archive_upload(user, content_length)
+            return
+        body=self.rfile.read(content_length)
         try:
             if p == '/api/task/cancel':
                 task_id = str(json.loads(body).get('task_id') or '')
@@ -4906,16 +5176,25 @@ class H(http.server.BaseHTTPRequestHandler):
                 filename = None
                 file_bytes = None
                 archive_product = 'all'
+                client_upload_id = ''
                 for part in parts:
                     if b'Content-Disposition' not in part: continue
                     header_end = part.find(b'\r\n\r\n')
                     if header_end == -1: continue
                     header = part[:header_end].decode('utf-8','replace')
-                    body_value = part[header_end+4:].rstrip(b'\r\n--')
+                    body_value = part[header_end+4:]
+                    # ``split(boundary)`` has already removed the delimiter.
+                    # Remove only its protocol CRLF, never arbitrary trailing
+                    # hyphens/newlines from the binary archive itself.
+                    if body_value.endswith(b'\r\n'):
+                        body_value = body_value[:-2]
                     name_m = _re3.search(r'name="([^"]+)"', header)
                     field_name = name_m.group(1) if name_m else ''
                     if field_name == 'product' and b'filename=' not in part:
                         archive_product = body_value.decode('utf-8','replace').strip() or 'all'
+                        continue
+                    if field_name == 'upload_id' and b'filename=' not in part:
+                        client_upload_id = body_value.decode('ascii', 'ignore').strip()[:96]
                         continue
                     if b'filename=' not in part: continue
                     m = _re3.search(r'filename="([^"]+)"', header)
@@ -4940,6 +5219,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     self._json({'success': False,
                                  'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ), лимит {MAX_ARCHIVE_MB} МБ.'},
                                 413)
+                    return
+
+                existing = find_archive_task_by_upload_id(user['id'], client_upload_id)
+                if existing:
+                    existing_id, _existing_task = existing
+                    self._json({'success': True, 'async': True, 'task_id': existing_id})
                     return
 
                 # Single PDFs and photos use the same durable background queue
@@ -4978,6 +5263,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     'filename': filename,
                     'product': archive_product,
                     'archive_upload': archive_path.name,
+                    'client_upload_id': client_upload_id,
                 }
                 save_task(task_id, TASKS[task_id])
                 _prune_tasks()
