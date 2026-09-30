@@ -462,6 +462,11 @@ def test_wrongly_named_labour_book_pdf_uses_visual_reader(monkeypatch):
     assert server._try_tesseract_first(b'pdf', 'Диплом зам директора.pdf') is None
 
 
+def test_vision_prompt_classifies_document_by_its_contents_not_filename():
+    assert 'Название файла не доказывает вид документа' in server.VISION_PROMPT
+    assert 'ВИД ДОКУМЕНТА:' in server.VISION_PROMPT
+
+
 def test_pdf_page_rendering_releases_native_pdf_resources(monkeypatch):
     """A many-page scan must not retain every PDFium page bitmap in memory."""
     from PIL import Image
