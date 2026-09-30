@@ -462,6 +462,45 @@ def test_wrongly_named_labour_book_pdf_uses_visual_reader(monkeypatch):
     assert server._try_tesseract_first(b'pdf', 'Диплом зам директора.pdf') is None
 
 
+def test_pdf_page_rendering_releases_native_pdf_resources(monkeypatch):
+    """A many-page scan must not retain every PDFium page bitmap in memory."""
+    from PIL import Image
+
+    state = {'document_closed': False, 'page_closed': False, 'bitmap_closed': False}
+
+    class FakeBitmap:
+        def to_pil(self):
+            return Image.new('RGB', (10, 10), 'white')
+
+        def close(self):
+            state['bitmap_closed'] = True
+
+    class FakePage:
+        def render(self, **_kwargs):
+            return FakeBitmap()
+
+        def close(self):
+            state['page_closed'] = True
+
+    class FakeDocument:
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, _index):
+            return FakePage()
+
+        def close(self):
+            state['document_closed'] = True
+
+    fake_document = FakeDocument()
+    monkeypatch.setitem(sys.modules, 'pypdfium2', SimpleNamespace(PdfDocument=lambda _data: fake_document))
+
+    images = server._pdf_pages_to_images(b'%PDF-test', max_pages=1)
+
+    assert len(images) == 1
+    assert state == {'document_closed': True, 'page_closed': True, 'bitmap_closed': True}
+
+
 def test_spk_si_prompt_sends_ambiguous_local_ocr_to_vision(monkeypatch):
     monkeypatch.setattr(server, '_tesseract_pdf_pages', lambda *_args, **_kwargs: (1, ['aGVsbG8='], ['обычный OCR текст']))
 

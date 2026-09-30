@@ -1597,15 +1597,35 @@ def _pdf_pages_to_images(file_bytes, max_pages=6, max_dim=1900, quality=82):
     try:
         n_pages = min(len(doc), max_pages)
         for i in range(n_pages):
-            page = doc[i]
-            bitmap = page.render(scale=150/72)  # 150 DPI
-            img = bitmap.to_pil().convert('RGB')
-            if max(img.size) > max_dim:
-                ratio = max_dim / max(img.size)
-                img = img.resize((int(img.size[0]*ratio), int(img.size[1]*ratio)), Image.LANCZOS)
-            buf = _io4.BytesIO()
-            img.save(buf, 'JPEG', quality=quality, optimize=True)
-            images_b64.append(base64.b64encode(buf.getvalue()).decode('utf-8'))
+            # PDFium keeps a native bitmap for each rendered page. Close it on
+            # every iteration: retaining them makes a long PDF exhaust Render's
+            # 512 MB process limit before the text can be read.
+            page = bitmap = source_img = img = resized = None
+            try:
+                page = doc[i]
+                bitmap = page.render(scale=150/72)  # 150 DPI
+                source_img = bitmap.to_pil()
+                img = source_img.convert('RGB')
+                if max(img.size) > max_dim:
+                    ratio = max_dim / max(img.size)
+                    resized = img.resize(
+                        (int(img.size[0] * ratio), int(img.size[1] * ratio)),
+                        Image.LANCZOS,
+                    )
+                    img.close()
+                    img = resized
+                with _io4.BytesIO() as buf:
+                    img.save(buf, 'JPEG', quality=quality, optimize=True)
+                    images_b64.append(base64.b64encode(buf.getvalue()).decode('utf-8'))
+            finally:
+                if img is not None:
+                    img.close()
+                if source_img is not None and source_img is not img:
+                    source_img.close()
+                if bitmap is not None:
+                    bitmap.close()
+                if page is not None:
+                    page.close()
     finally:
         doc.close()
     return images_b64
