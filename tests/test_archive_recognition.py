@@ -491,6 +491,31 @@ def test_generic_pdf_fallback_uses_detailed_page_render(monkeypatch):
     assert rendered == [{'max_pages': 8, 'max_dim': 2400}]
 
 
+def test_detailed_pdf_fallback_reads_each_page_separately(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 2)
+    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['cGFnZTE=', 'cGFnZTI='])
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': 'ВИД ДОКУМЕНТА: трудовая книжка'}}]}
+
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: calls.append(kwargs['json']) or Response())
+
+    server.vision_extract(b'%PDF', 'ТК сотрудника.pdf', 'unused')
+
+    assert len(calls) == 2
+    assert all(payload['max_tokens'] == 3500 for payload in calls)
+    assert all(
+        len([block for block in payload['messages'][0]['content'] if block['type'] == 'image_url']) == 1
+        for payload in calls
+    )
+
+
 def test_pdf_page_rendering_releases_native_pdf_resources(monkeypatch):
     """A many-page scan must not retain every PDFium page bitmap in memory."""
     from PIL import Image

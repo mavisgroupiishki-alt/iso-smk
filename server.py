@@ -1563,6 +1563,12 @@ def _is_labour_book_text(text: str) -> bool:
     ))
 
 
+def _is_detailed_personal_pdf_filename(filename: str) -> bool:
+    """Recognise client shorthand for a personal labour-book scan, not a tech card."""
+    name = str(filename or '').casefold().replace('ё', 'е')
+    return bool(re.search(r'(?u)(?:^|[\s._-])т\.?к\.?\s+(?:зам|дир|сотруд|работ|спец|итр)', name))
+
+
 def _pdf_page_limit(filename: str) -> int:
     """Use a larger safe page limit for labour books than for ordinary PDFs."""
     return 40 if _is_labour_book_filename(filename) else 8
@@ -1871,10 +1877,11 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 # Personal files often combine two rotated pages in one scan.
                 # Send those ordinary PDFs at a larger readable size; the SI
                 # register keeps its lower size and dedicated local pipeline.
+                detailed_personal_pdf = _is_detailed_personal_pdf_filename(filename)
                 pages_b64 = _pdf_pages_to_images(
                     file_bytes,
                     max_pages=max_pages,
-                    max_dim=2400 if prompt_override != SPK_SI_VISION_PROMPT else 1900,
+                    max_dim=2400 if detailed_personal_pdf else 1900,
                 )
         except Exception as e:
             print(f"  ❌ vision_extract({filename}): не удалось конвертировать PDF в изображения — {type(e).__name__}: {e}")
@@ -1885,7 +1892,12 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # One SI certificate usually occupies one page.  Keeping it in a separate
         # vision response makes its serial/verification facts unambiguously belong
         # to that device instead of a neighbouring certificate in the same batch.
-        batch_size = 1 if single_page_batches else 2
+        is_spk_si_read = prompt_override == SPK_SI_VISION_PROMPT
+        # Handwritten personnel documents need the largest possible text on
+        # each page. Sending two spreads together causes slow, incomplete
+        # replies; two one-page requests can use the existing Vision slots.
+        detailed_pdf_read = _is_detailed_personal_pdf_filename(filename)
+        batch_size = 1 if (single_page_batches or detailed_pdf_read) else 2
         # One weak SI page must not keep the complete archive waiting four
         # minutes (two 120-second attempts).  The local OCR has already had a
         # chance; the exact fallback gets a bounded two attempts of 70 seconds.
@@ -1898,7 +1910,6 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
                 for b64 in batch
             ]
-            is_spk_si_read = prompt_override == SPK_SI_VISION_PROMPT
             page_note = (
                 "Верни только структурированные строки из инструкции; полный текст страницы не нужен."
                 if is_spk_si_read else
@@ -1916,7 +1927,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 # СПК-СИ needs only a few structured fields.  Asking for an
                 # eight-thousand-token transcription made a weak single page
                 # time out and blocked the whole archive.
-                "max_tokens": 2000 if is_spk_si_read else 8000,
+                "max_tokens": 2000 if is_spk_si_read else 3500,
                 "messages": [{"role": "user", "content": content_blocks}],
             }
             if progress_cb:
@@ -2002,7 +2013,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # is also safe for a short ordinary PDF (for example a four-page labour
         # book or lease): the groups remain separate in the result and are put
         # back in page order below.  Long/heavy PDFs stay sequential.
-        if (single_page_batches or parallel_page_batches) and len(starts) > 1:
+        if (single_page_batches or parallel_page_batches or detailed_pdf_read) and len(starts) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=2) as executor:
                 outputs_by_start = dict(local_page_outputs)
