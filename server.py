@@ -1563,12 +1563,6 @@ def _is_labour_book_text(text: str) -> bool:
     ))
 
 
-def _is_detailed_personal_pdf_filename(filename: str) -> bool:
-    """Recognise client shorthand for a personal labour-book scan, not a tech card."""
-    name = str(filename or '').casefold().replace('ё', 'е')
-    return bool(re.search(r'(?u)(?:^|[\s._-])т\.?к\.?\s+(?:зам|дир|сотруд|работ|спец|итр)', name))
-
-
 def _pdf_page_limit(filename: str) -> int:
     """Use a larger safe page limit for labour books than for ordinary PDFs."""
     return 40 if _is_labour_book_filename(filename) else 8
@@ -1874,14 +1868,13 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 total_pages, pages_b64, _ = local_spk_si_pages
             else:
                 total_pages = _pdf_total_pages(file_bytes)
-                # Personal files often combine two rotated pages in one scan.
-                # Send those ordinary PDFs at a larger readable size; the SI
-                # register keeps its lower size and dedicated local pipeline.
-                detailed_personal_pdf = _is_detailed_personal_pdf_filename(filename)
+                # A PDF that reached this fallback was not read reliably by
+                # local OCR. Render every such non-SI scan at a readable size;
+                # this depends on the scan result, never its filename.
                 pages_b64 = _pdf_pages_to_images(
                     file_bytes,
                     max_pages=max_pages,
-                    max_dim=2400 if detailed_personal_pdf else 1900,
+                    max_dim=2400 if prompt_override != SPK_SI_VISION_PROMPT else 1900,
                 )
         except Exception as e:
             print(f"  ❌ vision_extract({filename}): не удалось конвертировать PDF в изображения — {type(e).__name__}: {e}")
@@ -1893,10 +1886,10 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # vision response makes its serial/verification facts unambiguously belong
         # to that device instead of a neighbouring certificate in the same batch.
         is_spk_si_read = prompt_override == SPK_SI_VISION_PROMPT
-        # Handwritten personnel documents need the largest possible text on
-        # each page. Sending two spreads together causes slow, incomplete
-        # replies; two one-page requests can use the existing Vision slots.
-        detailed_pdf_read = _is_detailed_personal_pdf_filename(filename)
+        # A non-SI PDF reaches this point only when local OCR was not reliable.
+        # Read each hard scan separately at full scale; two pages can use the
+        # existing Vision slots without tying correctness to a file name.
+        detailed_pdf_read = not is_spk_si_read
         batch_size = 1 if (single_page_batches or detailed_pdf_read) else 2
         # One weak SI page must not keep the complete archive waiting four
         # minutes (two 120-second attempts).  The local OCR has already had a

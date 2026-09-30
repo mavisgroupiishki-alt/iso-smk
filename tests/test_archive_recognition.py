@@ -516,6 +516,33 @@ def test_detailed_pdf_fallback_reads_each_page_separately(monkeypatch):
     )
 
 
+def test_unlabelled_hard_to_read_pdf_uses_detailed_page_reader(monkeypatch):
+    rendered = []
+    calls = []
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 2)
+    monkeypatch.setattr(
+        server,
+        '_pdf_pages_to_images',
+        lambda *_args, **kwargs: rendered.append(kwargs) or ['cGFnZTE=', 'cGFnZTI='],
+    )
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': 'ВИД ДОКУМЕНТА: аттестат'}}]}
+
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: calls.append(kwargs['json']) or Response())
+
+    server.vision_extract(b'%PDF', 'scan-001.pdf', 'unused')
+
+    assert rendered == [{'max_pages': 8, 'max_dim': 2400}]
+    assert len(calls) == 2
+    assert all(payload['max_tokens'] == 3500 for payload in calls)
+
+
 def test_pdf_page_rendering_releases_native_pdf_resources(monkeypatch):
     """A many-page scan must not retain every PDFium page bitmap in memory."""
     from PIL import Image
@@ -877,9 +904,9 @@ def test_short_pdf_page_groups_can_run_in_parallel_without_changing_order(monkey
 
     text = server.vision_extract(b'pdf', 'трудовая.pdf', 'unused', parallel_page_batches=True)
 
-    assert '--- СТРАНИЦЫ 1-2 ---\na' in text
-    assert '--- СТРАНИЦЫ 3-4 ---\nc' in text
-    assert text.index('СТРАНИЦЫ 1-2') < text.index('СТРАНИЦЫ 3-4')
+    assert '--- СТРАНИЦЫ 1-1 ---\na' in text
+    assert '--- СТРАНИЦЫ 4-4 ---\nd' in text
+    assert text.index('СТРАНИЦЫ 1-1') < text.index('СТРАНИЦЫ 4-4')
 
 
 def test_spk_si_folder_stays_a_source_block_and_reaches_evidence_parser(monkeypatch):
@@ -1006,9 +1033,14 @@ def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
         def json(self):
             return {'choices': [{'message': {'content': 'Распознанный текст'}}]}
 
-    def fake_post(*_args, **_kwargs):
-        calls.append(True)
-        if len(calls) == 1:
+    def fake_post(*_args, **kwargs):
+        page = next(
+            block['image_url']['url'].rsplit(',', 1)[-1]
+            for block in kwargs['json']['messages'][0]['content']
+            if block['type'] == 'image_url'
+        )
+        calls.append(page)
+        if page == 'a' and calls.count('a') == 1:
             raise server.req_lib.exceptions.Timeout()
         return Response()
 
@@ -1017,9 +1049,10 @@ def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
     progress = []
     text = server.vision_extract(b'pdf', 'поверка.pdf', 'unused', progress_cb=progress.append)
 
-    assert text.count('Распознанный текст') == 1
-    assert len(calls) == 2
-    assert any('повторяю только их' in message for message in progress)
+    assert text.count('Распознанный текст') == 2
+    assert calls.count('a') == 2
+    assert calls.count('b') == 1
+    assert any('Страницы 1–1 читаются дольше обычного' in message for message in progress)
 
 
 def test_pdf_reports_progress_for_each_recognition_batch(monkeypatch):
@@ -1039,8 +1072,9 @@ def test_pdf_reports_progress_for_each_recognition_batch(monkeypatch):
 
     server.vision_extract(b'pdf', 'трудовая.pdf', 'unused', progress_cb=progress.append)
 
-    assert 'Распознаю страницы 1–2 из 3' in progress
-    assert 'Прочитаны страницы 1–2 из 3' in progress
+    assert 'Распознаю страницы 1–1 из 3' in progress
+    assert 'Прочитаны страницы 1–1 из 3' in progress
+    assert 'Распознаю страницы 2–2 из 3' in progress
     assert 'Распознаю страницы 3–3 из 3' in progress
 
 
