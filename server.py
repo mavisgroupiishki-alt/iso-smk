@@ -4022,13 +4022,14 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                             return image_index, f"[Вложенное изображение {image_index}]\n{visual_text}"
                         return image_index, ''
 
-                    # A DOCX often stores consecutive pages of the same scanned
-                    # labour book as separate images. They are independent reads;
-                    # run at most two while the global semaphore keeps the whole
-                    # service within its memory/API limit.
+                    # A DOCX may contain several full-resolution scan pages. They
+                    # must be read one at a time: decoding two pages alongside a
+                    # vision request can exceed the web service memory limit and
+                    # restart the whole archive job. A completed archive is more
+                    # important than a small speed gain on one labour book.
                     from concurrent.futures import ThreadPoolExecutor, as_completed
                     image_text_by_index = {}
-                    with ThreadPoolExecutor(max_workers=min(2, len(embedded))) as executor:
+                    with ThreadPoolExecutor(max_workers=1) as executor:
                         futures = [
                             executor.submit(read_embedded_image, index, image_name, image_bytes)
                             for index, (image_name, image_bytes) in enumerate(embedded, 1)
