@@ -48,6 +48,20 @@ def test_archive_processing_slot_rejects_parallel_jobs():
     server.release_archive_processing()
 
 
+def test_cancelling_archive_prevents_an_automatic_resume(monkeypatch):
+    task = {'kind': 'archive', 'status': 'running', 'progress': ['Читаю файл']}
+    monkeypatch.setattr(server, 'TASKS', {'task-1': task})
+    saved = []
+    monkeypatch.setattr(server, 'save_task', lambda task_id, value: saved.append((task_id, value['status'])))
+
+    cancelled = server.cancel_archive_task('task-1')
+
+    assert cancelled is task
+    assert task['status'] == 'cancelled'
+    assert saved == [('task-1', 'cancelled')]
+    assert 'Файл не внесён' in task['progress'][-1]
+
+
 def test_archive_keeps_heavy_pdfs_serial_but_reads_small_scans_in_parallel():
     entries = [
         ('one.pdf', 'one.pdf', 5 * 1024 * 1024, 'pdf'),

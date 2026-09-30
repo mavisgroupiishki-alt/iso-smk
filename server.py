@@ -137,7 +137,7 @@ _AUTH_SESSION_SECONDS = 60 * 60 * 24 * 30
 _AUTH_OPERATOR_ROUTES = {
     ('POST', '/api/analyze-image'), ('POST', '/api/extract-text'),
     ('POST', '/api/extract-archive-async'), ('POST', '/api/ai/chat'),
-    ('POST', '/api/generate'),
+    ('POST', '/api/generate'), ('POST', '/api/task/cancel'),
 }
 
 
@@ -547,6 +547,10 @@ ARCHIVE_PROCESSING_IN_PROGRESS = {'active': False}
 TASKS = {}  # task_id -> {status, progress, result, error}
 
 
+class ArchiveTaskCancelled(Exception):
+    """Stop a background archive only at a safe progress boundary."""
+
+
 def reserve_archive_processing():
     """Reserve the single archive-processing slot without a race."""
     with ARCHIVE_PROCESSING_LOCK:
@@ -560,6 +564,18 @@ def release_archive_processing():
     with ARCHIVE_PROCESSING_LOCK:
         ARCHIVE_PROCESSING_IN_PROGRESS['active'] = False
 
+
+def cancel_archive_task(task_id):
+    """Mark a running archive as cancelled so it is not resumed after a restart."""
+    task = TASKS.get(task_id) or load_task(task_id)
+    if not task or task.get('kind') != 'archive' or task.get('status') != 'running':
+        return None
+    task['status'] = 'cancelled'
+    task['progress'] = (task.get('progress') or [])[-29:] + ['Обработка отменена. Файл не внесён в карточку.']
+    TASKS[task_id] = task
+    save_task(task_id, task)
+    return task
+
 def _prune_tasks(keep=2):
     """
     Каждая завершённая задача несёт готовый ZIP в base64 (десятки МБ).
@@ -569,7 +585,7 @@ def _prune_tasks(keep=2):
     Держим в памяти только последние `keep` ЗАВЕРШЁННЫХ задач — активные ('running') не трогаем.
     """
     try:
-        finished_ids = [tid for tid, t in TASKS.items() if t.get('status') in ('done', 'error')]
+        finished_ids = [tid for tid, t in TASKS.items() if t.get('status') in ('done', 'error', 'cancelled')]
         if len(finished_ids) > keep:
             for old_id in finished_ids[:-keep]:
                 TASKS.pop(old_id, None)
@@ -3348,6 +3364,8 @@ def _run_archive_task(task_id):
 
         def on_prog(message):
             current = TASKS.get(task_id) or task
+            if current.get('status') == 'cancelled':
+                raise ArchiveTaskCancelled()
             current['progress'] = (current.get('progress') or [])[-30:] + [message]
             TASKS[task_id] = current
             save_task(task_id, current)
@@ -3368,19 +3386,25 @@ def _run_archive_task(task_id):
             result_summary = _compact_archive_summary(result_text)
             structured_data = {}
             read_warnings = _archive_read_warnings(result_text)
+        if (TASKS.get(task_id) or task).get('status') == 'cancelled':
+            raise ArchiveTaskCancelled()
         task.update({'status': 'done', 'kind': 'archive', 'text': result_text,
                      'summary': result_summary, 'analysis_text': result_analysis,
                      'structured_data': structured_data, 'warnings': read_warnings,
                      'filename': filename, 'product': product})
         save_task(task_id, task)
         _prune_tasks()
+    except ArchiveTaskCancelled:
+        task = TASKS.get(task_id) or task
+        task['status'] = 'cancelled'
+        save_task(task_id, task)
     except Exception as exc:
         import traceback; traceback.print_exc()
         task.update({'status': 'error', 'kind': 'archive',
                      'error': _friendly_public_error(str(exc))})
         save_task(task_id, task)
     finally:
-        if task.get('status') in ('done', 'error'):
+        if task.get('status') in ('done', 'error', 'cancelled'):
             try:
                 archive_path.unlink(missing_ok=True)
             except OSError:
@@ -4674,6 +4698,17 @@ class H(http.server.BaseHTTPRequestHandler):
             return
         body=self.rfile.read(int(self.headers.get('Content-Length',0)))
         try:
+            if p == '/api/task/cancel':
+                task_id = str(json.loads(body).get('task_id') or '')
+                task = TASKS.get(task_id) or load_task(task_id)
+                if not task or not auth_owns_record(user, task):
+                    self._json({'success': False, 'error': 'Задача не найдена.'}, 404)
+                    return
+                if not cancel_archive_task(task_id):
+                    self._json({'success': False, 'error': 'Эту задачу уже нельзя отменить.'}, 409)
+                    return
+                self._json({'success': True, 'status': 'cancelled'})
+                return
             if p == '/api/users/create':
                 req = json.loads(body)
                 self._json({'success': True, 'user': auth_create_user(user, req.get('username'), req.get('password'), req.get('role', 'operator'))})
