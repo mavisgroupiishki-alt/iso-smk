@@ -485,6 +485,7 @@ def test_spk_si_fallback_requests_only_structured_facts_with_bounded_response(mo
     prompt = payloads[0]['messages'][0]['content'][-1]['text']
     assert 'Извлеки весь текст' not in prompt
     assert 'Верни только структурированные строки' in prompt
+    assert 'паспорт, руководство или техническое описание' in prompt
 
 
 def test_spk_si_local_ocr_accepts_inventory_and_certificate_without_issue_date():

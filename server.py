@@ -1368,7 +1368,9 @@ SPK_SI_VISION_PROMPT = (
     "ПОВЕРКА | наименование: … | заводской номер: … | номер: … | дата: ДД.ММ.ГГГГ | действует до: ДД.ММ.ГГГГ\n"
     "Если это свидетельство о калибровке, выведи строго одну строку:\n"
     "КАЛИБРОВКА | наименование: … | заводской номер: … | номер: … | дата: ДД.ММ.ГГГГ | действует до: ДД.ММ.ГГГГ\n"
-    "Если на странице нет СИ, поверки или калибровки, ответь: НЕ СИ. "
+    "Если это паспорт, руководство или техническое описание средства измерений, выведи строго одну строку:\n"
+    "СИ | наименование: … | модель: … | заводской номер: … | количество: 1\n"
+    "Если на странице нет средства измерений, поверки, калибровки или паспорта СИ, ответь: НЕ СИ. "
     "Не подменяй неразборчивые цифры догадкой: оставь значение пустым. "
     "В поле «дата» укажи дату свидетельства или поверки, не срок действия; если её нет, оставь пустым."
 )
@@ -1791,6 +1793,13 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                         image = Image.open(_io_spk.BytesIO(base64.b64decode(pages_b64[index])))
                         page_text = _spk_si_best_local_ocr(image, page_text)
                         page_texts[index] = page_text
+                        # The visual fallback needs a clearer rendering of a
+                        # pale scan too.  Do not alter pages already proved by
+                        # local OCR: they never make an external request.
+                        if not _spk_si_tesseract_result_is_complete(page_text):
+                            pages_b64[index] = _image_to_jpeg_b64(
+                                _spk_si_prepare_page_for_vision(image)
+                            )
                     except Exception as exc:
                         print(f"  ℹ️ Tesseract OCR: не удалось проверить поворот страницы {index + 1} "
                               f"в {filename} ({type(exc).__name__})")
@@ -3550,6 +3559,28 @@ def _spk_si_best_local_ocr(image, original_text: str | None) -> str | None:
         if _spk_si_tesseract_result_is_complete(candidate):
             return candidate
     return original_text
+
+
+def _spk_si_prepare_page_for_vision(image):
+    """Make a weak scanned SI page legible before the visual fallback.
+
+    PDF scans often have a pale grey background. Tesseract may correctly reject
+    those pages, but sending the unprepared image to the visual reader made it
+    return an empty result as well. This runs only for a page that failed the
+    strict local evidence check; normal pages retain the fast original render.
+    """
+    from PIL import ImageEnhance, ImageOps
+
+    prepared = image.convert('RGB')
+    prepared = ImageOps.autocontrast(prepared, cutoff=1)
+    return ImageEnhance.Contrast(prepared).enhance(1.8)
+
+
+def _image_to_jpeg_b64(image, quality=88):
+    import io as _io_spk
+    buffer = _io_spk.BytesIO()
+    image.save(buffer, 'JPEG', quality=quality, optimize=True)
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
 
 def _is_spk_si_source_path(filename: str) -> bool:
