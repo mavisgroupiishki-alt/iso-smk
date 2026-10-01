@@ -155,6 +155,31 @@ def test_streamed_archive_upload_saves_docx_without_copying_multipart_to_memory(
         server.release_archive_processing()
 
 
+def test_restart_does_not_resume_an_archive_that_would_exhaust_service_memory(monkeypatch, tmp_path):
+    task_dir = tmp_path / 'tasks'
+    upload_dir = tmp_path / 'uploads'
+    task_dir.mkdir()
+    upload_dir.mkdir()
+    task = {
+        'kind': 'archive', 'status': 'running', 'filename': 'large.rar',
+        'archive_upload': 'task-1.upload', 'progress': [],
+    }
+    (task_dir / 'task-1.json').write_text(json.dumps(task), encoding='utf-8')
+    (upload_dir / 'task-1.upload').write_bytes(b'x' * 9)
+    monkeypatch.setattr(server, 'TASKS_DIR', task_dir)
+    monkeypatch.setattr(server, 'ARCHIVE_UPLOAD_DIR', upload_dir)
+    monkeypatch.setattr(server, 'MAX_ARCHIVE_WORKER_BYTES', 8)
+    monkeypatch.setattr(server, 'TASKS', {})
+    server.release_archive_processing()
+
+    server._resume_pending_archive_task()
+
+    stored = json.loads((task_dir / 'task-1.json').read_text('utf-8'))
+    assert stored['status'] == 'error'
+    assert 'слишком большой' in stored['error']
+    assert not (upload_dir / 'task-1.upload').exists()
+
+
 def test_archive_keeps_heavy_pdfs_serial_but_reads_small_scans_in_parallel():
     entries = [
         ('one.pdf', 'one.pdf', 5 * 1024 * 1024, 'pdf'),

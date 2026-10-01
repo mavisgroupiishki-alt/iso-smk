@@ -544,6 +544,10 @@ VISION_SEMAPHORE = threading.Semaphore(2)
 # намеренно однозадачная.
 ARCHIVE_PROCESSING_LOCK = threading.Lock()
 ARCHIVE_PROCESSING_IN_PROGRESS = {'active': False}
+# A background task reads its source archive and, for RAR, temporarily expands
+# it as ZIP.  Above this limit the two copies plus OCR pages can exhaust the
+# 512 MB service.  Rejecting it visibly is safer than an endless restart loop.
+MAX_ARCHIVE_WORKER_BYTES = 60 * 1024 * 1024
 TASKS = {}  # task_id -> {status, progress, result, error}
 
 
@@ -3390,6 +3394,11 @@ def _run_archive_task(task_id):
     try:
         if not filename or not archive_path.is_file() or not api_key:
             raise RuntimeError('Не удалось восстановить данные загруженного архива. Прикрепите архив ещё раз.')
+        if archive_path.stat().st_size > MAX_ARCHIVE_WORKER_BYTES:
+            raise RuntimeError(
+                'Архив слишком большой для безопасной обработки одним файлом. '
+                'Разделите его на несколько архивов до 60 МБ.'
+            )
         archive_bytes = archive_path.read_bytes()
 
         def on_prog(message):
@@ -3455,6 +3464,21 @@ def _resume_pending_archive_task():
         task_id = task_file.stem
         upload = ARCHIVE_UPLOAD_DIR / str(task.get('archive_upload') or f'{task_id}.upload')
         if task.get('filename') and upload.is_file():
+            if upload.stat().st_size > MAX_ARCHIVE_WORKER_BYTES:
+                task.update({
+                    'status': 'error', 'kind': 'archive',
+                    'error': ('Архив не был обработан: он слишком большой для одного запуска. '
+                              'Разделите его на части до 60 МБ.'),
+                })
+                task['progress'] = (task.get('progress') or [])[-29:] + [
+                    'Архив слишком большой для безопасного продолжения. Файл не внесён в карточку.'
+                ]
+                save_task(task_id, task)
+                try:
+                    upload.unlink()
+                except OSError:
+                    pass
+                continue
             candidates.append((task_file.stat().st_mtime, task_id, task))
     if not candidates or not reserve_archive_processing():
         return
@@ -4885,7 +4909,7 @@ class H(http.server.BaseHTTPRequestHandler):
         task_id = str(_uuid.uuid4())[:8]
         archive_path = ARCHIVE_UPLOAD_DIR / f'{task_id}.upload'
         staged_path = staged_file
-        max_bytes = 200 * 1024 * 1024
+        max_bytes = MAX_ARCHIVE_WORKER_BYTES
         try:
             if staged_path.stat().st_size > max_bytes:
                 raise ValueError('too_large')
@@ -5214,8 +5238,8 @@ class H(http.server.BaseHTTPRequestHandler):
 
                 # Асинхронный режим не привязан к таймауту одного HTTP-запроса, поэтому лимит
                 # щедрее — реальный потолок теперь скорее у самого Render на приём тела запроса.
-                MAX_ARCHIVE_MB = 200
-                if len(file_bytes) > MAX_ARCHIVE_MB * 1024 * 1024:
+                MAX_ARCHIVE_MB = MAX_ARCHIVE_WORKER_BYTES // (1024 * 1024)
+                if len(file_bytes) > MAX_ARCHIVE_WORKER_BYTES:
                     self._json({'success': False,
                                  'error': f'Файл слишком большой ({len(file_bytes)//1024//1024} МБ), лимит {MAX_ARCHIVE_MB} МБ.'},
                                 413)
