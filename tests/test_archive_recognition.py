@@ -1,4 +1,5 @@
 import io
+import base64
 import http.client
 import json
 import os
@@ -20,6 +21,48 @@ def _zip_with_text_file() -> bytes:
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('СИ/перечень.txt', 'Средство измерений: рулетка')
     return buffer.getvalue()
+
+
+def test_company_att_reads_complete_personnel_pdf_from_generic_scan_name():
+    path = 'лидинг/прораб/Отсканированный документ 8.pdf'
+
+    assert server._archive_pdf_page_limit(path, 'company_att') == 24
+    assert server._archive_pdf_page_limit('лидинг/Счет-заказ.pdf', 'company_att') is None
+    assert server._archive_pdf_page_limit(path, 'spk_bisp') is None
+
+
+def test_personnel_pdf_retry_rotates_a_sideways_page():
+    from PIL import Image
+
+    image = Image.new('RGB', (80, 40), 'white')
+    original = server._image_to_jpeg_b64(image)
+    rotated = server._rotate_pdf_page_b64(original)
+
+    decoded = Image.open(io.BytesIO(base64.b64decode(rotated)))
+    assert decoded.size == (40, 80)
+
+
+def test_company_att_passes_generic_personnel_pdf_as_complete_scan(monkeypatch):
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr('лидинг/прораб/Отсканированный документ 8.pdf', b'pdf-scan')
+
+    calls = []
+    monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)
+    monkeypatch.setattr(server, 'extract_text_from_file', lambda *_args, **_kwargs: '[PDF_SCAN: файл является сканом]')
+
+    def fake_vision(_data, filename, *_args, **kwargs):
+        calls.append((filename, kwargs.get('max_pages_override')))
+        return 'Трудовая книжка Алексеева'
+
+    monkeypatch.setattr(server, 'vision_extract_with_retry', lambda *args, **kwargs: (fake_vision(*args, **kwargs), False))
+
+    result = server.extract_archive_with_vision(
+        archive.getvalue(), 'лидинг.zip', 'unused', product='company_att',
+    )
+
+    assert calls == [('лидинг/прораб/Отсканированный документ 8.pdf', 24)]
+    assert 'Трудовая книжка Алексеева' in result['text']
 
 
 def _zip_with_scans() -> bytes:

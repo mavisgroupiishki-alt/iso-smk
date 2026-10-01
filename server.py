@@ -1735,6 +1735,22 @@ def _is_labour_book_filename(filename: str) -> bool:
     ))
 
 
+def _is_personnel_archive_path(filename: str) -> bool:
+    """Recognise a personnel folder even when its scans have a generic iPhone name."""
+    name = str(filename or '').lower().replace('ё', 'е')
+    return any(marker in name for marker in (
+        'директор', 'главн', 'прораб', 'сметчик', 'инженер', 'мастер',
+        'сотрудник', 'персонал', 'специалист', 'трудов', 'диплом', 'аттестат',
+    ))
+
+
+def _archive_pdf_page_limit(filename: str, product: str) -> int | None:
+    """Keep complete personnel scans for company attestation, despite generic filenames."""
+    if str(product) == 'company_att' and _is_personnel_archive_path(filename):
+        return 24
+    return None
+
+
 def _is_labour_book_text(text: str) -> bool:
     """Recognise a labour-book scan even when a client gave the file a wrong name."""
     value = str(text or '').casefold().replace('ё', 'е')
@@ -2067,6 +2083,11 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # vision response makes its serial/verification facts unambiguously belong
         # to that device instead of a neighbouring certificate in the same batch.
         is_spk_si_read = prompt_override == SPK_SI_VISION_PROMPT
+        # Generic iPhone names are common inside folders such as ``прораб``.
+        # When the first reading attempt fails, retry just that page rotated;
+        # this avoids losing a real labour book merely because the scanner did
+        # not write its orientation into the PDF metadata.
+        retry_sideways_personnel_page = _is_personnel_archive_path(filename)
         # A non-SI PDF reaches this point only when local OCR was not reliable.
         # Read each hard scan separately at full scale; two pages can use the
         # existing Vision slots without tying correctness to a file name.
@@ -2080,37 +2101,44 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             batch = pages_b64[batch_start:batch_start + batch_size]
             first_page = batch_start + 1
             last_page = batch_start + len(batch)
-            content_blocks = [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                for b64 in batch
-            ]
             page_note = (
                 "Верни только структурированные строки из инструкции; полный текст страницы не нужен."
                 if is_spk_si_read else
                 "Сохраняй каждую запись трудовой книжки отдельно с точными датами; не придумывай день или месяц."
             )
-            content_blocks.append({
-                "type": "text",
-                "text": active_prompt +
-                    f"\n\nЭто страницы {first_page}–{last_page} из PDF «{filename}». "
-                    + page_note
-            })
-            payload_mb = sum(len(b) for b in batch) / 1024 / 1024
-            vibe_payload = {
-                "model": VIBE_MODEL_VISION,
-                # СПК-СИ needs only a few structured fields.  Asking for an
-                # eight-thousand-token transcription made a weak single page
-                # time out and blocked the whole archive.
-                "max_tokens": 2000 if is_spk_si_read else 3500,
-                "messages": [{"role": "user", "content": content_blocks}],
-            }
-            if progress_cb:
-                progress_cb(f"Распознаю страницы {first_page}–{last_page} из {len(pages_b64)}")
-            print(
-                f"  🔎 vision_extract({filename}): PDF стр. {first_page}-{last_page}/{total_pages}, "
-                f"отправляю {payload_mb:.2f} МБ, жду семафор..."
-            )
             for attempt in range(2):
+                request_batch = batch
+                if attempt == 1 and retry_sideways_personnel_page:
+                    try:
+                        request_batch = [_rotate_pdf_page_b64(page) for page in batch]
+                    except Exception as exc:
+                        print(f"  ℹ️ vision_extract({filename}): не удалось повернуть повторную попытку "
+                              f"стр. {first_page}-{last_page} ({type(exc).__name__})")
+                content_blocks = [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                    for b64 in request_batch
+                ]
+                content_blocks.append({
+                    "type": "text",
+                    "text": active_prompt +
+                        f"\n\nЭто страницы {first_page}–{last_page} из PDF «{filename}». "
+                        + page_note
+                })
+                payload_mb = sum(len(b) for b in request_batch) / 1024 / 1024
+                vibe_payload = {
+                    "model": VIBE_MODEL_VISION,
+                    # СПК-СИ needs only a few structured fields.  Asking for an
+                    # eight-thousand-token transcription made a weak single page
+                    # time out and blocked the whole archive.
+                    "max_tokens": 2000 if is_spk_si_read else 3500,
+                    "messages": [{"role": "user", "content": content_blocks}],
+                }
+                if progress_cb:
+                    progress_cb(f"Распознаю страницы {first_page}–{last_page} из {len(pages_b64)}")
+                print(
+                    f"  🔎 vision_extract({filename}): PDF стр. {first_page}-{last_page}/{total_pages}, "
+                    f"отправляю {payload_mb:.2f} МБ, жду семафор..."
+                )
                 VISION_SEMAPHORE.acquire()
                 t0 = _time.time()
                 try:
@@ -3909,6 +3937,14 @@ def _image_to_jpeg_b64(image, quality=88):
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
 
+def _rotate_pdf_page_b64(page_b64: str) -> str:
+    """Prepare the sideways retry for phone-scanned labour books."""
+    from PIL import Image
+    import io as _io_rotate
+    image = Image.open(_io_rotate.BytesIO(base64.b64decode(page_b64)))
+    return _image_to_jpeg_b64(image.rotate(90, expand=True))
+
+
 def _is_spk_si_source_path(filename: str) -> bool:
     """Whether an archive path is a measurement-equipment source for SPK."""
     value = f' {_spk_si_norm(filename)} '
@@ -4539,8 +4575,10 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                             f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания — "
                             f"пришлите этот документ отдельными фото по 1-2 страницы вместо одного большого PDF]")
                 is_spk_si_source = str(product) in ('spk_stroy', 'spk_bisp') and _is_spk_si_source_path(fixed_name)
+                personnel_page_limit = _archive_pdf_page_limit(fixed_name, product)
+                vision_filename = fixed_name if personnel_page_limit else short
                 txt, _retried = vision_extract_with_retry(
-                    data, short, api_key,
+                    data, vision_filename, api_key,
                     # The SI register can be a single PDF with one inventory page
                     # followed by a certificate per device.  Eight pages silently
                     # discarded most of that evidence; use a bounded full register
@@ -4548,7 +4586,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     # per request: mixing two certificates risks assigning an
                     # official number or date to the neighbouring instrument.
                     max_pages_override=(32 if is_spk_si_source else
-                                        (2 if str(product) in ('iso', 'suot', 'iso_suot') else None)),
+                                        (personnel_page_limit if personnel_page_limit else
+                                         (2 if str(product) in ('iso', 'suot', 'iso_suot') else None))),
                     prompt_override=(SPK_SI_VISION_PROMPT if is_spk_si_source else None),
                     single_page_batches=is_spk_si_source,
                     # Four-page scans previously waited for the first pair before
