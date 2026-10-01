@@ -51,6 +51,7 @@ const context = {
   aiAddMsg: () => 'progress-id',
   aiUpdateMsg: (_id, message) => progress.push(message),
   aiCurrentData: {},
+  window: {crypto: {randomUUID: () => 'upload-test-id'}},
   FormData: FakeFormData,
   AbortController: FakeAbortController,
   setTimeout: (callback, ms) => {
@@ -70,6 +71,8 @@ vm.runInContext([
   extractFunction('aiStartArchiveUpload'),
   extractFunction('aiFileReadError'),
   extractFunction('aiArchiveIsBusyError'),
+  extractFunction('aiArchiveUploadId'),
+  extractFunction('aiArchiveUploadIsRetryable'),
   extractFunction('aiReadArchiveAsync'),
 ].join('\n\n'), context);
 
@@ -100,24 +103,26 @@ vm.runInContext([
   }
 
   let starts = 0;
+  let queuePolls = 0;
   context.fetch = async (url) => {
     if (url === '/api/extract-archive-async') {
       starts += 1;
-      return {text: async () => JSON.stringify(starts === 1
-        ? {success: false, error: 'Сейчас уже разбирается другой архив'}
-        : {success: true, task_id: 'task-1'}), ok: true};
+      return {text: async () => JSON.stringify({success: true, task_id: 'task-1'}), ok: true};
     }
     if (url === '/api/task/task-1') {
-      return {text: async () => JSON.stringify({status: 'done', text: 'данные', warnings: []})};
+      queuePolls += 1;
+      return {text: async () => JSON.stringify(queuePolls === 1
+        ? {status: 'queued', queuePosition: 2}
+        : {status: 'done', text: 'данные', warnings: []})};
     }
     throw new Error(`unexpected URL ${url}`);
   };
   const queued = await context.aiReadArchiveAsync({name: 'паспорта.zip', size: 512});
-  if (starts !== 2 || queued.content !== 'данные') {
-    throw new Error('busy archive was not retried after the previous file completed');
+  if (starts !== 1 || queued.content !== 'данные') {
+    throw new Error('queued archive was uploaded more than once or did not finish');
   }
-  if (!progress.some(message => message.includes('ожидаю завершения обработки предыдущего файла'))) {
-    throw new Error('queue status was not shown truthfully');
+  if (!progress.some(message => message.includes('в очереди на обработку') && message.includes('загрузка сохранена'))) {
+    throw new Error('saved queue status was not shown truthfully');
   }
 
   context.fetch = async () => ({

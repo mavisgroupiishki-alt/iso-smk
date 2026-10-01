@@ -3,7 +3,7 @@
 import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,hmac,hashlib,secrets,time,struct,requests as req_lib
 import http.server,socketserver
 from pathlib import Path
-from datetime import datetime,timedelta
+from datetime import datetime,timedelta,timezone
 
 BASE_DIR = Path(__file__).parent.resolve()
 
@@ -540,14 +540,15 @@ GENERATION_IN_PROGRESS = {'active': False}
 VISION_SEMAPHORE = threading.Semaphore(2)
 # Один большой архив держит в памяти исходный контейнер, распакованный ZIP и
 # результаты vision. Два таких задания одновременно на Render Free могут
-# перезапустить процесс и потерять оба задания, поэтому очередь здесь
-# намеренно однозадачная.
+# перезапустить процесс. Поэтому исполнение однозадачное, но сами загрузки
+# принимаются в постоянную очередь для всех сотрудников.
 ARCHIVE_PROCESSING_LOCK = threading.Lock()
 ARCHIVE_PROCESSING_IN_PROGRESS = {'active': False}
 # A background task reads its source archive and, for RAR, temporarily expands
 # it as ZIP.  Above this limit the two copies plus OCR pages can exhaust the
 # 512 MB service.  Rejecting it visibly is safer than an endless restart loop.
 MAX_ARCHIVE_WORKER_BYTES = 180 * 1024 * 1024
+ARCHIVE_DISK_HEADROOM_BYTES = 32 * 1024 * 1024
 TASKS = {}  # task_id -> {status, progress, result, error}
 
 
@@ -569,10 +570,125 @@ def release_archive_processing():
         ARCHIVE_PROCESSING_IN_PROGRESS['active'] = False
 
 
+def _archive_storage_has_capacity(upload_size):
+    """Leave room for a source archive and its temporary normalized copy."""
+    try:
+        free_bytes = shutil.disk_usage(ARCHIVE_UPLOAD_DIR).free
+    except OSError:
+        return False
+    expected_bytes = max(0, int(upload_size or 0)) * 2 + ARCHIVE_DISK_HEADROOM_BYTES
+    return free_bytes >= expected_bytes
+
+
+def _archive_task_records():
+    """Return live and durable archive tasks without losing queued uploads on restart."""
+    records = dict(TASKS)
+    try:
+        for task_file in TASKS_DIR.glob('*.json'):
+            task_id = task_file.stem
+            if task_id in records:
+                continue
+            task = load_task(task_id)
+            if task:
+                records[task_id] = task
+    except OSError:
+        pass
+    return records
+
+
+def _archive_queue_key(task_id, task):
+    return (str(task.get('queued_at') or task.get('created_at') or ''), str(task_id))
+
+
+def archive_queue_position(task_id):
+    """One-based position including a currently running archive, or zero."""
+    records = _archive_task_records()
+    active = [
+        (candidate_id, task) for candidate_id, task in records.items()
+        if task.get('kind') == 'archive' and task.get('status') == 'running'
+    ]
+    queued = [
+        (candidate_id, task) for candidate_id, task in records.items()
+        if task.get('kind') == 'archive' and task.get('status') == 'queued'
+    ]
+    ordered = sorted(active, key=lambda pair: _archive_queue_key(*pair)) + sorted(
+        queued, key=lambda pair: _archive_queue_key(*pair)
+    )
+    for position, (candidate_id, _) in enumerate(ordered, 1):
+        if candidate_id == task_id:
+            return position
+    return 0
+
+
+def start_next_archive_task():
+    """Start exactly one durable queued archive task, if no OCR worker is active."""
+    selected = None
+    with ARCHIVE_PROCESSING_LOCK:
+        if ARCHIVE_PROCESSING_IN_PROGRESS['active']:
+            return None
+        records = _archive_task_records()
+        candidates = [
+            (task_id, task) for task_id, task in records.items()
+            if task.get('kind') == 'archive' and task.get('status') in ('queued', 'running')
+        ]
+        for task_id, task in sorted(candidates, key=lambda pair: _archive_queue_key(*pair)):
+            upload = ARCHIVE_UPLOAD_DIR / str(task.get('archive_upload') or f'{task_id}.upload')
+            if not upload.is_file():
+                task.update({
+                    'status': 'error', 'kind': 'archive',
+                    'error': 'Загруженный файл не сохранился. Прикрепите его ещё раз.',
+                })
+                save_task(task_id, task)
+                TASKS[task_id] = task
+                continue
+            if upload.stat().st_size > MAX_ARCHIVE_WORKER_BYTES:
+                task.update({
+                    'status': 'error', 'kind': 'archive',
+                    'error': 'Архив слишком большой для безопасной обработки одним файлом. Разделите его на части.',
+                })
+                task['progress'] = (task.get('progress') or [])[-29:] + [
+                    'Архив слишком большой для безопасной обработки. Файл не внесён в карточку.'
+                ]
+                save_task(task_id, task)
+                TASKS[task_id] = task
+                try:
+                    upload.unlink()
+                except OSError:
+                    pass
+                continue
+            was_running = task.get('status') == 'running'
+            task['status'] = 'running'
+            task['progress'] = (task.get('progress') or [])[-29:] + [
+                'Сервис перезапустился. Продолжаю чтение архива с начала, данные не потеряны.'
+                if was_running else 'Файл принят. Начинаю чтение.'
+            ]
+            TASKS[task_id] = task
+            save_task(task_id, task)
+            ARCHIVE_PROCESSING_IN_PROGRESS['active'] = True
+            selected = task_id
+            break
+    if selected:
+        threading.Thread(target=_run_archive_task, args=(selected,), daemon=True).start()
+    return selected
+
+
+def queue_archive_task(task_id, task):
+    """Persist an upload first, then let the single safe worker pick it up."""
+    task.update({
+        'status': 'queued', 'kind': 'archive',
+        'queued_at': task.get('queued_at') or datetime.now(timezone.utc).isoformat(timespec='microseconds'),
+    })
+    task['progress'] = (task.get('progress') or [])[-29:] + ['Файл принят. Ожидаю свободное место в очереди обработки.']
+    TASKS[task_id] = task
+    save_task(task_id, task)
+    start_next_archive_task()
+    return task
+
+
 def cancel_archive_task(task_id):
     """Mark a running archive as cancelled so it is not resumed after a restart."""
     task = TASKS.get(task_id) or load_task(task_id)
-    if not task or task.get('kind') != 'archive' or task.get('status') != 'running':
+    if not task or task.get('kind') != 'archive' or task.get('status') not in ('queued', 'running'):
         return None
     task['status'] = 'cancelled'
     task['progress'] = (task.get('progress') or [])[-29:] + ['Обработка отменена. Файл не внесён в карточку.']
@@ -3435,6 +3551,7 @@ def _run_archive_task(task_id):
     task = TASKS.get(task_id) or load_task(task_id)
     if not task:
         release_archive_processing()
+        start_next_archive_task()
         return
     TASKS[task_id] = task
     upload_name = str(task.get('archive_upload') or f'{task_id}.upload')
@@ -3504,46 +3621,12 @@ def _run_archive_task(task_id):
             except OSError:
                 pass
         release_archive_processing()
+        start_next_archive_task()
 
 
 def _resume_pending_archive_task():
-    """Resume the newest durable archive job after an intentional process restart."""
-    candidates = []
-    for task_file in TASKS_DIR.glob('*.json'):
-        try:
-            task = json.loads(task_file.read_text('utf-8'))
-        except (OSError, ValueError):
-            continue
-        if task.get('kind') != 'archive' or task.get('status') != 'running':
-            continue
-        task_id = task_file.stem
-        upload = ARCHIVE_UPLOAD_DIR / str(task.get('archive_upload') or f'{task_id}.upload')
-        if task.get('filename') and upload.is_file():
-            if upload.stat().st_size > MAX_ARCHIVE_WORKER_BYTES:
-                task.update({
-                    'status': 'error', 'kind': 'archive',
-                    'error': ('Архив не был обработан: он слишком большой для одного запуска. '
-                              'Разделите его на части до 60 МБ.'),
-                })
-                task['progress'] = (task.get('progress') or [])[-29:] + [
-                    'Архив слишком большой для безопасного продолжения. Файл не внесён в карточку.'
-                ]
-                save_task(task_id, task)
-                try:
-                    upload.unlink()
-                except OSError:
-                    pass
-                continue
-            candidates.append((task_file.stat().st_mtime, task_id, task))
-    if not candidates or not reserve_archive_processing():
-        return
-    _, task_id, task = max(candidates)
-    TASKS[task_id] = task
-    task['progress'] = (task.get('progress') or [])[-29:] + [
-        'Сервис перезапустился. Продолжаю чтение архива с начала, данные не потеряны.'
-    ]
-    save_task(task_id, task)
-    threading.Thread(target=_run_archive_task, args=(task_id,), daemon=True).start()
+    """Resume the oldest unfinished archive, then continue the durable FIFO queue."""
+    start_next_archive_task()
 
 
 _SPK_COPY_LIST_TOOLS = (
@@ -4851,7 +4934,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     'summary': task.get('summary', ''),
                     'structured_data': task.get('structured_data') or {},
                     'filename':  task.get('filename',''),
-                    'warnings': task.get('warnings', [])
+                    'warnings': task.get('warnings', []),
+                    'queuePosition': (
+                        archive_queue_position(task_id)
+                        if task.get('kind') == 'archive' and task.get('status') in ('queued', 'running')
+                        else 0
+                    ),
                 })
             else:
                 self._json({'status':'not_found'})
@@ -4879,6 +4967,12 @@ class H(http.server.BaseHTTPRequestHandler):
         content_type = self.headers.get('Content-Type', '')
         if 'multipart/form-data' not in content_type:
             self._json({'success': False, 'error': 'Файл не найден в запросе.'}, 400)
+            return
+        if not _archive_storage_has_capacity(content_length):
+            self._json({
+                'success': False,
+                'error': 'Сервис временно не может принять файл: недостаточно свободного места для безопасной обработки. Повторите загрузку позже.'
+            }, 507)
             return
         try:
             import re as _multipart_re
@@ -4978,9 +5072,6 @@ class H(http.server.BaseHTTPRequestHandler):
         if existing:
             self._json({'success': True, 'async': True, 'task_id': existing[0]})
             return
-        if not reserve_archive_processing():
-            self._json({'success': False, 'error': 'Сейчас уже разбирается другой архив. Дождитесь завершения обработки.'}, 429)
-            return
 
         task_id = str(_uuid.uuid4())[:8]
         archive_path = ARCHIVE_UPLOAD_DIR / f'{task_id}.upload'
@@ -5001,7 +5092,6 @@ class H(http.server.BaseHTTPRequestHandler):
         except ValueError as exc:
             staged_path.unlink(missing_ok=True)
             archive_path.unlink(missing_ok=True)
-            release_archive_processing()
             if str(exc) == 'too_large':
                 self._json({'success': False, 'error': 'Файл слишком большой для загрузки. Разделите архив на части.'}, 413)
             else:
@@ -5010,18 +5100,16 @@ class H(http.server.BaseHTTPRequestHandler):
         except OSError:
             staged_path.unlink(missing_ok=True)
             archive_path.unlink(missing_ok=True)
-            release_archive_processing()
-            self._json({'success': False, 'error': 'Не удалось сохранить файл для обработки. Повторите загрузку.'}, 507)
+            self._json({'success': False, 'error': 'Сервис временно не может сохранить файл для обработки. Повторите загрузку позже.'}, 507)
             return
 
-        TASKS[task_id] = {
-            'status': 'running', 'kind': 'archive', 'progress': [], 'step': 0, 'total': 100,
+        task = {
+            'status': 'queued', 'kind': 'archive', 'progress': [], 'step': 0, 'total': 100,
             'owner_user_id': user['id'], 'filename': filename, 'product': archive_product,
             'archive_upload': archive_path.name, 'client_upload_id': client_upload_id,
         }
-        save_task(task_id, TASKS[task_id])
+        queue_archive_task(task_id, task)
         _prune_tasks()
-        threading.Thread(target=_run_archive_task, args=(task_id,), daemon=True).start()
         self._json({'success': True, 'async': True, 'task_id': task_id})
 
     def do_POST(self):
@@ -5333,12 +5421,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 file_bytes, filename = _single_visual_as_zip(file_bytes, filename)
 
                 import uuid as _uuid
-                if not reserve_archive_processing():
+                if not _archive_storage_has_capacity(len(file_bytes)):
                     self._json({
                         'success': False,
-                        'error': ('Сейчас уже разбирается другой архив. Дождитесь завершения: '
-                                  'одновременная обработка больших архивов может перезапустить сервис.')
-                    }, 429)
+                        'error': ('Сервис временно не может принять файл: недостаточно свободного места '
+                                  'для безопасной обработки. Повторите загрузку позже.')
+                    }, 507)
                     return
                 task_id = str(_uuid.uuid4())[:8]
                 # Multipart parsing has already created several copies of the archive
@@ -5348,26 +5436,24 @@ class H(http.server.BaseHTTPRequestHandler):
                 archive_path = ARCHIVE_UPLOAD_DIR / f'{task_id}.upload'
                 try:
                     archive_path.write_bytes(file_bytes)
-                except OSError as exc:
-                    release_archive_processing()
+                except OSError:
                     self._json({'success': False,
-                                'error': f'Не удалось сохранить архив для фоновой обработки: {exc}'}, 507)
+                                'error': 'Сервис временно не может сохранить файл для обработки. Повторите загрузку позже.'}, 507)
                     return
                 file_bytes = None
                 body_value = b''
                 parts = []
                 body = b''
-                TASKS[task_id] = {
-                    'status':'running', 'kind':'archive', 'progress':[], 'step':0, 'total':100,
+                task = {
+                    'status':'queued', 'kind':'archive', 'progress':[], 'step':0, 'total':100,
                     'owner_user_id': user['id'],
                     'filename': filename,
                     'product': archive_product,
                     'archive_upload': archive_path.name,
                     'client_upload_id': client_upload_id,
                 }
-                save_task(task_id, TASKS[task_id])
+                queue_archive_task(task_id, task)
                 _prune_tasks()
-                threading.Thread(target=_run_archive_task, args=(task_id,), daemon=True).start()
                 self._json({'success': True, 'async': True, 'task_id': task_id})
 
             elif p=='/api/ai/chat':

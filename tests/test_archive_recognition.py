@@ -67,7 +67,7 @@ def _docx_with_ordered_images(names) -> bytes:
     return buffer.getvalue()
 
 
-def test_archive_processing_slot_rejects_parallel_jobs():
+def test_archive_processing_slot_serializes_worker_execution():
     server.release_archive_processing()
 
     assert server.reserve_archive_processing() is True
@@ -76,6 +76,76 @@ def test_archive_processing_slot_rejects_parallel_jobs():
     server.release_archive_processing()
     assert server.reserve_archive_processing() is True
     server.release_archive_processing()
+
+
+def test_archive_queue_accepts_second_user_and_reports_position(monkeypatch, tmp_path):
+    task_dir = tmp_path / 'tasks'
+    upload_dir = tmp_path / 'uploads'
+    task_dir.mkdir()
+    upload_dir.mkdir()
+    monkeypatch.setattr(server, 'TASKS_DIR', task_dir)
+    monkeypatch.setattr(server, 'ARCHIVE_UPLOAD_DIR', upload_dir)
+    monkeypatch.setattr(server, 'TASKS', {})
+
+    started = []
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            started.append(args[0])
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server.threading, 'Thread', FakeThread)
+    (upload_dir / 'first.upload').write_bytes(b'one')
+    (upload_dir / 'second.upload').write_bytes(b'two')
+    first = {
+        'kind': 'archive', 'status': 'queued', 'queued_at': '2026-10-01T12:00:00',
+        'filename': 'first.zip', 'archive_upload': 'first.upload', 'progress': [],
+    }
+    second = {
+        'kind': 'archive', 'status': 'queued', 'queued_at': '2026-10-01T12:01:00',
+        'filename': 'second.zip', 'archive_upload': 'second.upload', 'progress': [],
+    }
+
+    server.release_archive_processing()
+    server.queue_archive_task('first', first)
+    server.queue_archive_task('second', second)
+
+    assert first['status'] == 'running'
+    assert second['status'] == 'queued'
+    assert server.archive_queue_position('second') == 2
+    assert started == ['first']
+    server.release_archive_processing()
+
+
+def test_finished_archive_starts_the_next_queued_file(monkeypatch, tmp_path):
+    upload_dir = tmp_path / 'uploads'
+    task_dir = tmp_path / 'tasks'
+    upload_dir.mkdir()
+    task_dir.mkdir()
+    monkeypatch.setattr(server, 'ARCHIVE_UPLOAD_DIR', upload_dir)
+    monkeypatch.setattr(server, 'TASKS_DIR', task_dir)
+    (upload_dir / 'first.upload').write_bytes(b'archive')
+    task = {
+        'kind': 'archive', 'status': 'running', 'filename': 'first.zip',
+        'archive_upload': 'first.upload', 'progress': [], 'product': 'all',
+    }
+    monkeypatch.setattr(server, 'TASKS', {'first': task})
+    monkeypatch.setenv('VIBE_API_KEY', 'test-key')
+    monkeypatch.setattr(server, 'extract_archive_with_vision', lambda *args, **kwargs: {
+        'text': 'прочитано', 'analysis_text': 'прочитано', 'summary': 'готово',
+        'structured_data': {},
+    })
+    next_starts = []
+    monkeypatch.setattr(server, 'start_next_archive_task', lambda: next_starts.append(True))
+
+    server.reserve_archive_processing()
+    server._run_archive_task('first')
+
+    assert task['status'] == 'done'
+    assert next_starts == [True]
+    assert not (upload_dir / 'first.upload').exists()
 
 
 def test_cancelling_archive_prevents_an_automatic_resume(monkeypatch):
@@ -148,6 +218,15 @@ def test_streamed_archive_upload_saves_docx_without_copying_multipart_to_memory(
         assert payload['success'] is True
         assert started
         task = next(iter(server.TASKS.values()))
+        second_handler = FakeHandler()
+        second_handler.rfile = io.BytesIO(body.replace(b'upload-test', b'upload-next'))
+        second_handler.headers = headers
+        server.H._handle_large_archive_upload(second_handler, {'id': 'operator-2'}, len(body))
+        second_payload, second_status = second_handler.response
+        assert second_status == 200
+        assert second_payload['success'] is True
+        assert len(server.TASKS) == 2
+        assert sorted(item['status'] for item in server.TASKS.values()) == ['queued', 'running']
         with zipfile.ZipFile(tmp_path / task['archive_upload']) as archive:
             assert archive.namelist() == ['Тагиев ТК.docx']
             assert archive.read('Тагиев ТК.docx') == docx_bytes

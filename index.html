@@ -3760,6 +3760,9 @@ async function aiStartArchiveUpload(formData) {
 function aiFileReadError(value) {
   const text = String(value || '').trim();
   const low = text.toLowerCase();
+  if(low.includes('свободного места') || low.includes('не может сохранить файл')) {
+    return 'файл пока не принят: на сервере временно не хватает места для безопасной обработки. Повторите загрузку позже';
+  }
   if(aiArchiveIsBusyError(text)) {
     return 'обработка предыдущего файла не завершилась; этот файл ещё не был запущен';
   }
@@ -3930,6 +3933,11 @@ async function aiReadArchiveAsync(file, productHint = '') {
       if(tr.status === 'running') {
         const lastMsg = tr.progress && tr.progress.length ? tr.progress[tr.progress.length-1] : 'обрабатываю...';
         aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ${lastMsg}`);
+      } else if(tr.status === 'queued') {
+        const ahead = Math.max(0, Number(tr.queuePosition || 0) - 1);
+        aiUpdateMsg(progressMsgId, ahead
+          ? `⏳ «${file.name}»: в очереди на обработку. Перед вами ${ahead} ${ahead === 1 ? 'файл' : 'файла'}; загрузка сохранена.`
+          : `⏳ «${file.name}»: ожидаю начала обработки. Загрузка сохранена.`);
       } else if(tr.status === 'done') {
         const warnings = Array.isArray(tr.warnings) ? tr.warnings : [];
         if(warnings.length) {
