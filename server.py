@@ -547,7 +547,7 @@ ARCHIVE_PROCESSING_IN_PROGRESS = {'active': False}
 # A background task reads its source archive and, for RAR, temporarily expands
 # it as ZIP.  Above this limit the two copies plus OCR pages can exhaust the
 # 512 MB service.  Rejecting it visibly is safer than an endless restart loop.
-MAX_ARCHIVE_WORKER_BYTES = 60 * 1024 * 1024
+MAX_ARCHIVE_WORKER_BYTES = 180 * 1024 * 1024
 TASKS = {}  # task_id -> {status, progress, result, error}
 
 
@@ -3350,6 +3350,46 @@ def _rar_to_zip_bytes(file_bytes, filename):
         return output.getvalue()
 
 
+def _rar_to_zip_path(source_path: Path, output_path: Path, filename: str) -> bool:
+    """Convert a RAR to ZIP on disk without holding the archive in memory."""
+    with tempfile.TemporaryDirectory(prefix='igor-rar-path-') as temp_dir:
+        extracted = Path(temp_dir) / 'extracted'
+        extracted.mkdir()
+        commands = (
+            ['bsdtar', '-xf', str(source_path), '-C', str(extracted)],
+            ['unrar', 'x', '-y', '-o+', str(source_path), str(extracted)],
+            ['7z', 'x', '-y', f'-o{extracted}', str(source_path)],
+        )
+        unpacked = False
+        for command in commands:
+            if not shutil.which(command[0]):
+                continue
+            try:
+                completed = subprocess.run(
+                    command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=120, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if completed.returncode == 0:
+                unpacked = True
+                break
+        if not unpacked:
+            print(f'  ⚠️ RAR {filename}: распаковка на диске не удалась')
+            return False
+        root = extracted.resolve()
+        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(extracted.rglob('*')):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                try:
+                    relative = path.resolve().relative_to(root)
+                except ValueError:
+                    continue
+                archive.write(path, relative.as_posix())
+    return True
+
+
 def _archive_vision_batches(entries):
     """Protect memory for heavy PDFs without serialising ordinary one-page scans.
 
@@ -3399,8 +3439,6 @@ def _run_archive_task(task_id):
                 'Архив слишком большой для безопасной обработки одним файлом. '
                 'Разделите его на несколько архивов до 60 МБ.'
             )
-        archive_bytes = archive_path.read_bytes()
-
         def on_prog(message):
             current = TASKS.get(task_id) or task
             if current.get('status') == 'cancelled':
@@ -3411,7 +3449,8 @@ def _run_archive_task(task_id):
             print(f"  [archive {task_id}] {message}")
 
         result_bundle = extract_archive_with_vision(
-            archive_bytes, filename, api_key, progress_cb=on_prog, product=product,
+            None, filename, api_key, progress_cb=on_prog, product=product,
+            archive_path=archive_path,
         )
         if isinstance(result_bundle, dict):
             result_text = result_bundle.get('text', '')
@@ -3446,6 +3485,7 @@ def _run_archive_task(task_id):
         if task.get('status') in ('done', 'error', 'cancelled'):
             try:
                 archive_path.unlink(missing_ok=True)
+                archive_path.with_suffix('.normalized.zip').unlink(missing_ok=True)
             except OSError:
                 pass
         release_archive_processing()
@@ -4074,7 +4114,8 @@ def _embedded_docx_image_count(file_bytes, filename: str) -> int:
         return 0
 
 
-def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all", _archive_depth=0):
+def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all",
+                                _archive_depth=0, archive_path=None):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
     - текстовые файлы (docx/pdf/txt/csv/xlsx) читаются как раньше, быстро
@@ -4085,7 +4126,24 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     """
     import io
     archive_ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-    if archive_ext == 'rar':
+    zip_source = None
+    if archive_path:
+        source_path = Path(archive_path)
+        if archive_ext == 'rar':
+            normalized_path = source_path.with_suffix('.normalized.zip')
+            if not _rar_to_zip_path(source_path, normalized_path, filename):
+                message = '[RAR: архив не удалось открыть. Загрузите его ещё раз.]'
+                return {'text': message, 'analysis_text': message, 'summary': message,
+                        'structured_data': {}}
+            zip_source = normalized_path
+            filename = str(Path(filename).with_suffix('.zip'))
+        elif archive_ext == 'zip':
+            zip_source = source_path
+        else:
+            message = '[Архив: поддерживаются ZIP и RAR.]'
+            return {'text': message, 'analysis_text': message, 'summary': message,
+                    'structured_data': {}}
+    elif archive_ext == 'rar':
         file_bytes = _rar_to_zip_bytes(file_bytes, filename)
         if file_bytes is None:
             message = ('[RAR: архив не удалось открыть. Загрузите тот же набор файлов в ZIP — '
@@ -4108,10 +4166,13 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     def p(msg):
         if progress_cb: progress_cb(msg)
 
+    def open_archive():
+        return zipfile.ZipFile(zip_source if zip_source is not None else io.BytesIO(file_bytes))
+
     # Собираем список читаемых записей заранее, чтобы знать общее количество для прогресса
     entries = []  # (name, size, kind)
     try:
-        with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+        with open_archive() as z:
             for info in z.infolist():
                 name = info.filename
                 if name.endswith('/'): continue
@@ -4165,7 +4226,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     image_entries = [e for e in to_process if e[3] in ('image', 'pdf')]  # оба идут через vision-путь ниже
     done_count = [0]
 
-    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+    with open_archive() as z:
         # Текстовые файлы — быстро, по очереди
         for raw_name, fixed_name, size, kind in text_entries:
             short = fixed_name.split('/')[-1]
@@ -4271,7 +4332,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             short = fixed_name.split('/')[-1]
             folder = '/'.join(fixed_name.split('/')[:-1])
             try:
-                with zipfile.ZipFile(io.BytesIO(file_bytes)) as z2:
+                with open_archive() as z2:
                     data = z2.read(raw_name)
             except Exception:
                 return None
