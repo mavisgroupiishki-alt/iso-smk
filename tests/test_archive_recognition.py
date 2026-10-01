@@ -544,6 +544,38 @@ def test_spk_si_parser_rejects_ocr_prose_as_factory_number():
     assert evidence['measurement_tools'][0]['factory_number'] == ''
 
 
+def test_spk_si_invoice_and_technical_passport_fill_inventory_without_inventing_verification():
+    source = '''
+--- Счёт на средства измерений.pdf ---
+СЧЁТ № 18. Рулетка измерительная. Модель: Р-5. Заводской номер: R-2026. Количество: 2 шт.
+--- Технический паспорт термометра.pdf ---
+Технический паспорт средства измерений. Термометр. Тип: ТТЖ-М. Заводской номер: 91526.
+Диапазон измерений: -50 °С до +50 °С.
+'''
+
+    evidence = server._extract_spk_si_evidence(source)
+    tools = {item['name']: item for item in evidence['measurement_tools']}
+
+    assert tools['Рулетка измерительная'] == {
+        'name': 'Рулетка измерительная', 'model': 'Р-5', 'factory_number': 'R-2026',
+        'range': '', 'quantity': 2, 'source': 'invoice_or_technical_passport',
+    }
+    assert tools['Термометр'] == {
+        'name': 'Термометр', 'model': 'ТТЖ-М', 'factory_number': '91526',
+        'range': '-50 °С до +50 °С', 'quantity': 1, 'source': 'invoice_or_technical_passport',
+    }
+    assert evidence['verification_documents'] == []
+    assert evidence['calibration_documents'] == []
+
+    merged = server._merge_spk_copy_list_baseline(
+        {}, evidence, [{'name': 'Рулетка измерительная', 'quantity': 1}],
+    )
+    merged_tools = {item['name']: item for item in merged['measurement_tools']}
+    assert merged_tools['Рулетка измерительная']['factory_number'] == 'R-2026'
+    assert merged_tools['Рулетка измерительная']['quantity'] == 2
+    assert merged_tools['Термометр']['range'] == '-50 °С до +50 °С'
+
+
 def test_spk_si_certificate_for_leveling_staff_does_not_match_level_in_merge():
     source = '''--- СИ/поверка рейки.pdf ---
 Свидетельство о поверке № Р-18 от 01.03.2026. Рейка нивелирная. Зав № 87А.

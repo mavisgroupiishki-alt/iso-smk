@@ -1101,6 +1101,73 @@ def _find_person(itr, *keywords):
     return None
 
 
+def _spk_person_name_parts(value: str) -> list[str]:
+    """Split a name safely enough to compare a full name with initials."""
+    return re.findall(r'[A-Za-zА-Яа-яЁё]+', str(value or '').replace('ё', 'е'))
+
+
+def _spk_person_has_full_fio(value: str) -> bool:
+    """Official SPK forms require surname, name and patronymic."""
+    parts = _spk_person_name_parts(value)
+    return len(parts) == 3 and all(len(part) > 1 for part in parts)
+
+
+def _spk_person_records_match(left: dict, right: dict) -> bool:
+    """Match `Surname N.P.` to one full FIO without guessing a person."""
+    left_parts = _spk_person_name_parts(left.get('fio'))
+    right_parts = _spk_person_name_parts(right.get('fio'))
+    if not left_parts or not right_parts or left_parts[0].casefold() != right_parts[0].casefold():
+        return False
+    if _spk_person_has_full_fio(left.get('fio')) and _spk_person_has_full_fio(right.get('fio')):
+        return [part.casefold() for part in left_parts] == [part.casefold() for part in right_parts]
+    if len(left_parts) == 1 or len(right_parts) == 1:
+        return False
+    return all(
+        left_part[0].casefold() == right_part[0].casefold()
+        for left_part, right_part in zip(left_parts[1:], right_parts[1:])
+    )
+
+
+def _merge_spk_person_data(target: dict, source: dict) -> None:
+    """Merge evidence from several files that belong to one confirmed person."""
+    for key, value in source.items():
+        if key == 'fio' or value in (None, '', [], {}):
+            continue
+        if isinstance(value, list):
+            existing = target.setdefault(key, [])
+            if isinstance(existing, list):
+                for item in value:
+                    if item not in existing:
+                        existing.append(item)
+        elif not target.get(key) or (key == 'position' and len(str(value)) > len(str(target.get(key) or ''))):
+            target[key] = value
+
+
+def _dedupe_spk_people(people: list[dict]) -> tuple[list[dict], list[str]]:
+    """Prepare personnel for official SPK forms without inventing missing FIO."""
+    complete = [dict(person) for person in (people or [])
+                if isinstance(person, dict) and _spk_person_has_full_fio(person.get('fio'))]
+    incomplete = [dict(person) for person in (people or [])
+                  if isinstance(person, dict) and person.get('fio') and not _spk_person_has_full_fio(person.get('fio'))]
+    canonical: list[dict] = []
+    for person in complete:
+        matches = [item for item in canonical if _spk_person_records_match(item, person)]
+        if len(matches) == 1:
+            _merge_spk_person_data(matches[0], person)
+        else:
+            canonical.append(person)
+
+    warnings = []
+    for person in incomplete:
+        matches = [item for item in canonical if _spk_person_records_match(item, person)]
+        if len(matches) == 1:
+            _merge_spk_person_data(matches[0], person)
+        else:
+            fio = str(person.get('fio')).strip()
+            warnings.append(f'Сотрудник «{fio}» не включён в официальные формы: неполное ФИО.')
+    return canonical, list(dict.fromkeys(warnings))
+
+
 def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict, resp: dict,
                              variant: str = 'spk_stroy', progress_cb=None, spk_data: dict = None) -> dict:
     """
@@ -1111,8 +1178,19 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     variant: 'spk_stroy' | 'spk_bisp'
     """
     org = company.get('name', 'company')
+    raw_director_fio = company.get('director_fio', '') or (resp.get('director') or {}).get('fio', '')
+    source_people = list(itr or [])
+    # The card may hold the director's full FIO while a handwritten document
+    # contains only ``Surname I.O.``.  Make the confirmed card identity
+    # available to the same merge rule so real diploma/workbook data is kept.
+    if _spk_person_has_full_fio(raw_director_fio):
+        source_people.append({
+            'fio': raw_director_fio,
+            'position': company.get('director_position', 'Директор'),
+        })
+    itr, personnel_warnings = _dedupe_spk_people(source_people)
     _profile_key, profile = _spk_activity_profile(spk_data)
-    director_fio = company.get('director_fio', '') or (resp.get('director') or {}).get('fio', '')
+    director_fio = raw_director_fio
     gl_person = _find_person(itr, 'главный инженер', 'гл. инженер')
     gl_inzhener_fio = (gl_person or {}).get('fio', '') if gl_person != resp.get('director') else ''
     foremen = [p.get('fio', '') for p in itr
@@ -1254,8 +1332,9 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     add(f"{org} СПК - 4.2.2 Протокол обучения.docx",
         render_protokol_obuchenie(company, '1', order_date, city, order_date, '2/СПК', all_people, profile))
 
-    p("9. Положение о СПК")
-    add(f"{org} СПК - 5 Положение о СПК.docx", render_polozhenie(company, director_fio, policy_date, profile))
+    p("9. Положение о системе производственного контроля")
+    add(f"{org} СПК - 5 Положение о системе производственного контроля.docx",
+        render_polozhenie(company, director_fio, policy_date, profile))
 
     if variant != 'spk_bisp':
         p("10. Паспорт СПК")
@@ -1288,7 +1367,7 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     si_list, si_warnings = _build_real_si_list(spk_data or {})
     add(f"{org} СПК - 8 Справка СИ.docx", render_spravka_si(company, director_fio, si_list, report_date))
 
-    warnings = list(si_warnings)
+    warnings = [*personnel_warnings, *si_warnings]
 
     if variant == 'spk_bisp':
         try:

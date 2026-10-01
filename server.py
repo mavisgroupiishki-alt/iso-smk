@@ -1550,7 +1550,7 @@ VISION_PROMPT = ("Извлеки весь текст с этого докуме�
 SPK_SI_VISION_PROMPT = (
     "Это одна страница документов по средствам измерений для СПК. "
     "Не переписывай документ целиком и не добавляй пояснений. Верни только нужные факты.\n"
-    "Если это перечень или квитанция с СИ, выведи каждую видимую позицию строго так:\n"
+    "Если это перечень, счёт, накладная или квитанция с СИ, выведи каждую видимую позицию строго так:\n"
     "СИ | наименование: … | модель: … | заводской номер: … | количество: …\n"
     "Если это свидетельство о поверке, выведи строго одну строку:\n"
     "ПОВЕРКА | наименование: … | заводской номер: … | номер: … | дата: ДД.ММ.ГГГГ | действует до: ДД.ММ.ГГГГ\n"
@@ -3728,6 +3728,22 @@ def _spk_si_tool_from_text(text: str) -> str:
     return ''
 
 
+def _spk_si_inventory_segments(text: str) -> list[str]:
+    """Split an invoice or technical passport into one piece per named SI."""
+    value = str(text or '')
+    matches = []
+    for _name, pattern in _SPK_COPY_LIST_TOOLS:
+        matches.extend(re.finditer(pattern, value, re.IGNORECASE))
+    starts = []
+    for match in sorted(matches, key=lambda item: (item.start(), -(item.end() - item.start()))):
+        if not starts or match.start() >= starts[-1][1]:
+            starts.append((match.start(), match.end()))
+    if not starts:
+        return []
+    return [value[start: starts[index + 1][0] if index + 1 < len(starts) else len(value)]
+            for index, (start, _end) in enumerate(starts)]
+
+
 def _spk_si_certificate_number(text: str) -> str:
     """Read the actual certificate number, not an unrelated form number."""
     value = re.sub(r'\s+', ' ', str(text or '').replace('\xa0', ' '))
@@ -3771,6 +3787,43 @@ def _spk_si_is_supporting_measurement_text(value: str) -> bool:
     ))
 
 
+def _spk_si_is_inventory_source(value: str) -> bool:
+    """Recognise an SI invoice or technical passport without treating a human passport as SI."""
+    lower = str(value or '').lower().replace('ё', 'е')
+    return bool(_spk_si_tool_from_text(lower)) and bool(re.search(
+        r'\b(?:сч[её]т\w*|накладн\w*|технич\w*\s+паспорт\w*|паспорт\w*\s+средств\w*\s+измерени\w*)\b',
+        lower,
+    ))
+
+
+def _spk_si_inventory_tool(segment: str) -> dict | None:
+    """Read inventory facts that may be printed on an invoice or a technical passport."""
+    compact = re.sub(r'\s+', ' ', str(segment or '').replace('\xa0', ' '))
+    tool = _spk_si_tool_from_text(compact)
+    if not tool:
+        return None
+    model_match = re.search(
+        r'(?:модель|тип|марка)\s*[:№#-]?\s*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})',
+        compact, re.IGNORECASE,
+    )
+    quantity_match = re.search(
+        r'(?:количеств\w*|кол-?во)\s*[:.]?\s*(\d+)|\b(\d+)\s*(?:шт\.?|штук)\b',
+        compact, re.IGNORECASE,
+    )
+    range_match = re.search(
+        r'(?:диапазон\s+измерени\w*|предел\w*\s+измерени\w*)\s*[:—-]?\s*([^\n;]{1,120})',
+        str(segment or ''), re.IGNORECASE,
+    )
+    return {
+        'name': tool,
+        'model': model_match.group(1).strip('.,;') if model_match else '',
+        'factory_number': _spk_si_document_factory_number(segment, compact),
+        'range': range_match.group(1).strip(' .,;') if range_match else '',
+        'quantity': int(next(value for value in quantity_match.groups() if value)) if quantity_match else 1,
+        'source': 'invoice_or_technical_passport',
+    }
+
+
 def _spk_si_tesseract_result_is_complete(text: str | None) -> bool:
     """Whether local OCR is safe to use for SPK SI certificates.
 
@@ -3798,7 +3851,7 @@ def _spk_si_tesseract_result_is_complete(text: str | None) -> bool:
             # supporting source pages.  They must be kept as read, but they
             # cannot silently create a "поверка" row: only an actual
             # verification/calibration certificate reaches that extractor.
-            if _spk_si_is_supporting_measurement_text(compact):
+            if _spk_si_is_supporting_measurement_text(compact) or _spk_si_is_inventory_source(compact):
                 saw_supporting_document = True
                 continue
             inventory_tools = sum(
@@ -3859,9 +3912,11 @@ def _image_to_jpeg_b64(image, quality=88):
 def _is_spk_si_source_path(filename: str) -> bool:
     """Whether an archive path is a measurement-equipment source for SPK."""
     value = f' {_spk_si_norm(filename)} '
-    return any(marker in value for marker in (
+    if any(marker in value for marker in (
         ' си ', ' средств измер', ' повер', ' калибр', ' измерительн',
-    ))
+    )):
+        return True
+    return _spk_si_is_inventory_source(filename)
 
 
 def _spk_si_line_field(line: str, *labels: str) -> str:
@@ -3916,7 +3971,10 @@ def _spk_si_add_tool(result: dict, tool: dict) -> None:
     existing = _spk_si_match_tool(result['measurement_tools'], tool)
     if existing:
         for key in ('model', 'factory_number', 'range', 'quantity'):
-            if tool.get(key) and not existing.get(key):
+            if tool.get(key) and (
+                not existing.get(key) or
+                (key == 'quantity' and int(tool[key]) > int(existing.get(key) or 0))
+            ):
                 existing[key] = tool[key]
         return
     result['measurement_tools'].append(tool)
@@ -4014,6 +4072,16 @@ def _extract_spk_si_evidence(text: str) -> dict:
             # The labelled form is more reliable than generic regex and should not
             # be parsed again as prose (which would create a second, weaker record).
             continue
+        if _spk_si_is_inventory_source(compact):
+            # An invoice and a technical passport are sources for the instrument's
+            # name, model, serial number, range and quantity. They are never a
+            # substitute for a verification/calibration certificate, so no entry is
+            # created in the certificate columns from this branch.
+            for segment in _spk_si_inventory_segments(block):
+                tool = _spk_si_inventory_tool(segment)
+                if tool:
+                    _spk_si_add_tool(result, tool)
+            continue
         if not _spk_si_is_certificate_text(compact):
             continue
         tool = _spk_si_tool_from_text(compact)
@@ -4057,7 +4125,10 @@ def _merge_spk_si_evidence(spk: dict, evidence: dict) -> dict:
         existing = _spk_si_match_tool(tools, evidence_tool)
         if existing:
             for key in ('model', 'factory_number', 'range', 'quantity'):
-                if evidence_tool.get(key) and not existing.get(key):
+                if evidence_tool.get(key) and (
+                    not existing.get(key) or
+                    (key == 'quantity' and int(evidence_tool[key]) > int(existing.get(key) or 0))
+                ):
                     existing[key] = evidence_tool[key]
         else:
             tools.append(dict(evidence_tool))
@@ -4073,7 +4144,7 @@ def _merge_spk_si_evidence(spk: dict, evidence: dict) -> dict:
 
 
 def _merge_spk_copy_list_baseline(spk: dict, evidence: dict, copy_list_tools: list) -> dict:
-    """Use the approved copy list as SI rows and add only confirmed certificate facts."""
+    """Use the approved copy list as SI rows and enrich them with source documents."""
     # Certificate registers can contain obsolete, duplicate, or OCR-damaged
     # inventory lines. They confirm a certificate but must not expand the
     # client's approved list of instruments.
@@ -4097,9 +4168,9 @@ def _merge_spk_copy_list_baseline(spk: dict, evidence: dict, copy_list_tools: li
                     existing_tool[key] = tool[key]
         else:
             tools.append(dict(tool))
-    # Only a verification/calibration record can fill a baseline row. An
-    # unmatched certificate remains available for review but cannot silently
-    # create a new instrument in the reference.
+    # A verification/calibration record can fill a baseline row. An unmatched
+    # certificate remains available for review but cannot silently create a new
+    # instrument in the reference.
     certificate_tools = [
         {'name': item.get('tool'), 'factory_number': item.get('factory_number')}
         for key in ('verification_documents', 'calibration_documents')
@@ -4113,6 +4184,23 @@ def _merge_spk_copy_list_baseline(spk: dict, evidence: dict, copy_list_tools: li
         for key in ('model', 'factory_number', 'quantity'):
             if tool.get(key) and not existing_tool.get(key):
                 existing_tool[key] = tool[key]
+    # Invoices and technical passports are factual inventory sources. They may
+    # complement the approved copy list with a model, serial, range or quantity;
+    # unlike a verification certificate, a clearly named instrument from such a
+    # source is also allowed to become a row when it is absent from the list.
+    for tool in (evidence or {}).get('measurement_tools') or []:
+        if tool.get('source') != 'invoice_or_technical_passport':
+            continue
+        existing_tool = _spk_si_match_tool(tools, tool)
+        if existing_tool:
+            for key in ('model', 'factory_number', 'range', 'quantity'):
+                if tool.get(key) and (
+                    not existing_tool.get(key) or
+                    (key == 'quantity' and int(tool[key]) > int(existing_tool.get(key) or 0))
+                ):
+                    existing_tool[key] = tool[key]
+        else:
+            tools.append(dict(tool))
     merged['measurement_tools'] = tools
     return merged
 

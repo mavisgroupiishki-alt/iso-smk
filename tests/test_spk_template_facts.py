@@ -54,7 +54,9 @@ def test_spk_bisp_static_templates_use_package_dates_and_never_keep_sample_certi
     assert '12.06.2026' not in combined
     assert '05890263.1245-2021' not in combined
 
-    assert dates['policy'] in documents[next(name for name in documents if '5 Положение о СПК' in name)]
+    assert dates['policy'] in documents[next(
+        name for name in documents if '5 Положение о системе производственного контроля' in name
+    )]
     assert dates['reports'] in documents[next(name for name in documents if '8 Справка СИ' in name)]
     assert dates['policy'] in documents[next(name for name in documents if '5.2 Положение о входном контроле' in name)]
     schedule = documents[next(name for name in documents if 'График поверки СИ' in name)]
@@ -244,6 +246,66 @@ def test_spk_bisp_uses_all_technical_staff_and_excludes_director_from_personnel_
     assert '>15<' in premises_text
     assert '>25<' not in premises_text
     assert 'Паспорт СПК' not in '\n'.join(doc['name'] for doc in result['docs'])
+
+
+def test_spk_bisp_merges_person_name_variants_and_excludes_incomplete_fio():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    itr = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        {
+            'fio': 'Рогачевский Виталий Викторович', 'position': 'Производитель работ (прораб)',
+            'diplomas': [{'number': 'Д-1', 'speciality': 'ПГС'}],
+        },
+        {
+            'fio': 'Рогачевский В.В.', 'position': 'Производитель работ',
+            'trudovye_numbers': ['ТК-77'],
+        },
+        {'fio': 'Уваров', 'position': 'Производитель работ'},
+    ]
+
+    result = generate_spk_package_v2(
+        company, itr, [], dates, generator.select_responsible(itr), variant='spk_bisp',
+    )
+    itr_text = _xml_text(_document(result, '2 Справка ИТР')['bytes'])
+    org_text = _xml_text(_document(result, '3 Организационная структура')['bytes'])
+    org_visible_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', org_text))
+    protocol_text = _xml_text(_document(result, '4.2.2 Протокол обучения')['bytes'])
+
+    assert itr_text.count('Рогачевский Виталий Викторович') == 1
+    # The chart stores an accessibility fallback alongside the visible drawing,
+    # so the canonical name occurs twice in raw XML. The abbreviated duplicate
+    # must not survive as a second specialist.
+    assert 'Рогачевский Виталий Викторович' in org_visible_text
+    assert 'Рогачевский В.В.' not in org_visible_text
+    assert protocol_text.count('Рогачевский Виталий Викторович') == 1
+    assert 'Д-1' in itr_text
+    assert 'ТК-77' in itr_text
+    assert 'Уваров' not in itr_text + org_text + protocol_text
+    assert any('Уваров' in warning and 'неполное ФИО' in warning for warning in result['warnings'])
+
+
+def test_spk_bisp_names_the_required_production_control_policy_explicitly():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    result = generate_spk_package_v2(
+        company,
+        [
+            {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+            {'fio': 'Петров Петр Петрович', 'position': 'Производитель работ'},
+        ],
+        [], dates, generator.select_responsible([]), variant='spk_bisp',
+    )
+
+    assert any('Положение о системе производственного контроля' in doc['name'] for doc in result['docs'])
 
 
 def test_spk_itr_uses_manually_confirmed_bsc_attestation_details():
