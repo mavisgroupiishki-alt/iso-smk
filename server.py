@@ -1134,6 +1134,26 @@ def _friendly_public_error(value):
     return text
 
 
+def _extract_ai_json_object(raw_text):
+    """Return the first complete JSON object from a model reply, if present.
+
+    Models occasionally append a polite sentence after an otherwise valid JSON
+    reply. ``json.loads`` rejects that whole reply, which previously made the
+    raw service payload visible in the chat. ``raw_decode`` deliberately accepts
+    the complete object and ignores only the trailing prose.
+    """
+    text = str(raw_text or '').strip()
+    candidate = re.sub(r'^```(?:json)?\s*|\s*```$', '', text, flags=re.I | re.S).strip()
+    start = candidate.find('{')
+    if start < 0:
+        return None
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(candidate[start:])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _sanitize_ai_visible_response(raw_text, product="all"):
     """Prevent the model from dumping internal archive source blocks into chat.
 
@@ -1141,13 +1161,8 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
     the human-facing ``message`` is shortened. Structured ``data`` and questions
     are preserved unchanged.
     """
-    text = str(raw_text or '').strip()
-    candidate = re.sub(r'^```(?:json)?\s*|\s*```$', '', text, flags=re.I | re.S).strip()
-    try:
-        payload = json.loads(candidate)
-    except Exception:
-        return _humanize_user_visible_text(raw_text)
-    if not isinstance(payload, dict):
+    payload = _extract_ai_json_object(raw_text)
+    if payload is None:
         return _humanize_user_visible_text(raw_text)
 
     # ISO/SUOT instructions are OUTPUTS of the generator, not required source files.

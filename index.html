@@ -3031,13 +3031,35 @@ function aiRenderCard(data) {
   }
 }
 
+function aiExtractJsonObject(raw) {
+  const text = String(raw || '').trim().replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();
+  const start = text.indexOf('{');
+  if(start < 0) return null;
+  let depth = 0, quoted = false, escaped = false;
+  for(let i = start; i < text.length; i++) {
+    const char = text[i];
+    if(quoted) {
+      if(escaped) escaped = false;
+      else if(char === '\\') escaped = true;
+      else if(char === '"') quoted = false;
+      continue;
+    }
+    if(char === '"') { quoted = true; continue; }
+    if(char === '{') depth++;
+    if(char === '}') {
+      depth--;
+      if(depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 function aiParseResponse(raw) {
   try {
-    let t = raw.trim();
-    if(t.startsWith('```')) t = t.replace(/^```json?\s*/,'').replace(/```\s*$/,'').trim();
-    const start = t.indexOf('{');
-    if(start === -1) return {message: raw};
-    return JSON.parse(t.slice(start));
+    const objectText = aiExtractJsonObject(raw);
+    if(!objectText) return {message: raw};
+    const parsed = JSON.parse(objectText);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {message: raw};
   } catch(e) { return {message: raw}; }
 }
 
@@ -3197,6 +3219,13 @@ function aiRequestedPackageMode(text) {
   if (aiIsPeriodikaRequest(value)) return 'periodika';
   if (/(?:новый|первичн)\s+(?:пакет|исо|суот)|(?:пакет|исо|суот)\s+(?:новый|первичн)/iu.test(value)) return 'initial';
   return '';
+}
+
+// "Формируй" is an action, not a question for the language model.  Sending it
+// to chat let the model claim success while no document task had been started.
+function aiIsGenerateCommand(text) {
+  const value = String(text || '').trim().toLowerCase().replace(/[.!…]+$/u, '');
+  return /^(?:формируй|сформируй|генерируй|сгенерируй)(?:\s+(?:пакет(?:\s+документов)?|документы))?$|^(?:давай\s+)?(?:сформируй|генерируй)\s+(?:пакет(?:\s+документов)?|документы)$/iu.test(value);
 }
 
 function aiApplyRequestedPackageMode(data, text) {
@@ -3428,6 +3457,14 @@ async function aiSend() {
   const displayText = text + (fileNames ? (text ? '\n📎 ' : '📎 ') + fileNames : '');
   aiAddMsg('user', displayText);
   ta.value = ''; ta.style.height = '';
+
+  // Start the real background task directly.  Only its completed task result
+  // may display a download link; an ordinary AI reply cannot claim a package.
+  if(aiAttachedFiles.length === 0 && aiIsGenerateCommand(text)) {
+    aiHistory.push({role:'user', content:'ЗАПРОС: ' + text});
+    await aiGenerate();
+    return;
+  }
 
   aiLoading = true;
   document.getElementById('ai-send-btn').disabled = true;
