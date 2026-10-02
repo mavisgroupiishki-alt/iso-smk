@@ -1,7 +1,7 @@
 const fs = require('fs');
 const vm = require('vm');
 const html = fs.readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
-const names = ['aiIsCorrectionIntent','aiStableSemanticValue','aiCardFingerprint','aiSuccessClaimWithoutDataChange'];
+const names = ['aiIsCorrectionIntent','aiStableSemanticValue','aiCardFingerprint','aiSuccessClaimWithoutDataChange','aiFriendlyError'];
 let code = '';
 for (const name of names) {
   const start = html.indexOf('function ' + name + '(');
@@ -24,4 +24,8 @@ if (ctx.aiCardFingerprint(a) !== ctx.aiCardFingerprint(b)) throw new Error('stat
 const c = {company:{name:'B'}, readiness:'ready'};
 if (ctx.aiCardFingerprint(a) === ctx.aiCardFingerprint(c)) throw new Error('real data change missed');
 if (!ctx.aiSuccessClaimWithoutDataChange('Да, всё исправил и готово')) throw new Error('success claim not detected');
+const networkMessage = ctx.aiFriendlyError('Failed to fetch');
+if (!networkMessage.includes('Связь с сервисом временно прервалась') || /failed to fetch/i.test(networkMessage)) {
+  throw new Error('browser network error leaked into a user-visible message');
+}
 console.log('frontend v15 helpers OK');

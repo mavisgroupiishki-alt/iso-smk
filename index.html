@@ -3377,6 +3377,12 @@ function aiFriendlyError(value) {
   const low = text.toLowerCase();
   if(low.includes('другая генерация') || low.includes('уже формируется')) return 'Уже формируется другой пакет. Дождитесь его завершения и попробуйте снова.';
   if(low.includes('название компании')) return 'Не удалось определить название компании. Проверьте карточку компании и повторите формирование.';
+  // Browser network errors are English and do not explain whether the archive
+  // itself was read. Keep the answer actionable and free of implementation
+  // details.
+  if(low.includes('failed to fetch') || low.includes('networkerror') || low.includes('load failed') || low.includes('aborterror')) {
+    return 'Связь с сервисом временно прервалась. Если файл уже был разобран, его данные сохранены в карточке. Повторите отправку сообщения через минуту.';
+  }
   const technical = /(json|api|http|backend|frontend|hardcoded|force[_-]?|render|environment|traceback|stack|vibe_api_key|bad json|empty response)/i;
   if(technical.test(text) || text.length > 280) return 'Не удалось выполнить действие. Попробуйте ещё раз. Если ошибка повторится, сообщите ответственному за приложение.';
   return text;
@@ -4245,7 +4251,7 @@ async function aiGenerate() {
   } catch(e) {
     clearInterval(interval);
     progDiv.remove();
-    aiAddMsg('ai', '❌ Ошибка соединения: ' + e.message);
+    aiAddMsg('ai', '❌ ' + aiFriendlyError(e.message));
     btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
   }
 }
