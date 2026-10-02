@@ -3388,6 +3388,35 @@ function aiFriendlyError(value) {
   return text;
 }
 
+function aiIsTransientChatError(value) {
+  const low = String(value || '').toLowerCase();
+  return low.includes('failed to fetch') || low.includes('networkerror') ||
+    low.includes('load failed') || low.includes('aborterror') ||
+    low.includes('сервис временно не ответил') || low.includes('временно прервалась');
+}
+
+async function aiPostChatWithRetry(payload) {
+  // The chat request does not mutate the server-side company card.  One retry
+  // is therefore safe when a Render deploy or a short connection drop happens
+  // after a document has already been processed in the background.
+  for(let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetch('/api/ai/chat', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+      });
+      return await aiReadJsonResponse(response, 'chat');
+    } catch(error) {
+      if(attempt === 0 && aiIsTransientChatError(error && error.message)) {
+        aiUpdateMsg('ai-typing', 'Связь с сервисом кратко прервалась. Повторяю отправку данных…');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        aiUpdateMsg('ai-typing', '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>');
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 function aiIsCorrectionIntent(text) {
   return /(^|\s)(исправ|замен|помен|измени|добав|дополни|удал|убер|обнов|скоррект|неправил|ошибк|должно\s+быть|нужно\s+чтобы)/i.test(String(text||''));
 }
@@ -3591,12 +3620,9 @@ async function aiSend() {
   aiHistory.push({role:'user', content});
 
   try {
-    const resp = await fetch('/api/ai/chat', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({messages: aiHistory.slice(-10), product: archiveProductHint})
+    const result = await aiPostChatWithRetry({
+      messages: aiHistory.slice(-10), product: archiveProductHint
     });
-    const result = await aiReadJsonResponse(resp, 'chat');
     aiRemoveTyping();
 
     if(!result.success) throw new Error(aiFriendlyError(result.error || 'Не удалось выполнить действие'));

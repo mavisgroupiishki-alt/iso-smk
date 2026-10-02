@@ -1553,3 +1553,24 @@ def test_archive_task_returns_structured_data_to_the_browser():
             else:
                 os.environ[name] = value
         temp.cleanup()
+
+
+def test_large_company_attestation_context_keeps_relevant_late_documents_bounded():
+    """A long archive must not make the subsequent chat request hang."""
+    filler = 'служебный текст без фактов\n' * 6000
+    full_text = (
+        '=== 📦 СОСТАВ АРХИВА — ФАЙЛЫ ФИЗИЧЕСКИ НАЙДЕНЫ ===\n'
+        '- Личная папка/Диплом прораба.pdf\n\n'
+        '--- Прочее/скан.pdf ---\n' + filler + '\n\n'
+        '--- Личная папка/Диплом прораба.pdf ---\n'
+        'Диплом: инженер-строитель. Прораб Петров Пётр Петрович.\n\n'
+        '--- Договор/акт ввода.pdf ---\n'
+        'Генподряд 3 категория. Акт ввода в эксплуатацию объекта.'
+    )
+
+    compact = server._compact_product_analysis_text(full_text, 'company_att')
+
+    assert len(compact) <= 86000
+    assert 'Диплом: инженер-строитель' in compact
+    assert 'Акт ввода в эксплуатацию' in compact
+    assert 'Контекст для ответа сокращён ради скорости' in compact

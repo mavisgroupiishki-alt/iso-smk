@@ -68,6 +68,8 @@ vm.createContext(context);
 vm.runInContext([
   extractFunction('aiReadFile'),
   extractFunction('aiReadJsonResponse'),
+  extractFunction('aiIsTransientChatError'),
+  extractFunction('aiPostChatWithRetry'),
   extractFunction('aiStartArchiveUpload'),
   extractFunction('aiFileReadError'),
   extractFunction('aiArchiveIsBusyError'),
@@ -145,6 +147,17 @@ vm.runInContext([
     if (error.message.includes('Unexpected token') || !error.message.includes('временно не ответил')) {
       throw new Error('an HTML chat response was exposed as a technical JSON error');
     }
+  }
+
+  let chatAttempts = 0;
+  context.fetch = async () => {
+    chatAttempts += 1;
+    if (chatAttempts === 1) throw new Error('Failed to fetch');
+    return {status: 200, ok: true, text: async () => JSON.stringify({success: true, text: 'готово'})};
+  };
+  const retriedChat = await context.aiPostChatWithRetry({messages: []});
+  if (chatAttempts !== 2 || retriedChat.text !== 'готово') {
+    throw new Error('a short chat connection drop was not retried safely');
   }
 
   context.fetch = async (_url, options) => new Promise((_resolve, reject) => {

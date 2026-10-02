@@ -1425,8 +1425,12 @@ def call_ai(messages, api_key, knowledge_text="", product="all"):
             + knowledge_text
             + "\n=== КОНЕЦ ПРАВИЛ ==="
         )
-    attempts = 2 if fast_iso else 3
-    timeout = 105 if fast_iso else 150
+    # A chat reply is not allowed to hold a browser request for several
+    # successive minutes.  Large source archives are compacted below before
+    # they get here; two bounded attempts are enough to recover a short
+    # provider hiccup without making the application look frozen.
+    attempts = 2
+    timeout = 90 if fast_iso else 105
     last_err = None
     for attempt in range(attempts):
         try:
@@ -3397,30 +3401,72 @@ def _compact_archive_summary(result_text):
 
 
 def _compact_product_analysis_text(full_text, product):
-    """Keep the complete archive for raw inspection, but send a smaller product-focused
-    context to the chat model.  ISO/SUOT normally needs staff, OT, objects, suppliers and
-    requisites; retaining every unrelated scan is a major source of latency.
+    """Keep the full archive for source review but bound chat context for every product.
+
+    The archive worker may legitimately return hundreds of thousands of OCR
+    characters.  Sending all of that text again to the chat model made the
+    page wait for several minutes after an archive had already been read.  We
+    preserve the inventory and the documents relevant to the selected product;
+    structured data remains a separate, authoritative channel to the client.
     """
     text = str(full_text or '')
-    if str(product) not in ('iso', 'suot', 'iso_suot') or len(text) <= 110000:
+    max_chars = 85000
+    if len(text) <= max_chars:
         return text
-    keywords = (
+    common_keywords = (
         'состав архива','реквизит','счет-заказ','счёт-заказ','заказчик','унп','директор',
         'сотрудник','штат','персонал','работник','рабоч','должност','профес',
-        'удостовер','охрана труда','от ','поставщик','объект','аудит','инструкц',
+        'удостовер','охрана труда','поставщик','объект','аудит','инструкц',
         'сертифик','область','виды работ','вид работ'
     )
+    product_keywords = {
+        'company_att': (
+            'аттестаци','генподряд','категор','смет','договор','акт','ввод в эксплуатац',
+            'прораб','сметчик','диплом','трудов','стаж',
+        ),
+        'spk_bisp': (
+            'спк','средств измер','поверк','калибров','перечень копий','техниче',
+            'производственн','свидетельств',
+        ),
+        'spk_stroy': (
+            'спк','средств измер','поверк','калибров','перечень копий','техниче',
+            'производственн','свидетельств',
+        ),
+        'iso': ('политик','риск','несоответств','качест','внутренн','корректир'),
+        'suot': ('суот','услови','инструктаж','оценк','риск','охрана труда'),
+        'iso_suot': ('политик','риск','несоответств','качест','суот','инструктаж','охрана труда'),
+    }.get(str(product), ())
     chunks = re.split(r'(?=^--- |^=== )', text, flags=re.M)
-    kept = []
-    for chunk in chunks:
+    ranked = []
+    for index, chunk in enumerate(chunks):
         low = chunk.lower().replace('ё','е')
-        if any(k in low for k in keywords):
-            kept.append(chunk)
-    compact = ''.join(kept)
+        score = 0
+        if chunk.lstrip().startswith('=== 📦 СОСТАВ АРХИВА'):
+            score += 100
+        if any(keyword in low for keyword in common_keywords):
+            score += 10
+        if any(keyword in low for keyword in product_keywords):
+            score += 20
+        if score:
+            ranked.append((-score, index, chunk))
+    # Higher-value blocks are selected first, then restored to their source
+    # order.  A single verbose scan cannot consume the whole prompt.
+    selected = []
+    used = 0
+    for _score, index, chunk in sorted(ranked):
+        room = max_chars - used
+        if room <= 0:
+            break
+        if len(chunk) > min(room, 24000):
+            chunk = chunk[:min(room, 24000)] + '\n[Фрагмент документа сокращён в сообщении; полный текст сохранён в исходном архиве.]\n'
+        selected.append((index, chunk))
+        used += len(chunk)
+    compact = ''.join(chunk for _index, chunk in sorted(selected))
     if not compact:
-        compact = text[:110000]
-    if len(compact) > 110000:
-        compact = compact[:110000] + '\n[контекст сокращён для ускорения ISO/СУОТ; полный архив доступен через исходный просмотр]'
+        compact = text[:max_chars]
+    if len(compact) > max_chars:
+        compact = compact[:max_chars]
+    compact += '\n[Контекст для ответа сокращён ради скорости; полный распознанный архив сохранён и доступен через исходный просмотр.]'
     return compact
 
 
