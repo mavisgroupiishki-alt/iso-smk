@@ -1131,6 +1131,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
 
     if product in ('spk_stroy', 'spk_bisp'):
         try:
+            is_periodika = str(certification.get('package_mode') or '').strip().lower() == 'periodika'
             # СПК uses the same labour-book chronology as company attestation.
             # Calculate it deterministically before filling the ITR certificate.
             try:
@@ -1147,6 +1148,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
                 company, itr, workers, dates, resp, variant=product,
                 progress_cb=lambda i, t, m: p(m),
                 spk_data=company_data.get('spk') or {},
+                package_mode='periodika' if is_periodika else 'initial',
             )
             docs.extend(result_spk['docs'])
             warnings.extend(result_spk.get('warnings', []))

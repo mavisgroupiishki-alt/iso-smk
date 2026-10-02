@@ -139,6 +139,60 @@ def render_garantiya_reklamacii(company, director_fio, letter_number, letter_dat
     return _render_garantiya('3_garantiya_reklamacii.docx', company, director_fio, letter_number, letter_date, recipient)
 
 
+def render_pismo_aktualizacii_oblasti_spk_tnpa(company: dict, director_fio: str,
+                                               letter_date: str = '', spk_data: dict = None) -> bytes:
+    """Письмо в БИСП для периодического освидетельствования СПК.
+
+    Номер и дату договора не выдумываем: если их нет в карточке, в письме
+    остаются пустые реквизиты для заполнения специалистом.
+    """
+    parts = _load_parts('8_pismo_na_aktualizaciyu_oblasti_spk_tnpa.docx')
+    xml = parts['word/document.xml'].decode('utf-8')
+    paras = _paragraphs(xml)
+    spk = spk_data or {}
+    periodika = spk.get('periodika') if isinstance(spk.get('periodika'), dict) else {}
+    competence = spk.get('technical_competence') if isinstance(spk.get('technical_competence'), dict) else {}
+
+    full_name = f'{company.get("form", "ООО")} «{company.get("name", "")}»'
+    outgoing_number = str(periodika.get('outgoing_number') or '').strip() or '____'
+    contract_number = str(periodika.get('contract_number') or '').strip() or '____'
+    contract_date = str(periodika.get('contract_date') or '').strip() or '__.__.____'
+    certificate_number = str(competence.get('number') or competence.get('certificate_number') or '').strip() or '____'
+    certificate_date = str(competence.get('date') or competence.get('certificate_date') or '').strip() or '__.__.____'
+
+    idx_letterhead = _find_para_index(paras, lambda t: 'ФИРМЕННЫЙ БЛАНК' in t)
+    if idx_letterhead >= 0 and paras[idx_letterhead] in xml:
+        xml = xml.replace(paras[idx_letterhead], _replace_para_text(paras[idx_letterhead], full_name), 1)
+
+    idx_outgoing = _find_para_index(paras, lambda t: t.startswith('Исх. №'))
+    if idx_outgoing >= 0 and paras[idx_outgoing] in xml:
+        rendered_date = letter_date or '______'
+        xml = xml.replace(
+            paras[idx_outgoing],
+            _replace_para_text(paras[idx_outgoing], f'Исх. № {outgoing_number} от {rendered_date}'),
+            1,
+        )
+
+    idx_body = _find_para_index(paras, lambda t: t.startswith('Просим Вас в рамках проведения'))
+    if idx_body >= 0 and paras[idx_body] in xml:
+        body = (
+            'Просим Вас в рамках проведения периодического освидетельствования системы '
+            f'производственного контроля (договор № {contract_number} от {contract_date}) '
+            'актуализировать область технической компетентности свидетельства о технической '
+            f'компетентности № {certificate_number} от {certificate_date} в части обозначения '
+            'ТНПА, устанавливающих требования к продукции в строительстве.'
+        )
+        xml = xml.replace(paras[idx_body], _replace_para_text(paras[idx_body], body), 1)
+
+    xml = xml.replace('О.О.Иванко', _esc(_dir_initials(director_fio)))
+    # The source file highlights its sample values. The rendered document either
+    # has actual data or explicit blanks, therefore old sample highlighting must
+    # not remain in the final BISP letter.
+    xml = xml.replace('<w:highlight w:val="yellow"/>', '')
+    parts['word/document.xml'] = xml.encode('utf-8')
+    return _rebuild(parts)
+
+
 # ═══════════════════ Работа с таблицами (клонирование строк) ═══════════════════
 def _rows(xml: str) -> list:
     return re.findall(r'<w:tr\b[^>]*?/>|<w:tr\b[^>]*>.*?</w:tr>', xml, re.DOTALL)

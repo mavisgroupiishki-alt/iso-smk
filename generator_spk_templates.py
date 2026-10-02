@@ -1169,13 +1169,15 @@ def _dedupe_spk_people(people: list[dict]) -> tuple[list[dict], list[str]]:
 
 
 def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict, resp: dict,
-                             variant: str = 'spk_stroy', progress_cb=None, spk_data: dict = None) -> dict:
+                             variant: str = 'spk_stroy', progress_cb=None, spk_data: dict = None,
+                             package_mode: str = 'initial') -> dict:
     """
     company: {name, form, unp, address, city, director_fio, director_position, phone, bisp_org}
     itr: список [{fio, position}] — сотрудники (используем чтобы найти гл.инженера/прорабов)
     dates: результат calculate_dates() из generator.py (goals, year и т.д.)
     resp: результат select_responsible(itr) из generator.py
     variant: 'spk_stroy' | 'spk_bisp'
+    package_mode: 'initial' | 'periodika'
     """
     org = company.get('name', 'company')
     raw_director_fio = company.get('director_fio', '') or (resp.get('director') or {}).get('fio', '')
@@ -1265,7 +1267,8 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     year = dates.get('year', '')
     docs = []
     step = [0]
-    total = 18 if variant == 'spk_bisp' else 12
+    is_bisp_periodika = variant == 'spk_bisp' and str(package_mode).strip().lower() == 'periodika'
+    total = (19 if is_bisp_periodika else 18) if variant == 'spk_bisp' else 12
 
     def p(msg):
         step[0] += 1
@@ -1374,6 +1377,7 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
             from generator_bisp_templates import (
                 render_garantiya_ttk, render_garantiya_labs, render_garantiya_reklamacii,
                 render_plan_audita, render_polozhenie_vhod, render_grafik_poverki, render_perechen_produkcii,
+                render_pismo_aktualizacii_oblasti_spk_tnpa,
             )
             recipient = company.get('bisp_org', 'РУП «СтройМедиаПроект»')
 
@@ -1404,6 +1408,13 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
             p("19. Перечень продукции входного контроля")
             add(f"{org} СПК БИСП - Перечень продукции входного контроля.docx",
                 render_perechen_produkcii(company, director_fio, order_date))
+
+            if is_bisp_periodika:
+                p("20. Письмо на актуализацию области СПК ТНПА")
+                add(f"{org} СПК БИСП - Письмо на актуализацию области СПК ТНПА.docx",
+                    render_pismo_aktualizacii_oblasti_spk_tnpa(
+                        company, director_fio, order_date, spk_data or {},
+                    ))
         except Exception as e:
             message = f"Часть документов БИСП не сформирована: {type(e).__name__}: {e}"
             warnings.append(message)

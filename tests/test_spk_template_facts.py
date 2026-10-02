@@ -308,6 +308,76 @@ def test_spk_bisp_names_the_required_production_control_policy_explicitly():
     assert any('Положение о системе производственного контроля' in doc['name'] for doc in result['docs'])
 
 
+def test_spk_bisp_periodika_includes_only_the_required_tnpa_update_letter():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    people = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        {'fio': 'Петров Петр Петрович', 'position': 'Производитель работ'},
+    ]
+    base = generate_spk_package_v2(
+        company, people, [], dates, generator.select_responsible(people), variant='spk_bisp',
+    )
+    periodic = generate_spk_package_v2(
+        company, people, [], dates, generator.select_responsible(people), variant='spk_bisp',
+        package_mode='periodika', spk_data={
+            'technical_competence': {'number': '378660595000.1234-2026', 'date': '01.10.2026'},
+            'periodika': {'outgoing_number': '1-04', 'contract_number': '15-А/26', 'contract_date': '02.10.2026'},
+        },
+    )
+
+    assert not any('Письмо на актуализацию области СПК ТНПА' in doc['name'] for doc in base['docs'])
+    letter = _document(periodic, 'Письмо на актуализацию области СПК ТНПА')
+    text = _xml_text(letter['bytes'])
+    assert 'ООО «Тестовая организация»' in text
+    assert 'Исх. № 1-04 от ' + dates['goals'] in text
+    assert 'договор № 15-А/26 от 02.10.2026' in text
+    assert '№ 378660595000.1234-2026 от 01.10.2026' in text
+    assert '378660595000.0000-2000' not in text
+    assert 'О.О.Иванко' not in text
+
+
+def test_spk_bisp_periodika_does_not_invent_contract_or_certificate_details():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    people = [{'fio': 'Иванов Иван Иванович', 'position': 'Директор'}]
+    result = generate_spk_package_v2(
+        company, people, [], dates, generator.select_responsible(people), variant='spk_bisp',
+        package_mode='periodika',
+    )
+    text = _xml_text(_document(result, 'Письмо на актуализацию области СПК ТНПА')['bytes'])
+
+    assert 'договор № ____ от __.__.____' in text
+    assert 'компетентности № ____ от __.__.____' in text
+    assert '378660595000.0000-2000' not in text
+
+
+def test_package_generator_passes_bisp_periodika_mode_to_the_template():
+    result = generator.generate_package({
+        'company': {
+            'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+            'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+            'director_position': 'Директор',
+        },
+        'certification': {'standard': 'spk_bisp', 'package_mode': 'periodika', 'audit_date': '17.09.2026'},
+        'staff': [
+            {'fio': 'Иванов Иван Иванович', 'position': 'Директор', 'role': 'director'},
+            {'fio': 'Петров Петр Петрович', 'position': 'Производитель работ'},
+        ],
+        'spk': {'technical_competence': {'number': 'СПК-1', 'date': '01.10.2026'}},
+    }, api_key='', product='spk_bisp')
+
+    assert any('Письмо на актуализацию области СПК ТНПА' in doc['name'] for doc in result['docs'])
+
+
 def test_spk_itr_uses_manually_confirmed_bsc_attestation_details():
     dates = generator.calculate_dates('17.09.2026')
     company = {
