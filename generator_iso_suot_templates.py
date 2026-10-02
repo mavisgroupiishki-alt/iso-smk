@@ -183,10 +183,9 @@ _PERIODIKA_TEMPLATE_KEYS = {
         'smk_doc_5.docx',   # quality goals
         'smk_doc_14.docx',  # customer satisfaction with current objects
         'smk_doc_15.docx',  # construction process report
-        'smk_doc_16.docx',  # annual measurement-tools calibration schedule
-        'smk_doc_22.docx',  # opportunities plan
-        'smk_doc_23.docx',  # qualification plan
-        'smk_doc_24.docx',  # management review report
+    'smk_doc_16.docx',  # annual measurement-tools calibration schedule
+    'smk_doc_22.docx',  # opportunities plan
+    'smk_doc_24.docx',  # management review report
     },
     'suot': {
         'suot_root_5.docx',   # OHS goals and measures
@@ -534,17 +533,123 @@ def _add_staff_table(doc: Document, people: list, date: str, include_position: b
             cells[i].text = value
 
 
-def _iso_policy_doc(company: dict, scope: str, itr: list, dates: dict) -> bytes:
-    doc = _new_doc(company, 'ПОЛИТИКА В ОБЛАСТИ КАЧЕСТВА', dates, 'policy')
-    scope_value = scope or 'ТРЕБУЕТ УТОЧНЕНИЯ'
-    for text in (
-        f'Область применения системы менеджмента качества: {scope_value}.',
-        'Организация принимает обязательства выполнять применимые требования, повышать удовлетворённость заказчиков, поддерживать компетентность персонала и постоянно улучшать результативность СМК.',
-        'Политика доводится до работников организации и пересматривается при изменении области деятельности или существенных условий работы.',
-    ):
-        doc.add_paragraph(text)
-    doc.add_paragraph('Лист ознакомления работников с Политикой:')
-    _add_staff_table(doc, itr, str(dates.get('policy') or dates.get('goals') or 'ТРЕБУЕТ УТОЧНЕНИЯ'))
+def _clear_table_rows(table, start: int) -> None:
+    for row in list(table.rows[start:]):
+        row._tr.getparent().remove(row._tr)
+
+
+def _set_text(paragraph, text: str) -> None:
+    """Set visible paragraph text without throwing away its first-run formatting."""
+    if paragraph.runs:
+        for run in paragraph.runs:
+            run.text = ''
+        paragraph.runs[0].text = text
+    else:
+        paragraph.add_run(text)
+
+
+def _rewrite_report_period(data: bytes, reporting_year: str) -> bytes:
+    """Annual reports state one completed year, never template date ranges."""
+    doc = Document(io.BytesIO(data))
+    pattern = re.compile(r'за\s+период\s+с\s+\d{1,2}[.]\d{1,2}[.]\d{4}\s*(?:г[.]?)?\s+по\s+\d{1,2}[.]\d{1,2}[.]\d{4}\s*(?:г[.]?)?', re.I)
+    single_year = re.compile(r'за\s+\d{4}\s+год', re.I)
+
+    def rewrite(value: str) -> str:
+        value = pattern.sub(f'за {reporting_year} год', value)
+        return single_year.sub(f'за {reporting_year} год', value)
+
+    for paragraph in doc.paragraphs:
+        changed = rewrite(paragraph.text)
+        if changed != paragraph.text:
+            _set_text(paragraph, changed)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    changed = rewrite(paragraph.text)
+                    if changed != paragraph.text:
+                        _set_text(paragraph, changed)
+    return _doc_bytes(doc)
+
+
+def _management_responsibles(itr: list) -> str:
+    director = next((p for p in itr or [] if 'директор' in _norm(p.get('position'))
+                     and 'замест' not in _norm(p.get('position'))), None)
+    deputy = next((p for p in itr or [] if 'замест' in _norm(p.get('position'))), None)
+    roles = [str(p.get('position') or '').strip() for p in (director, deputy) if p]
+    return ' / '.join(roles) or 'Директор'
+
+
+def _replace_management_responsibles(data: bytes, itr: list) -> bytes:
+    """Goals and opportunity plans are owned by director/deputy, not a sample foreman."""
+    doc = Document(io.BytesIO(data))
+    expected = _management_responsibles(itr)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                source = cell.text.strip()
+                normalized = _norm(source)
+                if (normalized in {'прораб', 'директор прораб', 'директор / прораб'}
+                        or (len(normalized) <= 100 and ('прораб' in normalized or 'производитель работ' in normalized))):
+                    cell.text = expected
+    return _doc_bytes(doc)
+
+
+def _replace_process_object_count(data: bytes, objects: list | None) -> bytes:
+    """Never carry the sample company's object count into a process report."""
+    count = len([item for item in objects or [] if isinstance(item, dict) and str(item.get('name') or '').strip()])
+    if not count:
+        return data
+    doc = Document(io.BytesIO(data))
+    pattern = re.compile(r'(?<=0/)\d+(?=\))')
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    changed = pattern.sub(str(count), paragraph.text)
+                    if changed != paragraph.text:
+                        _set_text(paragraph, changed)
+    return _doc_bytes(doc)
+
+
+def _replace_staff_signature_rows(doc: Document, people: list, date: str) -> None:
+    """Replace sample signature lists while keeping the approved Word layout."""
+    table = next((t for t in doc.tables if len(t.columns) == 3 and t.rows
+                  and 'фио' in t.rows[0].cells[0].text.lower()), None)
+    if table is None:
+        return
+    _clear_table_rows(table, 1)
+    for person in people or []:
+        cells = table.add_row().cells
+        cells[0].text = str(person.get('fio') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
+        cells[1].text = ''
+        cells[2].text = date
+
+
+def _iso_policy_doc(template_data: bytes, itr: list, dates: dict) -> bytes:
+    """Keep the complete approved policy instead of replacing it with a draft."""
+    doc = Document(io.BytesIO(template_data))
+    # The source policy has dozens of legacy empty paragraphs before its
+    # familiarisation sheet. With a shorter current scope this leaves an almost
+    # blank second page; remove only that contiguous spacer block.
+    heading_index = next((i for i, p in enumerate(doc.paragraphs)
+                          if 'с политикой' in _norm(p.text) and 'ознаком' in _norm(p.text)), None)
+    if heading_index is not None:
+        heading = doc.paragraphs[heading_index]
+        for paragraph in reversed(doc.paragraphs[:heading_index]):
+            if paragraph.text.strip():
+                break
+            paragraph._element.getparent().remove(paragraph._element)
+        # The signature list is its own sheet in the approved policy. Keep it
+        # together instead of leaving one employee alone on a third page.
+        heading.paragraph_format.page_break_before = True
+    _replace_staff_signature_rows(doc, itr, str(dates.get('document') or dates.get('policy') or ''))
+    return _doc_bytes(doc)
+
+
+def _iso_awareness_doc(template_data: bytes, people: list, dates: dict) -> bytes:
+    doc = Document(io.BytesIO(template_data))
+    _replace_staff_signature_rows(doc, people, str(dates.get('document') or dates.get('goals') or ''))
     return _doc_bytes(doc)
 
 
@@ -586,7 +691,40 @@ def _role_audit_points_suot(position: str) -> str:
     return 'п.п. 7.2–7.5, 8.1, 9.1 — ТРЕБУЕТ УТОЧНЕНИЯ для данной должности'
 
 
-def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str) -> bytes:
+def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
+                       template_data: bytes | None = None) -> bytes:
+    if standard == 'iso' and template_data:
+        doc = Document(io.BytesIO(template_data))
+        period_year = str(dates.get('reporting_year') or dates.get('year') or '')
+        for para in doc.paragraphs:
+            if 'ПРОГРАММА проведения внутренних аудитов' in para.text:
+                _set_text(para, re.sub(r'на\s+\d{4}\s+год', f'на {period_year} год', para.text, flags=re.I))
+        if len(doc.tables) >= 2:
+            schedule, journal = doc.tables[0], doc.tables[1]
+            _clear_table_rows(schedule, 3)
+            _clear_table_rows(journal, 3)
+            auditors = [p for p in itr if p.get('ot_certificate')] or list(itr or [])[:1]
+            for index, person in enumerate(itr or [], 1):
+                row = schedule.add_row().cells
+                row[0].text = str(index)
+                row[1].text = str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
+                row[2].text = _role_audit_points_iso(person.get('position', ''))
+                if len(row) > 3:
+                    row[3 + ((index - 1) % 12)].text = 'Х'
+                auditor = auditors[(index - 1) % len(auditors)] if auditors else {}
+                log = journal.add_row().cells
+                values = [
+                    str(dates.get('document') or dates.get('audit') or ''),
+                    _person_order_label(person),
+                    _role_audit_points_iso(person.get('position', '')),
+                    '—', '—', '—', '—', _person_order_label(auditor), '—',
+                ]
+                for col, value in enumerate(values[:len(log)]):
+                    log[col].text = value
+            for cell in journal.rows[2].cells:
+                cell.text = f'{period_year} год'
+        return _doc_bytes(doc)
+
     is_suot = standard == 'suot'
     title = ('ПРОГРАММА ПРОВЕДЕНИЯ ВНУТРЕННИХ АУДИТОВ СУОТ'
              if is_suot else 'ПРОГРАММА ПРОВЕДЕНИЯ ВНУТРЕННИХ АУДИТОВ СМК')
@@ -921,7 +1059,8 @@ def _ot_instruction_list_doc(company: dict, worker_professions: list[str], dates
     return _doc_bytes(doc)
 
 
-def _supplier_card_doc(company: dict, supplier: dict, dates: dict, index: int) -> bytes:
+def _supplier_card_doc(company: dict, supplier: dict, comparison_supplier: dict | None,
+                       dates: dict, index: int) -> bytes:
     """Render the supplier card in the same structure as the approved ISO template.
 
     Supplier identity/product come from the client's supplier list.
@@ -930,6 +1069,7 @@ def _supplier_card_doc(company: dict, supplier: dict, dates: dict, index: int) -
     """
     supplier = dict(supplier or {})
     name = str(supplier.get('name') or '').strip() or 'ТРЕБУЕТ УТОЧНЕНИЯ'
+    comparison_name = str((comparison_supplier or {}).get('name') or '').strip()
     product_value = supplier.get('type') or supplier.get('product') or supplier.get('products') or ''
     if isinstance(product_value, (list, tuple)):
         supply_type = ', '.join(str(x) for x in product_value if x)
@@ -943,7 +1083,7 @@ def _supplier_card_doc(company: dict, supplier: dict, dates: dict, index: int) -
     org_full = _full_org(company)
     director_fio = str(company.get('director_fio') or '').strip()
     director_short = _initials(director_fio) if director_fio else 'ТРЕБУЕТ УТОЧНЕНИЯ'
-    date_text = str((dates or {}).get('reports') or (dates or {}).get('goals') or '').strip()
+    date_text = str((dates or {}).get('document') or (dates or {}).get('reports') or (dates or {}).get('goals') or '').strip()
 
     # Replace visible template text, preserving the original layout.
     replacements = {
@@ -986,10 +1126,15 @@ def _supplier_card_doc(company: dict, supplier: dict, dates: dict, index: int) -
     for i, value in enumerate(values):
         actual[i].text = value
 
-    # Remove the sample competitor row instead of inventing a fake competitor.
-    if len(table.rows) > 4:
-        tr = table.rows[4]._tr
-        tr.getparent().remove(tr)
+    # A comparison row is part of the approved card. It must be a real second
+    # supplier from the client list; when none was supplied, do not retain a
+    # Varta sample or invent a company.
+    while len(table.rows) < 5:
+        table.add_row()
+    comparison = table.rows[4].cells
+    comparison_values = ['2', comparison_name or 'ТРЕБУЕТ УТОЧНЕНИЯ', '', '', '', '', '', '', '', '', '', '+']
+    for i, value in enumerate(comparison_values):
+        comparison[i].text = value
 
     # If structured scores were supplied by the user, use them.
     score_keys = ['price', 'quality', 'volume', 'delivery', 'payment', 'known', 'status']
@@ -1369,6 +1514,8 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
     people_map = {
         'Василенко': dir_surname or 'ТРЕБУЕТ УТОЧНЕНИЯ',
         'С.Ф.': dir_initials or 'ТРЕБУЕТ УТОЧНЕНИЯ',
+        'Лукашик': dir_surname or 'ТРЕБУЕТ УТОЧНЕНИЯ',
+        'С.В.': dir_initials or 'ТРЕБУЕТ УТОЧНЕНИЯ',
         'Кормилицин': surname(process_parts), 'П.А.': inits(process_parts),
         'Вершалович': surname(fnpa_parts), 'А.П.': inits(fnpa_parts), 'А.М.': inits(fnpa_parts),
     }
@@ -1406,6 +1553,8 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
     for key in keys:
         if key == 'converted_1.docx':  # known corrupt pseudo-docx
             continue
+        if key == 'smk_doc_23.docx':  # not part of this ISO/SUOT package
+            continue
         if key in _DYNAMIC_KEYS or key in _DYNAMIC_ROLE_ORDER_KEYS:
             continue
         if key in _ITR_TEMPLATE_RULES and key not in applicable_itr_template_keys:
@@ -1441,10 +1590,16 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 key, _OLD_COMPANY, company_new, people_map, extra,
                 company=render_company, scope_text=scope, dates=dates,
             )
-            if 'отчет' in friendly.lower().replace('ё','е'):
+            if key in {'smk_doc_14.docx', 'smk_doc_15.docx', 'smk_doc_24.docx'}:
+                data = _rewrite_report_period(data, str(dates.get('reporting_year') or dates.get('year') or ''))
+            if key == 'suot_root_16.docx':
                 data = _ensure_scope_in_report(data, scope)
             if key == 'smk_doc_14.docx':
                 data = _ensure_satisfaction_objects(data, objects)
+            if key == 'smk_doc_15.docx':
+                data = _replace_process_object_count(data, objects)
+            if key in {'smk_doc_5.docx', 'smk_doc_22.docx'}:
+                data = _replace_management_responsibles(data, itr)
             docs.append({'name': out_name, 'bytes': data})
         except Exception as e:
             message = f"Не сформирован документ «{friendly}» ({key}): {type(e).__name__}: {e}"
@@ -1454,16 +1609,31 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
     # --- Deterministic dynamic ISO documents ---
     if 'iso' in wanted_categories:
         prog('Политика качества — актуальная область и штат')
-        docs.append({'name': f'{org} - 1 Политика в области качества.docx', 'bytes': _iso_policy_doc(company, scope, itr, dates)})
+        policy_template = render_generic(
+            'smk_doc_1.docx', _OLD_COMPANY, company_new, people_map, extra,
+            company=render_company, scope_text=scope, dates=dates,
+        )
+        docs.append({'name': f'{org} - 1 Политика в области качества.docx',
+                     'bytes': _iso_policy_doc(policy_template, itr, dates)})
         prog('Лист ознакомления с целями СМК')
-        docs.append({'name': f'{org} - 2.2 Лист ознакомления с целями.docx', 'bytes': _awareness_doc(company, 'ЛИСТ ОЗНАКОМЛЕНИЯ С ЦЕЛЯМИ В ОБЛАСТИ КАЧЕСТВА', itr, dates)})
+        awareness_template = render_generic(
+            'smk_doc_6.docx', _OLD_COMPANY, company_new, people_map, extra,
+            company=render_company, scope_text=scope, dates=dates,
+        )
+        docs.append({'name': f'{org} - 2.2 Лист ознакомления с целями.docx',
+                     'bytes': _iso_awareness_doc(awareness_template, itr, dates)})
         if not periodika:
             prog('Протокол внутреннего обучения СМК')
             docs.append({'name': f'{org} - 3.9.2 Протокол внутреннего обучения СМК.docx', 'bytes': _training_doc(company, resp.get('auditors') or itr[:3], dates, 'iso', 'protocol')})
             prog('Программа внутреннего обучения СМК')
             docs.append({'name': f'{org} - 3.9.3 Программа внутреннего обучения СМК.docx', 'bytes': _training_doc(company, resp.get('auditors') or itr[:3], dates, 'iso', 'program')})
         prog('Программа внутренних аудитов СМК по фактическим ИТР')
-        docs.append({'name': f'{org} - 4.1 Программа внутренних аудитов СМК.docx', 'bytes': _audit_program_doc(company, itr, dates, 'iso')})
+        audit_template = render_generic(
+            'smk_doc_11.docx', _OLD_COMPANY, company_new, people_map, extra,
+            company=render_company, scope_text=scope, dates=dates,
+        )
+        docs.append({'name': f'{org} - 4.1 Программа внутренних аудитов СМК.docx',
+                     'bytes': _audit_program_doc(company, itr, dates, 'iso', audit_template)})
 
         # Supplier evaluation cards must use the current supplier list, never the
         # unrelated suppliers from the sample company.
@@ -1471,9 +1641,11 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         if not supplier_rows:
             supplier_rows = [{'name':'ТРЕБУЕТ УТОЧНЕНИЯ','type':'ТРЕБУЕТ УТОЧНЕНИЯ'}]
         for idx, supplier in enumerate(supplier_rows, 1):
+            comparison = next((item for item in supplier_rows if item is not supplier
+                               and str(item.get('name') or '').strip()), None)
             prog(f'Карточка оценки поставщика: {supplier.get("name") or idx}')
             docs.append({'name': f'{org} - Карточка оценки поставщика {idx}.docx',
-                         'bytes': _supplier_card_doc(company, supplier, dates, idx)})
+                         'bytes': _supplier_card_doc(company, supplier, comparison, dates, idx)})
 
         # Job descriptions for EVERY actual ITR. If no exact template exists, create
         # a generic draft and mark profile-specific duties for review.

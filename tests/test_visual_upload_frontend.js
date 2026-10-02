@@ -97,6 +97,45 @@ vm.runInContext([
   if (result.name !== 'паспорт.jpg' || result.content !== 'прочитано') {
     throw new Error('background result was not returned under the original filename');
   }
+
+  let directWordReads = 0;
+  visualStarts = 0;
+  context.fetch = async (url) => {
+    if (url === '/api/extract-text') {
+      directWordReads += 1;
+      return {text: async () => JSON.stringify({success: true, text: 'ООО «Тест»: реквизиты'})};
+    }
+    if (url === '/api/extract-archive-async') {
+      visualStarts += 1;
+      return {text: async () => JSON.stringify({success: true, task_id: 'word-ocr-task'}), ok: true};
+    }
+    if (url === '/api/task/word-ocr-task') {
+      return {text: async () => JSON.stringify({status: 'done', text: 'скан прочитан', warnings: []})};
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const ordinaryWord = await context.aiReadFile({name: 'реквизиты.docx', size: 512});
+  if (directWordReads !== 1 || visualStarts !== 0 || !ordinaryWord.content.includes('реквизиты')) {
+    throw new Error('ordinary Word document was incorrectly sent to the OCR queue');
+  }
+
+  context.fetch = async (url) => {
+    if (url === '/api/extract-text') {
+      return {text: async () => JSON.stringify({success: true, text: '', needs_visual_ocr: true})};
+    }
+    if (url === '/api/extract-archive-async') {
+      visualStarts += 1;
+      return {text: async () => JSON.stringify({success: true, task_id: 'word-ocr-task'}), ok: true};
+    }
+    if (url === '/api/task/word-ocr-task') {
+      return {text: async () => JSON.stringify({status: 'done', text: 'скан прочитан', warnings: []})};
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const scannedWord = await context.aiReadFile({name: 'трудовая.docx', size: 512});
+  if (visualStarts !== 1 || scannedWord.content !== 'скан прочитан') {
+    throw new Error('Word document with embedded scans did not enter the OCR queue');
+  }
   if (context.aiFileReadError('Файл слишком большой для обработки').includes('различить текст')) {
     throw new Error('size limit was misclassified as an unreadable scan');
   }

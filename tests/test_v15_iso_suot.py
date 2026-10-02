@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 import generator
 import server
 from generator_iso_suot_templates import generate_iso_suot_package_v2
+from docx import Document
 
 
 def xml_text(doc_bytes):
@@ -170,7 +171,7 @@ def test_generator_uses_only_company_director_in_suot_orders():
     assert 'Ошибочный Директор Иванович' not in combined
 
 
-def test_nonstandard_scope_is_visible_in_smk_orders_and_customer_report():
+def test_nonstandard_scope_is_visible_in_smk_orders_but_not_added_to_customer_report():
     data = sample_data()
     scope = 'Производство металлоконструкций и разработка проектной документации'
     data['company']['scope'] = scope
@@ -191,12 +192,60 @@ def test_nonstandard_scope_is_visible_in_smk_orders_and_customer_report():
     report_text = xml_text(report['bytes'])
     assert scope in order_text
     assert 'В ОБЛАСТИ:' in order_text
-    assert scope in report_text
+    assert scope not in report_text
+    assert 'В ОБЛАСТИ:' not in report_text
     assert 'Цех металлоконструкций «Север»' in report_text
     assert 'Проект склада № 7' in report_text
     assert 'ООО «Заказчик 1»' in report_text
     assert 'ОДО «Заказчик 2»' in report_text
     assert 'Устройство системы адресной пожарной сигнализации' not in report_text
+
+
+def test_iso_uses_explicit_development_date_and_preserves_approved_forms():
+    data = sample_data()
+    data['dates'] = {'development_date': '12.01.2026'}
+    data['suppliers'] = [
+        {'name': 'ООО «Первый поставщик»', 'type': 'Материалы'},
+        {'name': 'ООО «Второй поставщик»', 'type': 'Материалы'},
+    ]
+    data['objects'] = [
+        {'name': 'Объект 1', 'year': '2025'},
+        {'name': 'Объект 2', 'year': '2025'},
+    ]
+    result = generator.generate_package(data, 'dummy', 'iso')
+    docs = {doc['name']: doc['bytes'] for doc in result['docs']}
+    assert not any('повышения квалификации' in name.lower() for name in docs)
+
+    def text(fragment):
+        doc = Document(io.BytesIO(fragment))
+        return '\n'.join(p.text for p in doc.paragraphs) + '\n' + '\n'.join(
+            '\t'.join(c.text for c in row.cells) for table in doc.tables for row in table.rows
+        )
+
+    policy = text(next(value for name, value in docs.items() if 'Политика в области качества' in name))
+    familiarization = text(next(value for name, value in docs.items() if 'Лист ознакомления с целями' in name))
+    audits = text(next(value for name, value in docs.items() if 'Программа внутренних аудитов СМК' in name))
+    supplier = text(next(value for name, value in docs.items() if 'Карточка оценки поставщика 1' in name))
+    report = text(next(value for name, value in docs.items() if 'оценке удовлетворенности заказчиков' in name.lower()))
+    goals = text(next(value for name, value in docs.items() if '2.1 Цели' in name))
+    opportunities = text(next(value for name, value in docs.items() if 'план по возможностям' in name))
+
+    assert '12.01.2026' in policy and 'Варта' not in policy
+    assert 'УТВЕРЖДАЮ' not in familiarization
+    assert 'Должность' not in familiarization
+    assert familiarization.count('12.01.2026') == 3
+    assert 'Журнал регистрации внутренних аудитов' in audits
+    assert 'на 2025 год' in audits
+    assert 'ООО «Первый поставщик»' in supplier
+    assert 'ООО «Второй поставщик»' in supplier
+    assert 'за 2025 год' in report
+    assert 'В ОБЛАСТИ:' not in report
+    assert 'Производитель работ' not in goals
+    assert 'Производитель работ' not in opportunities
+
+    process = text(next(value for name, value in docs.items() if 'Отчет по процессу строительства' in name))
+    assert '0/6' not in process
+    assert '0/2' in process
 
 
 def test_company_att_itr_is_enriched_from_staff():

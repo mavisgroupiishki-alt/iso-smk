@@ -43,15 +43,42 @@ def _initials(fio: str) -> str:
 def _fmt_date(d: datetime) -> str:
     return d.strftime('%d.%m.%Y')
 
-def calculate_dates(audit_date_str: str) -> dict:
-    audit = None
-    for fmt in ('%d.%m.%Y', '%d/%m/%Y', '%Y-%m-%d'):
-        try:
-            audit = datetime.strptime(audit_date_str.strip(), fmt)
-            break
-        except: pass
+def calculate_dates(audit_date_str: str, development_date_str: str = '') -> dict:
+    """Return document dates from the explicitly supplied development date.
+
+    The audit date is a planning datum, not permission to overwrite the date a
+    client gave for the documents.  When the latter is present, one package is
+    a coherent set: its document date is that date and annual reports refer to
+    the preceding completed year.
+    """
+    def parse(value: str):
+        for fmt in ('%d.%m.%Y', '%d/%m/%Y', '%Y-%m-%d'):
+            try:
+                return datetime.strptime(str(value or '').strip(), fmt)
+            except ValueError:
+                pass
+        return None
+
+    audit = parse(audit_date_str)
     if not audit:
         audit = datetime.now() + timedelta(days=30)
+
+    development = parse(development_date_str)
+    if development:
+        document_date = _fmt_date(development)
+        reporting_year = str(development.year - 1)
+        return {
+            'audit': document_date,
+            'audit_source': _fmt_date(audit),
+            'policy': document_date,
+            'goals': document_date,
+            'risks': document_date,
+            'reports': document_date,
+            'document': document_date,
+            'year': str(development.year),
+            'reporting_year': reporting_year,
+            'audit_obj': f'за {reporting_year} год',
+        }
 
     policy  = audit - timedelta(days=34)
     goals   = policy + timedelta(days=5)
@@ -64,7 +91,9 @@ def calculate_dates(audit_date_str: str) -> dict:
         'goals':    _fmt_date(goals),
         'risks':    _fmt_date(risks),
         'reports':  _fmt_date(reports),
+        'document': _fmt_date(policy),
         'year':     str(audit.year),
+        'reporting_year': str(audit.year - 1),
         'audit_obj': f"{_fmt_date(policy)} по {_fmt_date(reports)}",
     }
 
@@ -938,7 +967,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     company['work_types'] = work_types
 
     audit_date = dates_in.get('audit_date', '') or company_data.get('certification', {}).get('audit_date', '')
-    dates = calculate_dates(audit_date)
+    dates = calculate_dates(audit_date, dates_in.get('development_date', ''))
 
     # ── Аттестация специалистов — отдельная ветка, без штата/рисков/ISO-логики ──
     if product == 'att':

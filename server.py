@@ -5516,8 +5516,17 @@ class H(http.server.BaseHTTPRequestHandler):
                             structured_data = merge_company_attestation_sources([fragment])
                     except Exception as parse_error:
                         print(f"  ⚠️ Структурный разбор {filename} не удался: {parse_error}")
+                embedded_scan_count = _embedded_docx_image_count(file_bytes, filename)
+                # Ordinary Word files must return immediately.  A Word document
+                # that only contains pasted scans is handed back to the visual
+                # queue by the browser, where its pages receive OCR.
+                needs_visual_ocr = bool(embedded_scan_count and (
+                    not text or len(text.strip()) <= 80 or not _looks_like_real_text(text)
+                ))
                 self._json({'success':True,'text':text,'filename':filename,
-                            'structured_data': structured_data})
+                            'structured_data': structured_data,
+                            'embedded_scan_count': embedded_scan_count,
+                            'needs_visual_ocr': needs_visual_ocr})
 
             elif p=='/api/extract-archive-async':
                 # Асинхронный разбор архива с поддержкой распознавания фото внутри (не только docx/pdf).

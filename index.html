@@ -3698,10 +3698,11 @@ async function aiReadFile(file, productHint = '') {
 
   const imageExts = ['png','jpg','jpeg','webp','heic','heif'];
   const isVisual = imageExts.includes(ext) || ext === 'pdf';
-  const isScannedWord = ext === 'docx' || ext === 'doc';
-  // A DOCX may be nothing but scans pasted into Word. The background worker
-  // distinguishes ordinary Word text from embedded pages and OCRs the latter.
-  if(isVisual || isScannedWord) return aiReadArchiveAsync(file, productHint);
+  const isWord = ext === 'docx' || ext === 'doc';
+  // First read a Word file directly: requisites, objects and supplier lists
+  // are normal text and must not wait behind OCR archives. The server flags
+  // Word files made of scanned pages, which are then retried in the OCR queue.
+  if(isVisual) return aiReadArchiveAsync(file, productHint);
 
   let uploadFile = file;
   if(imageExts.includes(ext) && file.size > 3 * 1024 * 1024) {
@@ -3720,6 +3721,12 @@ async function aiReadFile(file, productHint = '') {
     fetch(endpoint, {method:'POST', body: formData})
       .then(response => aiReadJsonResponse(response, 'file'))
       .then(data => {
+        if(isWord && data.needs_visual_ocr) {
+          aiReadArchiveAsync(file, productHint).then(resolve).catch(err => resolve({
+            name: file.name, content: '[Не удалось прочитать сканы внутри Word-документа.]'
+          }));
+          return;
+        }
         // Сохраняем миниатюру для показа рядом с данными в карточке (проверка человеком)
         if(data.thumbnail_b64) {
           aiPhotoThumbnails[file.name] = data.thumbnail_b64;
