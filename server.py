@@ -530,9 +530,9 @@ def knowledge_preview(payload: dict, api_key: str):
 
 # Хранилище фоновых задач генерации (на диске - переживает перезапуск)
 import threading
-# Render Free = 512 МБ RAM. Генерация пакета (параллельные запросы к BitrixGPT + сборка ZIP)
-# сама по себе близка к лимиту. Если запустить вторую генерацию одновременно с первой —
-# гарантированный OOM. Не даём двум генерациям идти параллельно.
+# Генерация и распознавание сканов используют много памяти. Задачи принимаются
+# от всех сотрудников, но тяжёлая часть выполняется по одной: это не даёт одному
+# пользователю сорвать работу остальных перезапуском процесса.
 GENERATION_LOCK = threading.Lock()
 GENERATION_IN_PROGRESS = {'active': False}
 # Не более 2 одновременных vision-запросов — на Render Free (512 МБ) 4+ параллельных
@@ -544,6 +544,10 @@ VISION_SEMAPHORE = threading.Semaphore(2)
 # принимаются в постоянную очередь для всех сотрудников.
 ARCHIVE_PROCESSING_LOCK = threading.Lock()
 ARCHIVE_PROCESSING_IN_PROGRESS = {'active': False}
+# Архив и генерация раньше имели независимые блокировки и могли стартовать
+# одновременно. На небольшом Render-инстансе это приводило к 502/restart.
+# Общий замок защищает только ресурсоёмкую часть, не приём файлов и не чат.
+HEAVY_WORK_LOCK = threading.Lock()
 # A background task reads its source archive and, for RAR, temporarily expands
 # it as ZIP.  Above this limit the two copies plus OCR pages can exhaust the
 # 512 MB service.  Rejecting it visibly is safer than an endless restart loop.
@@ -568,6 +572,62 @@ def reserve_archive_processing():
 def release_archive_processing():
     with ARCHIVE_PROCESSING_LOCK:
         ARCHIVE_PROCESSING_IN_PROGRESS['active'] = False
+
+
+def _generation_queue_key(task_id, task):
+    return (str(task.get('queued_at') or task.get('created_at') or ''), str(task_id))
+
+
+def release_generation_processing():
+    with GENERATION_LOCK:
+        GENERATION_IN_PROGRESS['active'] = False
+
+
+def start_next_generation_task():
+    """Start one queued package generation without rejecting another employee."""
+    selected = None
+    with GENERATION_LOCK:
+        if GENERATION_IN_PROGRESS['active']:
+            return None
+        candidates = [
+            (task_id, task) for task_id, task in TASKS.items()
+            if task.get('kind') == 'generation' and task.get('status') == 'queued'
+        ]
+        for task_id, task in sorted(candidates, key=lambda pair: _generation_queue_key(*pair)):
+            if not task.get('_generation_payload'):
+                task.update({
+                    'status': 'error',
+                    'error': 'Формирование было прервано перезапуском сервиса. Запустите пакет ещё раз.',
+                })
+                save_task(task_id, task)
+                continue
+            task['status'] = 'running'
+            task['progress'] = (task.get('progress') or [])[-29:] + [
+                'Начинаю формирование пакета.'
+            ]
+            TASKS[task_id] = task
+            save_task(task_id, task)
+            GENERATION_IN_PROGRESS['active'] = True
+            selected = task_id
+            break
+    if selected:
+        threading.Thread(target=_run_generation_task, args=(selected,), daemon=True).start()
+    return selected
+
+
+def queue_generation_task(task_id, task):
+    """Persist the visible status, then run the package in a FIFO queue."""
+    task.update({
+        'status': 'queued', 'kind': 'generation',
+        'queued_at': task.get('queued_at') or datetime.now(timezone.utc).isoformat(timespec='microseconds'),
+    })
+    task['progress'] = (task.get('progress') or [])[-29:] + [
+        'Пакет принят. Ожидаю свободное место в очереди формирования.'
+    ]
+    TASKS[task_id] = task
+    save_task(task_id, task)
+    start_next_generation_task()
+    return task
 
 
 def _archive_storage_has_capacity(upload_size):
@@ -715,8 +775,10 @@ def _prune_tasks(keep=2):
 def save_task(task_id, data):
     try:
         # zipB64 может быть очень большим (десятки МБ) — не пишем его в файл задачи на диск,
-        # он нужен только в памяти TASKS для одноразовой отдачи фронту
-        to_save = {k: v for k, v in data.items() if k != 'zipB64'}
+        # он нужен только в памяти TASKS для одноразовой отдачи фронту. Исходные
+        # данные очереди генерации тоже остаются в памяти: после перезапуска их
+        # нельзя безопасно продолжать без повторного запуска пользователем.
+        to_save = {k: v for k, v in data.items() if k not in ('zipB64', '_generation_payload')}
         _atomic_write_text(
             TASKS_DIR / f'{task_id}.json',
             json.dumps(to_save, ensure_ascii=False)
@@ -730,6 +792,96 @@ def load_task(task_id):
             return json.loads(f.read_text('utf-8'))
     except: pass
     return None
+
+
+def _run_generation_task(task_id):
+    """Build one document package from an already accepted queued task."""
+    task = TASKS.get(task_id)
+    payload = task.get('_generation_payload') if task else None
+    if not task or not isinstance(payload, dict):
+        release_generation_processing()
+        start_next_generation_task()
+        return
+    ai_data = dict(payload.get('ai_data') or {})
+    product = str(payload.get('product') or 'iso')
+    user_role = str(payload.get('user_role') or '')
+    api_key = os.environ.get('VIBE_API_KEY', '')
+
+    def on_prog(step, total, message):
+        current = TASKS.get(task_id) or task
+        current['progress'] = (current.get('progress') or [])[-29:] + [message]
+        current['step'] = step
+        current['total'] = total
+        TASKS[task_id] = current
+        save_task(task_id, current)
+        print(f"  [{step}/{total}] {message}")
+
+    try:
+        if HEAVY_WORK_LOCK.locked():
+            on_prog(0, 100, 'Ожидаю завершения чтения другого большого файла.')
+        with HEAVY_WORK_LOCK:
+            ai_data['_knowledge_context'] = knowledge_context(product) if user_role == 'owner' else ''
+            ai_data['_knowledge_rules'] = knowledge_list(active_only=True, scope=product) if user_role == 'owner' else []
+            result = generate_package(ai_data, api_key, product, on_prog)
+        docs = result['docs']
+        if result.get('error') or not docs:
+            raise RuntimeError(result.get('error') or 'Генератор не вернул ни одного документа.')
+        org_name = ai_data.get('company', {}).get('name', '')
+        safe_org = re.sub(r'[^\w\-]', '_', org_name)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        zip_path = str(OUT_DIR / f'{safe_org}_{timestamp}.zip')
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for doc in docs:
+                archive.writestr(doc['name'], doc['bytes'])
+        journal_id = save_journal({
+            'owner_user_id': task.get('owner_user_id'),
+            'orgName': org_name,
+            'implDate': result['dates'].get('goals', ''),
+            'fileCount': len(docs),
+            'zipPath': zip_path,
+            'product': product,
+            'generator': 'smart',
+        })
+        zip_b64 = None
+        try:
+            with open(zip_path, 'rb') as archive:
+                zip_b64 = base64.b64encode(archive.read()).decode('ascii')
+        except Exception as exc:
+            print(f"  ⚠️ Не удалось закодировать zip в base64: {exc}")
+        task.update({
+            'status': 'done', 'journalId': journal_id, 'fileCount': len(docs),
+            'dates': result['dates'], 'zipB64': zip_b64, 'orgName': org_name,
+            'warnings': result.get('warnings', []),
+        })
+        print(f"  ✅ Задача {task_id} завершена: {len(docs)} документов")
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        task.update({'status': 'error', 'error': str(exc)})
+    finally:
+        task.pop('_generation_payload', None)
+        TASKS[task_id] = task
+        save_task(task_id, task)
+        _prune_tasks()
+        release_generation_processing()
+        start_next_generation_task()
+
+
+def _recover_interrupted_generation_tasks():
+    """Do not leave a browser waiting forever after a deploy/restart."""
+    try:
+        for task_file in TASKS_DIR.glob('*.json'):
+            task = load_task(task_file.stem)
+            if not task or task.get('kind') != 'generation':
+                continue
+            if task.get('status') in ('queued', 'running'):
+                task.update({
+                    'status': 'error',
+                    'error': 'Формирование прервалось из-за перезапуска сервиса. Запустите пакет ещё раз.',
+                })
+                save_task(task_file.stem, task)
+    except OSError:
+        pass
 
 
 def find_archive_task_by_upload_id(owner_user_id, client_upload_id):
@@ -1188,7 +1340,7 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
 
 
 _USER_TECH_PATTERNS = (
-    r'\bjson\b', r'\bapi\b', r'backend', r'frontend', r'hardcoded', r'force[_\- ]?[a-z0-9_]*',
+    r'\bjson\b', r'\bapi\b', r'backend', r'бек[еэ]нд', r'frontend', r'фронтенд', r'hardcoded', r'force[_\- ]?[a-z0-9_]*',
     r'company\.[a-z_]+', r'certification\.[a-z_]+', r'\bfield\b', r'пол[ея]\s+(?:company|certification)\.',
     r'системн\w*\s+команд', r'разработчик', r'код\w*\s+шаблон', r'\bбаг\b', r'промпт',
     r'\bмодел[ьи]\b', r'\brender\b', r'\benvironment\b', r'stack\s*trace', r'traceback',
@@ -1210,6 +1362,12 @@ def _humanize_user_visible_text(value):
         return original
 
     low = original.lower().replace('ё', 'е')
+    # A model occasionally combines a useful result with an invented explanation
+    # about the service internals.  Do not show an edited fragment of that
+    # explanation: keep the answer concrete and honest instead.
+    if 'бекенд' in low or 'бэкенд' in low or 'backend' in low:
+        return ('Часть документа прочитана не полностью. Распознанные сведения сохранены, '
+                'а поля, которые нельзя надёжно подтвердить по скану, отмечены для проверки.')
     # If a response turned into a debugging monologue, replace it entirely.
     if len(matches) >= 2 or len(original) > 700:
         if any(k in low for k in ('исправ', 'правк', 'замен', 'обнов', 'не примен', 'добавил', 'сделал', 'учел', 'учёл')):
@@ -1745,14 +1903,15 @@ def _is_personnel_archive_path(filename: str) -> bool:
     """Recognise a personnel folder even when its scans have a generic iPhone name."""
     name = str(filename or '').lower().replace('ё', 'е')
     return any(marker in name for marker in (
-        'директор', 'главн', 'прораб', 'сметчик', 'инженер', 'мастер',
+        'директор', 'заместит', 'зам дир', 'главн', 'прораб', 'сметчик', 'инженер', 'мастер',
+        'бухгалт', 'кадр',
         'сотрудник', 'персонал', 'специалист', 'трудов', 'диплом', 'аттестат',
     ))
 
 
 def _archive_pdf_page_limit(filename: str, product: str) -> int | None:
-    """Keep complete personnel scans for company attestation, despite generic filenames."""
-    if str(product) == 'company_att' and _is_personnel_archive_path(filename):
+    """Keep complete personnel scans for every package, despite generic filenames."""
+    if _is_personnel_archive_path(filename):
         return 24
     return None
 
@@ -2054,7 +2213,8 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             if page_texts and len(local_page_outputs) == len(page_texts):
                 print(f"  ✅ vision_extract({filename}): все {len(page_texts)} страницы СИ прочитаны локальным Tesseract OCR")
                 return '\n\n'.join(local_page_outputs[index] for index in range(len(page_texts)))
-    elif ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf'):
+    elif (ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf')
+          and not _is_personnel_archive_path(filename)):
         tesseract_text = _try_tesseract_first(file_bytes, filename, max_pages_override=max_pages_override)
         if tesseract_text:
             print(f"  ✅ vision_extract({filename}): прочитано локальным Tesseract OCR, "
@@ -2112,11 +2272,16 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 if is_spk_si_read else
                 "Сохраняй каждую запись трудовой книжки отдельно с точными датами; не придумывай день или месяц."
             )
-            for attempt in range(2):
+            # Phone scans of labour books are commonly stored sideways.  An
+            # empty/failed first answer therefore gets two rotated retries,
+            # covering both directions.  Normal documents keep the former
+            # single retry and never pay this extra cost.
+            retry_angles = (None, 90, 270) if retry_sideways_personnel_page else (None, None)
+            for attempt, angle in enumerate(retry_angles):
                 request_batch = batch
-                if attempt == 1 and retry_sideways_personnel_page:
+                if angle is not None:
                     try:
-                        request_batch = [_rotate_pdf_page_b64(page) for page in batch]
+                        request_batch = [_rotate_pdf_page_b64(page, angle=angle) for page in batch]
                     except Exception as exc:
                         print(f"  ℹ️ vision_extract({filename}): не удалось повернуть повторную попытку "
                               f"стр. {first_page}-{last_page} ({type(exc).__name__})")
@@ -2169,7 +2334,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                         if progress_cb:
                             progress_cb(f"Прочитаны страницы {first_page}–{last_page} из {len(pages_b64)}")
                         return batch_start, f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + text
-                    if attempt == 0:
+                    if attempt < len(retry_angles) - 1:
                         print(f"  ⚠️ vision_extract({filename}): пустой ответ, повторяю только стр. {first_page}-{last_page}")
                         continue
                     return batch_start, (
@@ -2178,7 +2343,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     )
                 except req_lib.exceptions.Timeout:
                     elapsed = _time.time() - t0
-                    if attempt == 0:
+                    if attempt < len(retry_angles) - 1:
                         print(f"  ⏱️ vision_extract({filename}): таймаут стр. {first_page}-{last_page} через {elapsed:.1f} сек, повторяю только эти страницы")
                         if progress_cb:
                             progress_cb(
@@ -2188,7 +2353,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     print(f"  ⏱️ vision_extract({filename}): повторный таймаут стр. {first_page}-{last_page}")
                     if progress_cb:
                         progress_cb(
-                            f"Страницы {first_page}–{last_page} не удалось прочитать за две попытки"
+                                f"Страницы {first_page}–{last_page} не удалось прочитать после повторных попыток"
                         )
                     return batch_start, (
                         f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
@@ -2196,11 +2361,11 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     )
                 except Exception as e:
                     elapsed = _time.time() - t0
-                    if attempt == 0:
+                    if attempt < len(retry_angles) - 1:
                         print(f"  ❌ vision_extract({filename}): ошибка стр. {first_page}-{last_page} через {elapsed:.1f} сек — {type(e).__name__}: {e}; повторяю только эти страницы")
                         if progress_cb:
                             progress_cb(
-                                f"Страницы {first_page}–{last_page} не прочитались с первой попытки; повторяю только их"
+                                f"Страницы {first_page}–{last_page} не прочитались; повторяю только их"
                             )
                         continue
                     print(f"  ❌ vision_extract({filename}): повторная ошибка стр. {first_page}-{last_page} — {type(e).__name__}: {e}")
@@ -3656,10 +3821,13 @@ def _run_archive_task(task_id):
             save_task(task_id, current)
             print(f"  [archive {task_id}] {message}")
 
-        result_bundle = extract_archive_with_vision(
-            None, filename, api_key, progress_cb=on_prog, product=product,
-            archive_path=archive_path,
-        )
+        if HEAVY_WORK_LOCK.locked():
+            on_prog('Ожидаю завершения формирования другого пакета.')
+        with HEAVY_WORK_LOCK:
+            result_bundle = extract_archive_with_vision(
+                None, filename, api_key, progress_cb=on_prog, product=product,
+                archive_path=archive_path,
+            )
         if isinstance(result_bundle, dict):
             result_text = result_bundle.get('text', '')
             result_analysis = result_bundle.get('analysis_text') or result_text
@@ -3985,12 +4153,12 @@ def _image_to_jpeg_b64(image, quality=88):
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
 
-def _rotate_pdf_page_b64(page_b64: str) -> str:
+def _rotate_pdf_page_b64(page_b64: str, angle=90) -> str:
     """Prepare the sideways retry for phone-scanned labour books."""
     from PIL import Image
     import io as _io_rotate
     image = Image.open(_io_rotate.BytesIO(base64.b64decode(page_b64)))
-    return _image_to_jpeg_b64(image.rotate(90, expand=True))
+    return _image_to_jpeg_b64(image.rotate(angle, expand=True))
 
 
 def _is_spk_si_source_path(filename: str) -> bool:
@@ -4544,7 +4712,11 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                         )
                         continue
                     def read_embedded_image(image_index, image_name, image_bytes):
-                        visual_name = f"{Path(short).stem}_страница_{image_index}{Path(image_name).suffix}"
+                        embedded_name = f"{Path(short).stem}_страница_{image_index}{Path(image_name).suffix}"
+                        visual_name = (
+                            str(Path(fixed_name).parent / embedded_name)
+                            if _is_personnel_archive_path(fixed_name) else embedded_name
+                        )
                         p(f"{short}: читаю вложенное изображение {image_index}/{len(embedded)}")
                         visual_text, _retried = vision_extract_with_retry(
                             image_bytes, visual_name, api_key,
@@ -4624,7 +4796,11 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                             f"пришлите этот документ отдельными фото по 1-2 страницы вместо одного большого PDF]")
                 is_spk_si_source = str(product) in ('spk_stroy', 'spk_bisp') and _is_spk_si_source_path(fixed_name)
                 personnel_page_limit = _archive_pdf_page_limit(fixed_name, product)
-                vision_filename = fixed_name if personnel_page_limit else short
+                # Keep the full archive path for every scan. A neutral filename
+                # such as «Отсканированный документ 8.pdf» may be a labour book
+                # inside a foreman's folder; dropping the folder hid that fact
+                # from the recognition rules.
+                vision_filename = fixed_name if _is_personnel_archive_path(fixed_name) else short
                 txt, _retried = vision_extract_with_retry(
                     data, vision_filename, api_key,
                     # The SI register can be a single PDF with one inventory page
@@ -4646,7 +4822,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     progress_cb=lambda message: p(f"{short}: {message}"),
                 )
             else:
-                txt, _retried = vision_extract_with_retry(data, short, api_key)
+                vision_filename = fixed_name if _is_personnel_archive_path(fixed_name) else short
+                txt, _retried = vision_extract_with_retry(data, vision_filename, api_key)
 
             # КРИТИЧНО: раньше здесь было "if txt and len > 10 and not startswith('[')"
             # — а мои же сообщения об ОШИБКАХ специально начинаются с '[' (чтобы легко
@@ -5700,79 +5877,18 @@ class H(http.server.BaseHTTPRequestHandler):
 
                 # Умный генератор — запускаем в фоне
                 if SMART_GENERATOR and ai_data.get('company', {}).get('name'):
-                    if GENERATION_IN_PROGRESS['active']:
-                        self._json({'success': False,
-                                     'error': 'Уже формируется другой пакет. Дождитесь его завершения и попробуйте снова.'},
-                                    429)
-                        return
-
                     task_id = str(_uuid.uuid4())[:8]
-                    TASKS[task_id] = {
-                        'status': 'running', 'progress': [], 'step': 0, 'total': 100,
+                    task = {
+                        'progress': [], 'step': 0, 'total': 100,
                         'owner_user_id': user['id'],
+                        '_generation_payload': {
+                            'ai_data': ai_data,
+                            'product': product,
+                            'user_role': user.get('role', ''),
+                        },
                     }
+                    queue_generation_task(task_id, task)
                     _prune_tasks()
-                    save_task(task_id, TASKS[task_id])
-
-                    def run_gen(_tid=task_id, _data=ai_data, _key=api_key, _prod=product):
-                        GENERATION_IN_PROGRESS['active'] = True
-                        try:
-                            def on_prog(step, total, msg):
-                                TASKS[_tid]['progress'] = (TASKS[_tid].get('progress') or []) + [msg]
-                                TASKS[_tid]['step'] = step
-                                TASKS[_tid]['total'] = total
-                                save_task(_tid, TASKS[_tid])
-                                print(f"  [{step}/{total}] {msg}")
-
-                            _data = dict(_data or {})
-                            _data['_knowledge_context'] = knowledge_context(_prod) if user.get('role') == 'owner' else ''
-                            # Передаём генератору и структурированные правила. Это позволяет
-                            # исполнять безопасные обученные замены в DOCX, а не только добавлять
-                            # текст правила в промпт модели.
-                            _data['_knowledge_rules'] = knowledge_list(active_only=True, scope=_prod) if user.get('role') == 'owner' else []
-                            result = generate_package(_data, _key, _prod, on_prog)
-                            docs = result['docs']
-                            if result.get('error') or not docs:
-                                err_msg = result.get('error') or 'Генератор не вернул ни одного документа (0 файлов) — данные не подошли под продукт или модуль не смог отработать.'
-                                raise RuntimeError(err_msg)
-                            _org = re.sub(r'[^\w\-]', '_', _data.get('company', {}).get('name', 'org'))
-                            _ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                            _zp = str(OUT_DIR / f'{_org}_{_ts}.zip')
-                            with zipfile.ZipFile(_zp, 'w', zipfile.ZIP_DEFLATED) as _zf:
-                                for doc in docs:
-                                    _zf.writestr(doc['name'], doc['bytes'])
-                            _eid = save_journal({
-                                'owner_user_id': user['id'],
-                                'orgName': _data.get('company', {}).get('name', ''),
-                                'implDate': result['dates'].get('goals', ''),
-                                'fileCount': len(docs),
-                                'zipPath': _zp,
-                                'product': _prod,
-                                'generator': 'smart'
-                            })
-                            # Кодируем ZIP в base64 для передачи фронту — диск Render эфемерный,
-                            # фронт сохранит архив в window.storage и журнал переживёт перезапуск сервера
-                            _zip_b64 = None
-                            try:
-                                with open(_zp, 'rb') as _zf2:
-                                    _zip_b64 = base64.b64encode(_zf2.read()).decode('ascii')
-                            except Exception as _zerr:
-                                print(f"  ⚠️ Не удалось закодировать zip в base64: {_zerr}")
-                            TASKS[_tid].update({'status':'done','journalId':_eid,
-                                               'fileCount':len(docs),'dates':result['dates'],
-                                               'zipB64': _zip_b64, 'orgName': _data.get('company', {}).get('name', ''),
-                                               'warnings': result.get('warnings', [])})
-                            _prune_tasks()
-                            save_task(_tid, TASKS[_tid])
-                            print(f"  ✅ Задача {_tid} завершена: {len(docs)} документов")
-                        except Exception as _ex:
-                            import traceback; traceback.print_exc()
-                            TASKS[_tid].update({'status':'error','error':str(_ex)})
-                            save_task(_tid, TASKS[_tid])
-                        finally:
-                            GENERATION_IN_PROGRESS['active'] = False
-
-                    threading.Thread(target=run_gen, daemon=True).start()
                     self._json({'success': True, 'async': True, 'task_id': task_id})
                 else:
                     # Резервный путь удалён вместе с templates/ISO_shablon/ИСО ЭнергоМагистраль —
@@ -5831,6 +5947,7 @@ class H(http.server.BaseHTTPRequestHandler):
 if __name__=='__main__':
     print(f'\n✅  ИСО/СМК Генератор: http://localhost:{PORT}')
     print(f'   Откройте в браузере | Ctrl+C для остановки\n')
+    _recover_interrupted_generation_tasks()
     _resume_pending_archive_task()
     class ThreadedServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address=True

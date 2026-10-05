@@ -23,12 +23,13 @@ def _zip_with_text_file() -> bytes:
     return buffer.getvalue()
 
 
-def test_company_att_reads_complete_personnel_pdf_from_generic_scan_name():
+def test_all_packages_read_complete_personnel_pdf_from_generic_scan_name():
     path = 'лидинг/прораб/Отсканированный документ 8.pdf'
 
     assert server._archive_pdf_page_limit(path, 'company_att') == 24
     assert server._archive_pdf_page_limit('лидинг/Счет-заказ.pdf', 'company_att') is None
-    assert server._archive_pdf_page_limit(path, 'spk_bisp') is None
+    assert server._archive_pdf_page_limit(path, 'spk_bisp') == 24
+    assert server._archive_pdf_page_limit(path, 'iso_suot') == 24
 
 
 def test_personnel_pdf_retry_rotates_a_sideways_page():
@@ -40,6 +41,22 @@ def test_personnel_pdf_retry_rotates_a_sideways_page():
 
     decoded = Image.open(io.BytesIO(base64.b64decode(rotated)))
     assert decoded.size == (40, 80)
+
+    rotated_other_way = server._rotate_pdf_page_b64(original, angle=270)
+    decoded_other_way = Image.open(io.BytesIO(base64.b64decode(rotated_other_way)))
+    assert decoded_other_way.size == (40, 80)
+
+
+def test_user_visible_text_never_mentions_russian_backend():
+    text = (
+        'Часть данных не прочиталась. Без этого бекенд выдаст ошибку, '
+        'поэтому нужны идеально читаемые сканы.'
+    )
+
+    visible = server._humanize_user_visible_text(text)
+
+    assert 'бекенд' not in visible.lower()
+    assert 'сведения' in visible.lower()
 
 
 def test_company_att_passes_generic_personnel_pdf_as_complete_scan(monkeypatch):
@@ -63,6 +80,30 @@ def test_company_att_passes_generic_personnel_pdf_as_complete_scan(monkeypatch):
 
     assert calls == [('лидинг/прораб/Отсканированный документ 8.pdf', 24)]
     assert 'Трудовая книжка Алексеева' in result['text']
+
+
+def test_spk_keeps_personnel_folder_for_generic_scan(monkeypatch):
+    archive = io.BytesIO()
+    source_path = 'белеогрин/зам директора/Отсканированный документ 3.pdf'
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr(source_path, b'pdf-scan')
+
+    calls = []
+    monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)
+    monkeypatch.setattr(server, 'extract_text_from_file', lambda *_args, **_kwargs: '[PDF_SCAN: файл является сканом]')
+
+    def fake_vision(_data, filename, *_args, **kwargs):
+        calls.append((filename, kwargs.get('max_pages_override')))
+        return 'Диплом специалиста'
+
+    monkeypatch.setattr(server, 'vision_extract_with_retry', lambda *args, **kwargs: (fake_vision(*args, **kwargs), False))
+
+    result = server.extract_archive_with_vision(
+        archive.getvalue(), 'белеогрин.zip', 'unused', product='spk_bisp',
+    )
+
+    assert calls == [(source_path, 24)]
+    assert 'Диплом специалиста' in result['text']
 
 
 def _zip_with_scans() -> bytes:
@@ -160,6 +201,48 @@ def test_archive_queue_accepts_second_user_and_reports_position(monkeypatch, tmp
     assert server.archive_queue_position('second') == 2
     assert started == ['first']
     server.release_archive_processing()
+
+
+def test_generation_queue_accepts_second_user_without_parallel_start(monkeypatch, tmp_path):
+    task_dir = tmp_path / 'tasks'
+    task_dir.mkdir()
+    monkeypatch.setattr(server, 'TASKS_DIR', task_dir)
+    monkeypatch.setattr(server, 'TASKS', {})
+    started = []
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            started.append(args[0])
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server.threading, 'Thread', FakeThread)
+    server.release_generation_processing()
+    first = {'owner_user_id': 'operator-1', '_generation_payload': {'ai_data': {'company': {'name': 'Первая'}}}}
+    second = {'owner_user_id': 'operator-2', '_generation_payload': {'ai_data': {'company': {'name': 'Вторая'}}}}
+
+    server.queue_generation_task('first', first)
+    server.queue_generation_task('second', second)
+
+    assert first['status'] == 'running'
+    assert second['status'] == 'queued'
+    assert started == ['first']
+    server.release_generation_processing()
+
+
+def test_restart_marks_unfinished_generation_as_retryable_error(monkeypatch, tmp_path):
+    task_dir = tmp_path / 'tasks'
+    task_dir.mkdir()
+    task = {'kind': 'generation', 'status': 'running', 'owner_user_id': 'operator-1'}
+    (task_dir / 'stalled.json').write_text(json.dumps(task), encoding='utf-8')
+    monkeypatch.setattr(server, 'TASKS_DIR', task_dir)
+
+    server._recover_interrupted_generation_tasks()
+
+    stored = json.loads((task_dir / 'stalled.json').read_text(encoding='utf-8'))
+    assert stored['status'] == 'error'
+    assert 'перезапуска' in stored['error']
 
 
 def test_finished_archive_starts_the_next_queued_file(monkeypatch, tmp_path):
@@ -725,9 +808,9 @@ def test_rar_scans_reach_the_pdf_and_image_recognition_path(monkeypatch):
 
     result = server.extract_archive_with_vision(b'not-a-real-rar', 'СПК.rar', 'unused')
 
-    assert seen == ['свидетельство.pdf', 'трудовая.jpg']
+    assert seen == ['свидетельство.pdf', 'Люди/трудовая.jpg']
     assert 'распознан свидетельство.pdf' in result['text']
-    assert 'распознан трудовая.jpg' in result['text']
+    assert 'распознан Люди/трудовая.jpg' in result['text']
 
 
 def test_spk_si_pdf_reads_the_full_register_one_page_at_a_time(monkeypatch):
@@ -1388,6 +1471,43 @@ def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
     assert calls.count('a') == 2
     assert calls.count('b') == 1
     assert any('Страницы 1–1 читаются дольше обычного' in message for message in progress)
+
+
+def test_sideways_personnel_pdf_retries_both_orientations(monkeypatch):
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['page'])
+    monkeypatch.setattr(
+        server, '_rotate_pdf_page_b64',
+        lambda page, angle=90: f'{page}-rotated-{angle}',
+    )
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': 'Запись трудовой книжки'}}]}
+
+    def fake_post(*_args, **kwargs):
+        page = next(
+            block['image_url']['url'].rsplit(',', 1)[-1]
+            for block in kwargs['json']['messages'][0]['content']
+            if block['type'] == 'image_url'
+        )
+        calls.append(page)
+        if page != 'page-rotated-270':
+            raise server.req_lib.exceptions.Timeout()
+        return Response()
+
+    monkeypatch.setattr(server.req_lib, 'post', fake_post)
+
+    text = server.vision_extract(
+        b'pdf', 'лидинг/прораб/Отсканированный документ 8.pdf', 'unused',
+    )
+
+    assert 'Запись трудовой книжки' in text
+    assert calls == ['page', 'page-rotated-90', 'page-rotated-270']
 
 
 def test_pdf_reports_progress_for_each_recognition_batch(monkeypatch):
