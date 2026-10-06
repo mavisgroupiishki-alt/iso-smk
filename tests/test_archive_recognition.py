@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from email.message import Message
 from pathlib import Path
@@ -1325,6 +1326,39 @@ def test_short_pdf_page_groups_can_run_in_parallel_without_changing_order(monkey
     assert '--- СТРАНИЦЫ 1-1 ---\na' in text
     assert '--- СТРАНИЦЫ 4-4 ---\nd' in text
     assert text.index('СТРАНИЦЫ 1-1') < text.index('СТРАНИЦЫ 4-4')
+
+
+def test_handwritten_personnel_pdf_pages_are_read_one_by_one(monkeypatch):
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 3)
+    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['a', 'b', 'c'])
+    active = {'current': 0, 'maximum': 0}
+    guard = threading.Lock()
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': 'Запись трудовой книжки'}}]}
+
+    def fake_post(*_args, **_kwargs):
+        with guard:
+            active['current'] += 1
+            active['maximum'] = max(active['maximum'], active['current'])
+        time.sleep(0.02)
+        with guard:
+            active['current'] -= 1
+        return Response()
+
+    monkeypatch.setattr(server.req_lib, 'post', fake_post)
+
+    text = server.vision_extract(
+        b'pdf', 'лидинг/прораб/Отсканированный документ 8.pdf', 'unused',
+        parallel_page_batches=True,
+    )
+
+    assert text.count('Запись трудовой книжки') == 3
+    assert active['maximum'] == 1
 
 
 def test_spk_si_folder_stays_a_source_block_and_reaches_evidence_parser(monkeypatch):

@@ -2386,7 +2386,15 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # is also safe for a short ordinary PDF (for example a four-page labour
         # book or lease): the groups remain separate in the result and are put
         # back in page order below.  Long/heavy PDFs stay sequential.
-        if (single_page_batches or parallel_page_batches or detailed_pdf_read) and len(starts) > 1:
+        # Handwritten labour books must be read one page at a time.  The visual
+        # reader often returns an empty response when two difficult handwritten
+        # pages are submitted together; a single unreadable page then made the
+        # whole file look unreadable in the archive result.
+        allow_parallel_page_groups = (
+            not retry_sideways_personnel_page
+            and (single_page_batches or parallel_page_batches or detailed_pdf_read)
+        )
+        if allow_parallel_page_groups and len(starts) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=2) as executor:
                 outputs_by_start = dict(local_page_outputs)
