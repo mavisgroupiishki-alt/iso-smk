@@ -644,6 +644,26 @@ def _archive_storage_has_capacity(upload_size):
     return free_bytes >= expected_bytes
 
 
+def _prune_stale_archive_staging_files(max_age_seconds=15 * 60):
+    """Remove only abandoned streamed multipart bodies, never accepted uploads.
+
+    A transport retry can discover an already queued task after its temporary
+    ``stream-*.source`` file was written.  Those files are not task sources and
+    must not occupy the small persistent disk forever.  A grace period protects
+    another employee's active upload.
+    """
+    cutoff = time.time() - max_age_seconds
+    try:
+        for path in ARCHIVE_UPLOAD_DIR.glob('stream-*.source'):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
 def _archive_task_records():
     """Return live and durable archive tasks without losing queued uploads on restart."""
     records = dict(TASKS)
@@ -5415,6 +5435,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if 'multipart/form-data' not in content_type:
             self._json({'success': False, 'error': 'Файл не найден в запросе.'}, 400)
             return
+        _prune_stale_archive_staging_files()
         if not _archive_storage_has_capacity(content_length):
             self._json({
                 'success': False,
@@ -5517,6 +5538,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 archive_product = 'iso'
         existing = find_archive_task_by_upload_id(user['id'], client_upload_id)
         if existing:
+            # The retry's temporary streamed body is not part of the existing
+            # task.  Leaving it behind filled the 1 GB disk after several RAR
+            # retries and made every later upload fail before processing.
+            try:
+                staged_file.unlink(missing_ok=True)
+            except OSError:
+                pass
             self._json({'success': True, 'async': True, 'task_id': existing[0]})
             return
 

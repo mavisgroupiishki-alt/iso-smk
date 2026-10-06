@@ -307,6 +307,24 @@ def test_upload_retry_finds_the_task_already_saved_for_the_same_browser_upload(m
     assert server.find_archive_task_by_upload_id('operator-2', 'upload-abc') is None
 
 
+def test_stale_streamed_upload_bodies_are_pruned_without_touching_task_uploads(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, 'ARCHIVE_UPLOAD_DIR', tmp_path)
+    stale = tmp_path / 'stream-stale.source'
+    current = tmp_path / 'stream-current.source'
+    task_upload = tmp_path / 'keep.upload'
+    stale.write_bytes(b'stale')
+    current.write_bytes(b'current')
+    task_upload.write_bytes(b'task')
+    old = time.time() - 16 * 60
+    os.utime(stale, (old, old))
+
+    server._prune_stale_archive_staging_files()
+
+    assert not stale.exists()
+    assert current.exists()
+    assert task_upload.exists()
+
+
 def test_streamed_archive_upload_saves_docx_without_copying_multipart_to_memory(monkeypatch, tmp_path):
     boundary = 'test-boundary'
     docx_bytes = _docx_with_embedded_scan()
