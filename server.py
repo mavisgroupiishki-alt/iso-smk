@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).parent.resolve()
 # ── Версия приложения ──────────────────────────────────────────────────
 # Версия видна прямо в интерфейсе. На Render также показываем короткий SHA
 # фактически задеплоенного Git-коммита, чтобы сразу понимать, какая сборка Live.
-APP_VERSION = os.environ.get("IGOR_APP_VERSION", "v18.1")
+APP_VERSION = os.environ.get("IGOR_APP_VERSION", "v18.2")
 APP_BUILD_DATE = os.environ.get("IGOR_BUILD_DATE", "21.08.2026")
 RENDER_GIT_COMMIT = (os.environ.get("RENDER_GIT_COMMIT") or "").strip()
 APP_COMMIT = RENDER_GIT_COMMIT[:7] if RENDER_GIT_COMMIT else "local"
@@ -128,6 +128,43 @@ def kv_list(prefix: str = ''):
     return keys
 
 
+def _user_kv_key(actor: dict, key: str) -> str:
+    """Keep the browser-facing key stable while isolating its durable value."""
+    user_id = str((actor or {}).get('id') or '')
+    if not user_id:
+        raise PermissionError('Не удалось определить рабочее пространство пользователя.')
+    return f'user:{user_id}:{key}'
+
+
+def kv_set_for_user(actor: dict, key: str, value: str):
+    kv_set(_user_kv_key(actor, key), value)
+
+
+def kv_get_for_user(actor: dict, key: str):
+    row = kv_get(_user_kv_key(actor, key))
+    # Records created before workspaces existed have no owner.  Keep them
+    # recoverable only for the owner; never expose them to an operator.
+    if row is None and actor and actor.get('role') == 'owner':
+        return kv_get(key)
+    return row
+
+
+def kv_delete_for_user(actor: dict, key: str):
+    kv_delete(_user_kv_key(actor, key))
+
+
+def kv_list_for_user(actor: dict, prefix: str = ''):
+    scoped_prefix = _user_kv_key(actor, prefix)
+    scoped = kv_list(scoped_prefix)
+    namespace = _user_kv_key(actor, '')
+    logical = [key[len(namespace):] for key in scoped if key.startswith(namespace)]
+    if actor and actor.get('role') == 'owner':
+        # Only the owner can recover historical unscoped data.  New accounts
+        # never see it, so a previous shared workspace cannot leak to them.
+        logical.extend(key for key in kv_list(prefix) if not key.startswith('user:'))
+    return sorted(set(logical))
+
+
 # ── Доступ сотрудников ─────────────────────────────────────────────────
 # Авторизация намеренно не использует внешний сервис: на Persistent Disk
 # лежат только scrypt-хеши паролей и случайные сессионные идентификаторы.
@@ -138,6 +175,9 @@ _AUTH_OPERATOR_ROUTES = {
     ('POST', '/api/analyze-image'), ('POST', '/api/extract-text'),
     ('POST', '/api/extract-archive-async'), ('POST', '/api/ai/chat'),
     ('POST', '/api/generate'), ('POST', '/api/task/cancel'),
+    ('POST', '/api/kv/set'), ('POST', '/api/kv/delete'),
+    ('POST', '/api/companies/save'), ('POST', '/api/companies/delete'),
+    ('POST', '/api/journal/delete'),
 }
 
 
@@ -313,15 +353,21 @@ def auth_route_allowed(role: str, method: str, path: str) -> bool:
         return True
     if role != 'operator':
         return False
-    return (method, path) in _AUTH_OPERATOR_ROUTES or (method == 'GET' and path.startswith('/api/task/')) or (method == 'GET' and path.startswith('/api/download/'))
+    return ((method, path) in _AUTH_OPERATOR_ROUTES
+            or (method == 'GET' and path in ('/api/companies', '/api/journal', '/api/kv/get', '/api/kv/list'))
+            or (method == 'GET' and path.startswith('/api/task/'))
+            or (method == 'GET' and path.startswith('/api/download/')))
 
 
 def auth_owns_record(actor: dict, record: dict) -> bool:
     if not actor:
         return False
-    if actor.get('role') == 'owner':
-        return True
-    return bool(record.get('owner_user_id')) and record.get('owner_user_id') == actor.get('id')
+    owner_user_id = record.get('owner_user_id')
+    if owner_user_id:
+        return owner_user_id == actor.get('id')
+    # Historical records had no author.  They remain recoverable only to the
+    # original owner instead of becoming visible to every later account.
+    return actor.get('role') == 'owner'
 
 
 # ── База знаний ИИгоря ───────────────────────────────────────────────
@@ -548,6 +594,10 @@ PDF_RENDER_SEMAPHORE = threading.Semaphore(1)
 # принимаются в постоянную очередь для всех сотрудников.
 ARCHIVE_PROCESSING_LOCK = threading.Lock()
 ARCHIVE_PROCESSING_IN_PROGRESS = {'active': False}
+# One OCR worker protects the small production instance from memory restarts.
+# The last owner is used only to give the next account a turn; it never affects
+# which data that account can read.
+ARCHIVE_LAST_OWNER_ID = {'value': None}
 # Архив и генерация раньше имели независимые блокировки и могли стартовать
 # одновременно. На небольшом Render-инстансе это приводило к 502/restart.
 # Общий замок защищает только ресурсоёмкую часть, не приём файлов и не чат.
@@ -684,16 +734,18 @@ def _archive_queue_key(task_id, task):
     return (str(task.get('queued_at') or task.get('created_at') or ''), str(task_id))
 
 
-def archive_queue_position(task_id):
-    """One-based position including a currently running archive, or zero."""
+def archive_queue_position(task_id, owner_user_id=None):
+    """One-based position inside one workspace, never exposing another user's queue."""
     records = _archive_task_records()
     active = [
         (candidate_id, task) for candidate_id, task in records.items()
         if task.get('kind') == 'archive' and task.get('status') == 'running'
+        and (owner_user_id is None or task.get('owner_user_id') == owner_user_id)
     ]
     queued = [
         (candidate_id, task) for candidate_id, task in records.items()
         if task.get('kind') == 'archive' and task.get('status') == 'queued'
+        and (owner_user_id is None or task.get('owner_user_id') == owner_user_id)
     ]
     ordered = sorted(active, key=lambda pair: _archive_queue_key(*pair)) + sorted(
         queued, key=lambda pair: _archive_queue_key(*pair)
@@ -702,6 +754,19 @@ def archive_queue_position(task_id):
         if candidate_id == task_id:
             return position
     return 0
+
+
+def _archive_pick_next(candidates, last_owner_id=None):
+    """Choose fairly without running more than one expensive OCR task at once."""
+    ordered = sorted(candidates, key=lambda pair: _archive_queue_key(*pair))
+    interrupted = [pair for pair in ordered if pair[1].get('status') == 'running']
+    if interrupted:
+        return interrupted[0]
+    if last_owner_id:
+        another_workspace = [pair for pair in ordered if pair[1].get('owner_user_id') != last_owner_id]
+        if another_workspace:
+            return another_workspace[0]
+    return ordered[0] if ordered else None
 
 
 def start_next_archive_task():
@@ -715,7 +780,12 @@ def start_next_archive_task():
             (task_id, task) for task_id, task in records.items()
             if task.get('kind') == 'archive' and task.get('status') in ('queued', 'running')
         ]
-        for task_id, task in sorted(candidates, key=lambda pair: _archive_queue_key(*pair)):
+        while candidates:
+            picked = _archive_pick_next(candidates, ARCHIVE_LAST_OWNER_ID['value'])
+            if not picked:
+                break
+            task_id, task = picked
+            candidates = [pair for pair in candidates if pair[0] != task_id]
             upload = ARCHIVE_UPLOAD_DIR / str(task.get('archive_upload') or f'{task_id}.upload')
             if not upload.is_file():
                 task.update({
@@ -749,6 +819,7 @@ def start_next_archive_task():
             TASKS[task_id] = task
             save_task(task_id, task)
             ARCHIVE_PROCESSING_IN_PROGRESS['active'] = True
+            ARCHIVE_LAST_OWNER_ID['value'] = task.get('owner_user_id')
             selected = task_id
             break
     if selected:
@@ -1675,30 +1746,59 @@ def year_of(s):
 
 
 # ── Хранилище ─────────────────────────────────────────────────
-def get_companies():
-    return [json.loads(f.read_text('utf-8')) for f in sorted(CO_DIR.glob('*.json'))
-            if not f.name.startswith('.')]
+def get_companies(actor: dict):
+    rows = []
+    for f in sorted(CO_DIR.glob('*.json')):
+        if f.name.startswith('.'):
+            continue
+        try:
+            row = json.loads(f.read_text('utf-8'))
+        except Exception:
+            continue
+        if auth_owns_record(actor, row):
+            rows.append(row)
+    return rows
 
-def save_company(data):
-    cid=data.get('id') or f"c{int(datetime.now().timestamp()*1000)}"
+
+def save_company(data, actor: dict):
+    cid=data.get('id') or f"c{int(datetime.now().timestamp()*1000)}_{secrets.token_hex(4)}"
+    existing_path = CO_DIR / f'{cid}.json'
+    if existing_path.exists():
+        try:
+            existing = json.loads(existing_path.read_text('utf-8'))
+        except Exception:
+            existing = {}
+        if not auth_owns_record(actor, existing):
+            raise PermissionError('Карточка принадлежит другому рабочему пространству.')
     data['id']=cid
+    data['owner_user_id'] = actor['id']
     _atomic_write_text(CO_DIR/f'{cid}.json', json.dumps(data,ensure_ascii=False,indent=2))
     return cid
 
-def get_journal():
-    return [json.loads(f.read_text('utf-8')) for f in sorted(JOURNAL_DIR.glob('*.json'),reverse=True)]
+def get_journal(actor: dict):
+    rows = []
+    for f in sorted(JOURNAL_DIR.glob('*.json'), reverse=True):
+        try:
+            row = json.loads(f.read_text('utf-8'))
+        except Exception:
+            continue
+        if auth_owns_record(actor, row):
+            rows.append(row)
+    return rows
 
 def save_journal(entry):
-    eid=f"j{int(datetime.now().timestamp()*1000)}"
+    # Two users can finish within the same millisecond.  A random suffix keeps
+    # one workspace's finished package from overwriting another's journal row.
+    eid=f"j{int(datetime.now().timestamp()*1000)}_{secrets.token_hex(4)}"
     entry.update({'id':eid,'created':datetime.now().strftime('%d.%m.%Y %H:%M')})
     _atomic_write_text(JOURNAL_DIR/f'{eid}.json', json.dumps(entry,ensure_ascii=False,indent=2))
     return eid
 
-def get_journal_entry(eid):
+def get_journal_entry(eid, actor=None):
     for f in JOURNAL_DIR.glob('*.json'):
         try:
             e=json.loads(f.read_text('utf-8'))
-            if e.get('id') == eid:
+            if e.get('id') == eid and (actor is None or auth_owns_record(actor, e)):
                 return e
         except: pass
     return None
@@ -3142,7 +3242,6 @@ def _reconcile_all_people(texts, api_key, fast_mode=False):
     вариант при расхождениях. Общие документы (без папки) сводятся в реквизиты
     компании. Результат — единый текст, готовый для копирования: сначала
     реквизиты компании, потом люди по номерам."""
-    from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
     groups, order = _group_blocks_by_person(texts)
     people_order = [
         p for p in order
@@ -3205,24 +3304,26 @@ def _reconcile_all_people(texts, api_key, fast_mode=False):
             final_parts.append(f"=== 👤 {person} ===\n" + "\n\n".join(groups.get(person) or []))
         return final_parts
 
+    # Reconciliation prompts contain the fullest OCR text in the whole archive.
+    # Running two of them at once was enough to restart the 512 MB production
+    # instance after OCR had already finished.  One failed archive then held the
+    # shared worker and made other accounts appear stuck.  Keep this expensive
+    # stage strictly sequential: it retains the same evidence and output, but
+    # bounds the peak memory to one prompt/response pair.
     results = {}
-    with _TPE(max_workers=2) as ex:
-        futures = {}
-        if company_general_blocks:
-            futures[ex.submit(_extract_company_details, company_general_blocks, api_key)] = '__company__'
-        for i, person in enumerate(people_order, 1):
-            futures[ex.submit(reconcile_one, person, i)] = person
-        for fut in _ac(futures):
-            key = futures[fut]
-            try:
-                if key == '__company__':
-                    results['__company__'] = fut.result()
-                else:
-                    _, summary = fut.result()
-                    results[key] = summary
-            except Exception as e:
-                print(f"  ⚠️ Обработка «{key}» не удалась: {e}")
-                results[key] = f"[не удалось обработать: {e}]"
+    if company_general_blocks:
+        try:
+            results['__company__'] = _extract_company_details(company_general_blocks, api_key)
+        except Exception as e:
+            print(f"  ⚠️ Обработка «__company__» не удалась: {e}")
+            results['__company__'] = f"[не удалось обработать: {e}]"
+    for i, person in enumerate(people_order, 1):
+        try:
+            _, summary = reconcile_one(person, i)
+            results[person] = summary
+        except Exception as e:
+            print(f"  ⚠️ Обработка «{person}» не удалась: {e}")
+            results[person] = f"[не удалось обработать: {e}]"
 
     final_parts = []
     if '__company__' in results:
@@ -5354,19 +5455,19 @@ class H(http.server.BaseHTTPRequestHandler):
                 'commit': APP_COMMIT,
                 'environment': 'render' if RENDER_GIT_COMMIT else 'local',
             })
-        elif p=='/api/companies':             self._json(get_companies())
-        elif p=='/api/journal':               self._json(get_journal())
+        elif p=='/api/companies':             self._json(get_companies(self._request_user))
+        elif p=='/api/journal':               self._json(get_journal(self._request_user))
         elif p=='/api/kv/get':
             import urllib.parse as _urlparse
             qs = _urlparse.parse_qs(_urlparse.urlsplit(self.path).query)
             key = (qs.get('key') or [''])[0]
-            row = kv_get(key) if key else None
+            row = kv_get_for_user(self._request_user, key) if key else None
             self._json(row if row else {'key': key, 'value': None})
         elif p=='/api/kv/list':
             import urllib.parse as _urlparse
             qs = _urlparse.parse_qs(_urlparse.urlsplit(self.path).query)
             prefix = (qs.get('prefix') or [''])[0]
-            self._json({'keys': kv_list(prefix)})
+            self._json({'keys': kv_list_for_user(self._request_user, prefix)})
         elif p=='/api/knowledge/list':
             import urllib.parse as _urlparse
             qs = _urlparse.parse_qs(_urlparse.urlsplit(self.path).query)
@@ -5403,7 +5504,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     'filename':  task.get('filename',''),
                     'warnings': task.get('warnings', []),
                     'queuePosition': (
-                        archive_queue_position(task_id)
+                        archive_queue_position(task_id, self._request_user.get('id'))
                         if task.get('kind') == 'archive' and task.get('status') in ('queued', 'running')
                         else 0
                     ),
@@ -5411,8 +5512,8 @@ class H(http.server.BaseHTTPRequestHandler):
             else:
                 self._json({'status':'not_found'})
         elif p.startswith('/api/download/'):
-            entry = get_journal_entry(p.split('/')[-1])
-            zp=get_zip(p.split('/')[-1]) if entry and auth_owns_record(self._request_user, entry) else None
+            entry = get_journal_entry(p.split('/')[-1], self._request_user)
+            zp=get_zip(p.split('/')[-1]) if entry else None
             if zp:
                 d=open(zp,'rb').read()
                 self.send_response(200)
@@ -5660,13 +5761,13 @@ class H(http.server.BaseHTTPRequestHandler):
                 value = data.get('value', '')
                 if not key:
                     self._json({'success': False, 'error': 'key обязателен'}, 400); return
-                kv_set(key, value)
+                kv_set_for_user(user, key, value)
                 self._json({'success': True, 'key': key})
                 return
             if p=='/api/kv/delete':
                 data = json.loads(body.decode('utf-8'))
                 key = data.get('key', '')
-                if key: kv_delete(key)
+                if key: kv_delete_for_user(user, key)
                 self._json({'success': True})
                 return
 
@@ -5986,10 +6087,14 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._json({'success':knowledge_delete(str(req.get('id') or ''))})
 
             elif p=='/api/companies/save':
-                d=json.loads(body); self._json({'success':True,'id':save_company(d)})
+                d=json.loads(body); self._json({'success':True,'id':save_company(d, user)})
             elif p=='/api/companies/delete':
                 cid=json.loads(body)['id']; f=CO_DIR/f'{cid}.json'
-                if f.exists(): f.unlink()
+                if f.exists():
+                    existing = json.loads(f.read_text('utf-8'))
+                    if not auth_owns_record(user, existing):
+                        self._json({'success':False,'error':'Карточка принадлежит другому рабочему пространству.'},403); return
+                    f.unlink()
                 self._json({'success':True})
             elif p=='/api/generate':
                 data=json.loads(body)
@@ -6027,6 +6132,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     try:
                         e=json.loads(f.read_text('utf-8'))
                         if e.get('id')==eid:
+                            if not auth_owns_record(user, e):
+                                self._json({'success':False,'error':'Пакет принадлежит другому рабочему пространству.'},403); return
                             zp=e.get('zipPath')
                             if zp and os.path.exists(zp): os.remove(zp)
                             f.unlink(); break

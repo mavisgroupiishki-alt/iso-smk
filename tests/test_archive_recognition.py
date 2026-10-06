@@ -1431,6 +1431,36 @@ def test_spk_si_folder_stays_a_source_block_and_reaches_evidence_parser(monkeypa
     }]
 
 
+def test_person_reconciliation_uses_one_heavy_prompt_at_a_time(monkeypatch):
+    """A large archive must not hold multiple full OCR summaries in RAM at once."""
+    texts = [
+        '--- Клиент/реквизиты.docx ---\nУНП 123456789, расчётный счёт BY00',
+        '--- Клиент/Иванов/диплом.docx ---\nДиплом Иванова Ивана',
+        '--- Клиент/Иванов/трудовая.docx ---\nТрудовая книжка Иванова Ивана',
+        '--- Клиент/Петров/диплом.docx ---\nДиплом Петрова Петра',
+        '--- Клиент/Петров/трудовая.docx ---\nТрудовая книжка Петрова Петра',
+    ]
+    active = {'current': 0, 'maximum': 0}
+    guard = threading.Lock()
+
+    def heavy_call(*_args, **_kwargs):
+        with guard:
+            active['current'] += 1
+            active['maximum'] = max(active['maximum'], active['current'])
+        time.sleep(0.02)
+        with guard:
+            active['current'] -= 1
+        return 'сводка'
+
+    monkeypatch.setattr(server, '_simple_ai_call', heavy_call)
+
+    result = '\n'.join(server._reconcile_all_people(texts, 'unused'))
+
+    assert active['maximum'] == 1
+    # One company summary and one summary for each of two people were retained.
+    assert result.count('сводка') == 3
+
+
 def test_rar_upload_reports_an_unavailable_extractor(monkeypatch):
     monkeypatch.setattr(server, '_rar_to_zip_bytes', lambda *_: None)
 
