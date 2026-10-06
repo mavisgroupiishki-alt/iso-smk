@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).parent.resolve()
 # ── Версия приложения ──────────────────────────────────────────────────
 # Версия видна прямо в интерфейсе. На Render также показываем короткий SHA
 # фактически задеплоенного Git-коммита, чтобы сразу понимать, какая сборка Live.
-APP_VERSION = os.environ.get("IGOR_APP_VERSION", "v18.2")
+APP_VERSION = os.environ.get("IGOR_APP_VERSION", "v18.3")
 APP_BUILD_DATE = os.environ.get("IGOR_BUILD_DATE", "21.08.2026")
 RENDER_GIT_COMMIT = (os.environ.get("RENDER_GIT_COMMIT") or "").strip()
 APP_COMMIT = RENDER_GIT_COMMIT[:7] if RENDER_GIT_COMMIT else "local"
@@ -194,9 +194,24 @@ def _auth_write(path: Path, value):
 
 def _auth_username(value: str) -> str:
     username = str(value or '').strip().lower()
-    if not re.fullmatch(r'[a-z0-9][a-z0-9._-]{2,63}', username):
-        raise ValueError('Логин: 3–64 символа, только латинские буквы, цифры, точка, дефис или подчёркивание.')
+    if not re.fullmatch(r'[a-zа-яё0-9][a-zа-яё0-9._-]{2,63}', username):
+        raise ValueError('Логин: 3–64 символа, буквы, цифры, точка, дефис или подчёркивание.')
     return username
+
+
+def _auth_workspace_config():
+    """Read the optional lock for one physically dedicated Render service."""
+    raw_username = os.environ.get('IGOR_WORKSPACE_USERNAME', '').strip()
+    if not raw_username:
+        return None
+    role = os.environ.get('IGOR_WORKSPACE_ROLE', 'operator').strip().lower()
+    if role not in ('owner', 'operator'):
+        raise RuntimeError('IGOR_WORKSPACE_ROLE должен быть owner или operator.')
+    return {
+        'username': _auth_username(raw_username),
+        'role': role,
+        'password': os.environ.get('IGOR_WORKSPACE_PASSWORD', ''),
+    }
 
 
 def _auth_password_hash(password: str, salt: bytes | None = None) -> str:
@@ -230,9 +245,26 @@ def _auth_public_user(user: dict) -> dict:
 
 
 def auth_bootstrap_owner():
-    """Create the first owner once. The plaintext is only read from Render env."""
+    """Create the first account once. The plaintext is only read from Render env."""
     data = _auth_users()
     users = data['users']
+    workspace = _auth_workspace_config()
+    if workspace:
+        existing = users.get(workspace['username'])
+        if existing:
+            if not existing.get('active'):
+                raise RuntimeError('Учётная запись выделенного рабочего пространства отключена.')
+            return _auth_public_user(existing)
+        if len(workspace['password']) < 12:
+            raise RuntimeError('Не задан пароль выделенного рабочего пространства.')
+        users[workspace['username']] = {
+            'id': workspace['username'], 'username': workspace['username'],
+            'role': workspace['role'], 'active': True,
+            'password_hash': _auth_password_hash(workspace['password']),
+            'created_at': datetime.now().isoformat(timespec='seconds'),
+        }
+        _auth_write(USERS_FILE, data)
+        return _auth_public_user(users[workspace['username']])
     owners = [row for row in users.values() if row.get('role') == 'owner']
     if owners:
         return _auth_public_user(owners[0])
@@ -250,6 +282,10 @@ def auth_bootstrap_owner():
 
 
 def auth_setup_required() -> bool:
+    workspace = _auth_workspace_config()
+    if workspace:
+        user = _auth_users()['users'].get(workspace['username'])
+        return not user and len(workspace['password']) < 12
     has_owner = any(row.get('role') == 'owner' for row in _auth_users()['users'].values())
     configured_password = os.environ.get('IGOR_OWNER_PASSWORD', '')
     return not has_owner and len(configured_password) < 12
@@ -258,6 +294,9 @@ def auth_setup_required() -> bool:
 def auth_login(username: str, password: str):
     auth_bootstrap_owner()
     key = _auth_username(username)
+    workspace = _auth_workspace_config()
+    if workspace and key != workspace['username']:
+        return None
     user = _auth_users()['users'].get(key)
     if not user or not user.get('active') or not _auth_password_matches(password, user.get('password_hash', '')):
         return None
@@ -292,18 +331,26 @@ def auth_current_user(session_id: str):
     user = _auth_users()['users'].get(str(row.get('user_id') or ''))
     if not user or not user.get('active'):
         return None
+    workspace = _auth_workspace_config()
+    if workspace and user.get('id') != workspace['username']:
+        return None
     return {'id': user['id'], **_auth_public_user(user)}
 
 
 def auth_list_users(actor: dict) -> list:
     if not actor or actor.get('role') != 'owner':
         raise PermissionError('Недостаточно прав.')
+    workspace = _auth_workspace_config()
+    if workspace:
+        return [_auth_public_user(_auth_users()['users'][workspace['username']])]
     return sorted((_auth_public_user(row) for row in _auth_users()['users'].values()), key=lambda row: row['username'])
 
 
 def auth_create_user(actor: dict, username: str, password: str, role: str = 'operator') -> dict:
     if not actor or actor.get('role') != 'owner':
         raise PermissionError('Недостаточно прав.')
+    if _auth_workspace_config():
+        raise PermissionError('В выделенном сервисе доступна только закреплённая учётная запись.')
     if role != 'operator':
         raise ValueError('Можно создать только учётную запись сотрудника.')
     key = _auth_username(username)
@@ -322,6 +369,8 @@ def auth_create_user(actor: dict, username: str, password: str, role: str = 'ope
 def auth_update_user(actor: dict, username: str, password: str | None = None, active: bool | None = None) -> dict:
     if not actor or actor.get('role') != 'owner':
         raise PermissionError('Недостаточно прав.')
+    if _auth_workspace_config():
+        raise PermissionError('В выделенном сервисе доступна только закреплённая учётная запись.')
     key = _auth_username(username)
     data = _auth_users()
     user = data['users'].get(key)
@@ -338,6 +387,8 @@ def auth_update_user(actor: dict, username: str, password: str | None = None, ac
 def auth_delete_user(actor: dict, username: str) -> bool:
     if not actor or actor.get('role') != 'owner':
         raise PermissionError('Недостаточно прав.')
+    if _auth_workspace_config():
+        raise PermissionError('В выделенном сервисе доступна только закреплённая учётная запись.')
     key = _auth_username(username)
     data = _auth_users()
     user = data['users'].get(key)

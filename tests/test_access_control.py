@@ -18,6 +18,9 @@ def _use_temp_auth_storage():
         'SESSIONS_FILE': server.SESSIONS_FILE,
         'IGOR_OWNER_PASSWORD': os.environ.get('IGOR_OWNER_PASSWORD'),
         'IGOR_OWNER_USERNAME': os.environ.get('IGOR_OWNER_USERNAME'),
+        'IGOR_WORKSPACE_USERNAME': os.environ.get('IGOR_WORKSPACE_USERNAME'),
+        'IGOR_WORKSPACE_PASSWORD': os.environ.get('IGOR_WORKSPACE_PASSWORD'),
+        'IGOR_WORKSPACE_ROLE': os.environ.get('IGOR_WORKSPACE_ROLE'),
     }
     server.AUTH_DIR = root / 'auth'
     server.USERS_FILE = server.AUTH_DIR / 'users.json'
@@ -31,7 +34,8 @@ def _restore_auth_storage(temp, previous):
     server.AUTH_DIR = previous['AUTH_DIR']
     server.USERS_FILE = previous['USERS_FILE']
     server.SESSIONS_FILE = previous['SESSIONS_FILE']
-    for name in ('IGOR_OWNER_PASSWORD', 'IGOR_OWNER_USERNAME'):
+    for name in ('IGOR_OWNER_PASSWORD', 'IGOR_OWNER_USERNAME',
+                 'IGOR_WORKSPACE_USERNAME', 'IGOR_WORKSPACE_PASSWORD', 'IGOR_WORKSPACE_ROLE'):
         if previous[name] is None:
             os.environ.pop(name, None)
         else:
@@ -58,6 +62,23 @@ def test_owner_can_create_and_revoke_operator_session():
 
         server.auth_update_user(owner_session['user'], 'operator-anna', active=False)
         assert server.auth_current_user(operator_session['session_id']) is None
+    finally:
+        _restore_auth_storage(temp, previous)
+
+
+def test_dedicated_service_accepts_only_its_configured_login():
+    temp, previous = _use_temp_auth_storage()
+    try:
+        os.environ['IGOR_WORKSPACE_USERNAME'] = 'Настя'
+        os.environ['IGOR_WORKSPACE_PASSWORD'] = 'operator-secret-password-456'
+        os.environ['IGOR_WORKSPACE_ROLE'] = 'operator'
+
+        account = server.auth_bootstrap_owner()
+        assert account == {'username': 'настя', 'role': 'operator', 'active': True}
+        assert server.auth_login('Настя', 'operator-secret-password-456')['user'] == account
+        assert server.auth_login('Кристина', 'operator-secret-password-456') is None
+        with __import__('pytest').raises(PermissionError):
+            server.auth_create_user({'id': 'admin', 'role': 'owner'}, 'kristina', 'operator-secret-password-456')
     finally:
         _restore_auth_storage(temp, previous)
 

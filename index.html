@@ -1400,12 +1400,12 @@ function aiEscapeHtml(value) {
 }
 
 function aiWorkspaceLocalPrefix() {
-  const username = String(igorAuthUser?.username || 'guest').toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+  const username = encodeURIComponent(String(igorAuthUser?.username || 'guest').toLowerCase());
   return `igor:user:${username}:company:`;
 }
 
 function aiWorkspaceLastCompanyKey() {
-  const username = String(igorAuthUser?.username || 'guest').toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+  const username = encodeURIComponent(String(igorAuthUser?.username || 'guest').toLowerCase());
   return `igor:user:${username}:last-company-key`;
 }
 
@@ -4594,7 +4594,7 @@ async function stageReadLabourFile(file){
 
 
 // ── Контроль версии frontend/backend ─────────────────────────────────
-const IGOR_FRONTEND_VERSION = 'v18.2';
+const IGOR_FRONTEND_VERSION = 'v18.3';
 
 async function igorLoadVersion(){
   const badge = document.getElementById('app-version-badge');

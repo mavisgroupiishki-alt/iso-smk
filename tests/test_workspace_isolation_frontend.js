@@ -38,7 +38,9 @@ vm.runInContext([
 
 const key = 'igor:company:one';
 context.aiLocalSetCompany(key, {label: 'Карточка Насти'});
+const nastyaPrefix = context.aiWorkspaceLocalPrefix();
 context.igorAuthUser = {username: 'Кристина'};
+const kristinaPrefix = context.aiWorkspaceLocalPrefix();
 if (context.aiLocalGetCompany(key) !== null || context.aiLocalListCompanies().length !== 0) {
   throw new Error('browser storage leaked one account workspace into another');
 }
@@ -49,6 +51,9 @@ if (context.aiLocalGetCompany(key).label !== 'Карточка Насти') {
 }
 if (html.includes('const AI_LOCAL_PREFIX') || html.includes('const AI_LAST_COMPANY_KEY')) {
   throw new Error('legacy shared browser storage keys remain');
+}
+if (nastyaPrefix === kristinaPrefix || !nastyaPrefix.includes('%')) {
+  throw new Error('Cyrillic login was collapsed into a non-unique browser storage key');
 }
 
 console.log('workspace isolation frontend: PASS');
