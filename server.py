@@ -538,6 +538,10 @@ GENERATION_IN_PROGRESS = {'active': False}
 # Не более 2 одновременных vision-запросов — на Render Free (512 МБ) 4+ параллельных
 # тяжёлых запроса к медленной модели гарантированно роняют инстанс.
 VISION_SEMAPHORE = threading.Semaphore(2)
+# Rendering a high-resolution PDF page can temporarily consume more RAM than
+# the subsequent Vision request.  Limit that native bitmap work separately so
+# two worker threads cannot expand two large scans at once.
+PDF_RENDER_SEMAPHORE = threading.Semaphore(1)
 # Один большой архив держит в памяти исходный контейнер, распакованный ZIP и
 # результаты vision. Два таких задания одновременно на Render Free могут
 # перезапустить процесс. Поэтому исполнение однозадачное, но сами загрузки
@@ -719,7 +723,7 @@ def start_next_archive_task():
             was_running = task.get('status') == 'running'
             task['status'] = 'running'
             task['progress'] = (task.get('progress') or [])[-29:] + [
-                'Сервис перезапустился. Продолжаю чтение архива с начала, данные не потеряны.'
+                'Сервис перезапустился. Начинаю чтение заново; загруженный файл сохранён.'
                 if was_running else 'Файл принят. Начинаю чтение.'
             ]
             TASKS[task_id] = task
@@ -2000,6 +2004,58 @@ def _pdf_pages_to_images(file_bytes, max_pages=6, max_dim=1900, quality=82):
     return images_b64
 
 
+def _pdf_page_to_image(file_bytes, page_index, max_dim=1900, quality=82):
+    """Render just one PDF page without retaining the rest of a long scan.
+
+    A 15--24 page labour book can occupy hundreds of megabytes when every page
+    is kept as a base64 JPEG while Vision is still reading the first one.  On
+    the 512 MB service that caused an instance restart and the archive started
+    over.  This helper deliberately keeps one native bitmap and one JPEG only.
+    """
+    import pypdfium2 as pdfium
+    from PIL import Image
+    import io as _io4
+
+    PDF_RENDER_SEMAPHORE.acquire()
+    try:
+        doc = pdfium.PdfDocument(file_bytes)
+        page = bitmap = source_img = img = resized = None
+        try:
+            if page_index < 0 or page_index >= len(doc):
+                raise IndexError('Страница PDF отсутствует.')
+            page = doc[page_index]
+            # Apply the safety cap before PDFium creates a native bitmap.  A
+            # post-render resize is too late for an A0/phone panorama scan.
+            width, height = page.get_size()
+            render_scale = min(150/72, max(0.25, (12_000_000 / max(width * height, 1)) ** 0.5))
+            bitmap = page.render(scale=render_scale)
+            source_img = bitmap.to_pil()
+            img = source_img.convert('RGB')
+            if max(img.size) > max_dim:
+                ratio = max_dim / max(img.size)
+                resized = img.resize(
+                    (int(img.size[0] * ratio), int(img.size[1] * ratio)),
+                    Image.LANCZOS,
+                )
+                img.close()
+                img = resized
+            with _io4.BytesIO() as buf:
+                img.save(buf, 'JPEG', quality=quality, optimize=True)
+                return base64.b64encode(buf.getvalue()).decode('utf-8')
+        finally:
+            if img is not None:
+                img.close()
+            if source_img is not None and source_img is not img:
+                source_img.close()
+            if bitmap is not None:
+                bitmap.close()
+            if page is not None:
+                page.close()
+            doc.close()
+    finally:
+        PDF_RENDER_SEMAPHORE.release()
+
+
 TESSDATA_DIR = BASE_DIR / 'tessdata'
 _TESSERACT_STATUS = {
     'checked': False, 'available': False, 'has_rus': False, 'reason': '', 'data_dir': '',
@@ -2177,13 +2233,26 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     local_spk_si_pages = None
     local_page_outputs = {}
     if ext == 'pdf' and prompt_override == SPK_SI_VISION_PROMPT:
+        # A full local OCR pass used to render and retain every page of a 20–32
+        # page SI register before the first result was returned.  On the small
+        # Render instance that alone is enough to restart the process.  Large
+        # registers use the streaming page reader below; short certificates
+        # retain the fast local OCR path.
+        try:
+            spk_si_page_count = _pdf_total_pages(file_bytes)
+        except Exception:
+            spk_si_page_count = 0
+        if spk_si_page_count > 8:
+            if progress_cb:
+                progress_cb(f"Большой реестр СИ: читаю страницы по одной (0/{spk_si_page_count})")
+        else:
         # Keep every locally verified certificate page and ask Vision only for
         # pages that Tesseract could not prove. This avoids a single faint scan
         # making the complete SI register wait for twenty external calls.
-        local_spk_si_pages = _tesseract_pdf_pages(
-            file_bytes, filename, max_pages_override,
-            progress_cb=progress_cb,
-        )
+            local_spk_si_pages = _tesseract_pdf_pages(
+                file_bytes, filename, max_pages_override,
+                progress_cb=progress_cb,
+            )
         if local_spk_si_pages:
             _, pages_b64, page_texts = local_spk_si_pages
             for index, page_text in enumerate(page_texts):
@@ -2229,20 +2298,20 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         try:
             if local_spk_si_pages:
                 total_pages, pages_b64, _ = local_spk_si_pages
+                page_count = len(pages_b64)
             else:
                 total_pages = _pdf_total_pages(file_bytes)
-                # A PDF that reached this fallback was not read reliably by
-                # local OCR. Render every such non-SI scan at a readable size;
-                # this depends on the scan result, never its filename.
-                pages_b64 = _pdf_pages_to_images(
-                    file_bytes,
-                    max_pages=max_pages,
-                    max_dim=2400 if prompt_override != SPK_SI_VISION_PROMPT else 1900,
-                )
+                # Do not render a whole long labour book up front.  Keeping 24
+                # JPEGs in RAM while Vision reads page one exhausted Render and
+                # restarted the service, which made the archive begin again.
+                # Non-SI pages are rendered immediately before their request
+                # and released after it returns.
+                pages_b64 = None
+                page_count = min(total_pages, max_pages)
         except Exception as e:
             print(f"  ❌ vision_extract({filename}): не удалось конвертировать PDF в изображения — {type(e).__name__}: {e}")
             return '[Не удалось подготовить страницы PDF для распознавания.]'
-        if not pages_b64:
+        if not page_count:
             return '[PDF: страницы не найдены]'
 
         # One SI certificate usually occupies one page.  Keeping it in a separate
@@ -2264,7 +2333,17 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # chance; the exact fallback gets a bounded two attempts of 70 seconds.
         vision_timeout = 70 if single_page_batches else 120
         def read_batch(batch_start):
-            batch = pages_b64[batch_start:batch_start + batch_size]
+            if pages_b64 is None:
+                page_indexes = range(batch_start, min(batch_start + batch_size, page_count))
+                batch = [
+                    _pdf_page_to_image(
+                        file_bytes, page_index,
+                        max_dim=2400 if prompt_override != SPK_SI_VISION_PROMPT else 1900,
+                    )
+                    for page_index in page_indexes
+                ]
+            else:
+                batch = pages_b64[batch_start:batch_start + batch_size]
             first_page = batch_start + 1
             last_page = batch_start + len(batch)
             page_note = (
@@ -2305,7 +2384,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     "messages": [{"role": "user", "content": content_blocks}],
                 }
                 if progress_cb:
-                    progress_cb(f"Распознаю страницы {first_page}–{last_page} из {len(pages_b64)}")
+                    progress_cb(f"Распознаю страницы {first_page}–{last_page} из {page_count}")
                 print(
                     f"  🔎 vision_extract({filename}): PDF стр. {first_page}-{last_page}/{total_pages}, "
                     f"отправляю {payload_mb:.2f} МБ, жду семафор..."
@@ -2332,7 +2411,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                             f"за {elapsed:.1f} сек, {len(text)} символов"
                         )
                         if progress_cb:
-                            progress_cb(f"Прочитаны страницы {first_page}–{last_page} из {len(pages_b64)}")
+                            progress_cb(f"Прочитаны страницы {first_page}–{last_page} из {page_count}")
                         return batch_start, f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + text
                     if attempt < len(retry_angles) - 1:
                         print(f"  ⚠️ vision_extract({filename}): пустой ответ, повторяю только стр. {first_page}-{last_page}")
@@ -2380,7 +2459,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 finally:
                     VISION_SEMAPHORE.release()
 
-        all_starts = list(range(0, len(pages_b64), batch_size))
+        all_starts = list(range(0, page_count, batch_size))
         starts = [start for start in all_starts if start not in local_page_outputs]
         # Independent page groups can share the two existing Vision slots.  This
         # is also safe for a short ordinary PDF (for example a four-page labour
@@ -2409,9 +2488,9 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 outputs_by_start[start] = read_batch(start)[1]
             outputs = [outputs_by_start[start] for start in all_starts]
 
-        if total_pages > len(pages_b64):
+        if total_pages > page_count:
             outputs.append(
-                f"[⚠️ PDF ОБРАБОТАН НЕ ПОЛНОСТЬЮ: распознаны первые {len(pages_b64)} "
+                f"[⚠️ PDF ОБРАБОТАН НЕ ПОЛНОСТЬЮ: распознаны первые {page_count} "
                 f"из {total_pages} страниц. Стаж и связанные поля требуют проверки.]"
             )
         return '\n\n'.join(outputs)
@@ -3824,6 +3903,14 @@ def _run_archive_task(task_id):
             current = TASKS.get(task_id) or task
             if current.get('status') == 'cancelled':
                 raise ArchiveTaskCancelled()
+            # Archive readers report completed documents as ``2/11``.  Store
+            # that separately from the text so the browser can draw a genuine
+            # progress bar instead of a spinner that says ``1 of 1`` for the
+            # uploaded RAR container.
+            match = re.search(r'^(?:Читаю|Распознано)\s+(\d+)\s*/\s*(\d+)\s*:', str(message))
+            if match:
+                current['step'] = int(match.group(1))
+                current['total'] = max(1, int(match.group(2)))
             current['progress'] = (current.get('progress') or [])[-30:] + [message]
             TASKS[task_id] = current
             save_task(task_id, current)
@@ -4669,7 +4756,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     skipped_notes = [f"{fn.split('/')[-1]} ({sz//1024//1024} МБ)" for _, fn, sz, _ in skipped]
 
     text_entries = [e for e in to_process if e[3] in ('text', 'nested_archive')]
-    image_entries = [e for e in to_process if e[3] in ('image', 'pdf')]  # оба идут через vision-путь ниже
+    image_entries = [e for e in to_process if e[3] in ('image', 'pdf')]
     done_count = [0]
 
     with open_archive() as z:

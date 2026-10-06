@@ -50,6 +50,7 @@ const context = {
   console,
   aiAddMsg: () => 'progress-id',
   aiUpdateMsg: (_id, message) => progress.push(message),
+  aiEscapeHtml: value => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),
   aiCurrentData: {},
   window: {crypto: {randomUUID: () => 'upload-test-id'}},
   FormData: FakeFormData,
@@ -75,6 +76,7 @@ vm.runInContext([
   extractFunction('aiArchiveIsBusyError'),
   extractFunction('aiArchiveUploadId'),
   extractFunction('aiArchiveUploadIsRetryable'),
+  extractFunction('aiArchiveProgressHtml'),
   extractFunction('aiReadArchiveAsync'),
 ].join('\n\n'), context);
 
@@ -142,6 +144,17 @@ vm.runInContext([
   if (!context.aiArchiveIsBusyError('Сейчас уже разбирается другой архив')) {
     throw new Error('busy archive processing was not identified');
   }
+  const archiveProgress = context.aiArchiveProgressHtml(
+    'архив.rar', 'Распознаю страницы 3–3 из 18', 2, 11
+  );
+  if (!archiveProgress.includes('Обработано 2 из 11 документов') ||
+      !archiveProgress.includes('страница 3 из 18') ||
+      !archiveProgress.includes('width:18%')) {
+    throw new Error('archive progress bar does not show document and page progress');
+  }
+  if (context.aiArchiveProgressHtml('<img>.rar', 'чтение', 0, 0).includes('<img>')) {
+    throw new Error('archive progress displays a raw filename as HTML');
+  }
 
   let starts = 0;
   let queuePolls = 0;
@@ -174,6 +187,16 @@ vm.runInContext([
   const failed = await context.aiReadArchiveAsync({name: 'Иванов трудовая.pdf', size: 512});
   if (!failed.content.includes('файл не был передан') || failed.content.includes('Unexpected token')) {
     throw new Error('an HTML proxy response was exposed as a technical JSON error');
+  }
+  const hostileName = '<img src=x onerror=alert(1)>.rar';
+  context.fetch = async () => ({
+    status: 400,
+    ok: false,
+    text: async () => JSON.stringify({success: false, error: 'не удалось принять файл'}),
+  });
+  await context.aiReadArchiveAsync({name: hostileName, size: 512});
+  if (progress.some(message => message.includes(hostileName))) {
+    throw new Error('archive failure displays an unescaped filename as HTML');
   }
   try {
     await context.aiReadJsonResponse({

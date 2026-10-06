@@ -260,10 +260,14 @@ def test_finished_archive_starts_the_next_queued_file(monkeypatch, tmp_path):
     }
     monkeypatch.setattr(server, 'TASKS', {'first': task})
     monkeypatch.setenv('VIBE_API_KEY', 'test-key')
-    monkeypatch.setattr(server, 'extract_archive_with_vision', lambda *args, **kwargs: {
-        'text': 'прочитано', 'analysis_text': 'прочитано', 'summary': 'готово',
-        'structured_data': {},
-    })
+    def finish_archive(*_args, **kwargs):
+        kwargs['progress_cb']('Распознано 2/11: Трудовая книжка.pdf')
+        return {
+            'text': 'прочитано', 'analysis_text': 'прочитано', 'summary': 'готово',
+            'structured_data': {},
+        }
+
+    monkeypatch.setattr(server, 'extract_archive_with_vision', finish_archive)
     next_starts = []
     monkeypatch.setattr(server, 'start_next_archive_task', lambda: next_starts.append(True))
 
@@ -271,6 +275,7 @@ def test_finished_archive_starts_the_next_queued_file(monkeypatch, tmp_path):
     server._run_archive_task('first')
 
     assert task['status'] == 'done'
+    assert (task['step'], task['total']) == (2, 11)
     assert next_starts == [True]
     assert not (upload_dir / 'first.upload').exists()
 
@@ -892,8 +897,8 @@ def test_generic_pdf_fallback_uses_detailed_page_render(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 1)
     monkeypatch.setattr(
         server,
-        '_pdf_pages_to_images',
-        lambda *_args, **kwargs: rendered.append(kwargs) or ['aGVsbG8='],
+        '_pdf_page_to_image',
+        lambda _data, page_index, **kwargs: rendered.append((page_index, kwargs)) or 'aGVsbG8=',
     )
 
     class Response:
@@ -907,14 +912,14 @@ def test_generic_pdf_fallback_uses_detailed_page_render(monkeypatch):
 
     server.vision_extract(b'%PDF', 'ТК сотрудника.pdf', 'unused')
 
-    assert rendered == [{'max_pages': 8, 'max_dim': 2400}]
+    assert rendered == [(0, {'max_dim': 2400})]
 
 
 def test_detailed_pdf_fallback_reads_each_page_separately(monkeypatch):
     calls = []
     monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 2)
-    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['cGFnZTE=', 'cGFnZTI='])
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda _data, index, **_kwargs: ['cGFnZTE=', 'cGFnZTI='][index])
 
     class Response:
         def raise_for_status(self):
@@ -942,8 +947,8 @@ def test_unlabelled_hard_to_read_pdf_uses_detailed_page_reader(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 2)
     monkeypatch.setattr(
         server,
-        '_pdf_pages_to_images',
-        lambda *_args, **kwargs: rendered.append(kwargs) or ['cGFnZTE=', 'cGFnZTI='],
+        '_pdf_page_to_image',
+        lambda _data, page_index, **kwargs: rendered.append((page_index, kwargs)) or ['cGFnZTE=', 'cGFnZTI='][page_index],
     )
 
     class Response:
@@ -957,7 +962,7 @@ def test_unlabelled_hard_to_read_pdf_uses_detailed_page_reader(monkeypatch):
 
     server.vision_extract(b'%PDF', 'scan-001.pdf', 'unused')
 
-    assert rendered == [{'max_pages': 8, 'max_dim': 2400}]
+    assert rendered == [(0, {'max_dim': 2400}), (1, {'max_dim': 2400})]
     assert len(calls) == 2
     assert all(payload['max_tokens'] == 3500 for payload in calls)
 
@@ -976,6 +981,9 @@ def test_pdf_page_rendering_releases_native_pdf_resources(monkeypatch):
             state['bitmap_closed'] = True
 
     class FakePage:
+        def get_size(self):
+            return (10, 10)
+
         def render(self, **_kwargs):
             return FakeBitmap()
 
@@ -1290,7 +1298,7 @@ def test_spk_si_image_uses_complete_response_budget(monkeypatch):
 
 def test_spk_si_pages_are_requested_independently_and_returned_in_page_order(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 2)
-    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['cGFnZTE=', 'cGFnZTI='])
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda _data, index, **_kwargs: ['cGFnZTE=', 'cGFnZTI='][index])
     calls = []
     monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: calls.append(kwargs) or type('Response', (), {
         'raise_for_status': lambda self: None,
@@ -1309,10 +1317,36 @@ def test_spk_si_pages_are_requested_independently_and_returned_in_page_order(mon
     assert {call['timeout'] for call in calls} == {70}
 
 
+def test_large_spk_si_register_uses_streaming_pages_not_full_local_ocr(monkeypatch):
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 20)
+    monkeypatch.setattr(
+        server, '_tesseract_pdf_pages',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('full local OCR must not render a large register')),
+    )
+    rendered = []
+    monkeypatch.setattr(
+        server, '_pdf_page_to_image',
+        lambda _data, index, **_kwargs: rendered.append(index) or f'page-{index + 1}',
+    )
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: type('Response', (), {
+        'raise_for_status': lambda self: None,
+        'json': lambda self: {'choices': [{'message': {'content': 'СИ | наименование: Термометр'}}]},
+    })())
+
+    text = server.vision_extract(
+        b'pdf', 'реестр СИ.pdf', 'unused',
+        prompt_override=server.SPK_SI_VISION_PROMPT, max_pages_override=20,
+        single_page_batches=True,
+    )
+
+    assert sorted(rendered) == list(range(20))
+    assert text.count('СИ | наименование: Термометр') == 20
+
+
 def test_short_pdf_page_groups_can_run_in_parallel_without_changing_order(monkeypatch):
     monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 4)
-    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['a', 'b', 'c', 'd'])
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda _data, index, **_kwargs: ['a', 'b', 'c', 'd'][index])
     monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **kwargs: type('Response', (), {
         'raise_for_status': lambda self: None,
         'json': lambda self: {'choices': [{'message': {'content': next(
@@ -1330,7 +1364,7 @@ def test_short_pdf_page_groups_can_run_in_parallel_without_changing_order(monkey
 
 def test_handwritten_personnel_pdf_pages_are_read_one_by_one(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 3)
-    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['a', 'b', 'c'])
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda _data, index, **_kwargs: ['a', 'b', 'c'][index])
     active = {'current': 0, 'maximum': 0}
     guard = threading.Lock()
 
@@ -1475,7 +1509,7 @@ def test_archive_warning_includes_an_oversized_pdf_that_was_not_read():
 def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
     monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 2)
-    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['a', 'b'])
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda _data, index, **_kwargs: ['a', 'b'][index])
     calls = []
 
     class Response:
@@ -1509,7 +1543,7 @@ def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
 
 def test_sideways_personnel_pdf_retries_both_orientations(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 1)
-    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['page'])
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda *_args, **_kwargs: 'page')
     monkeypatch.setattr(
         server, '_rotate_pdf_page_b64',
         lambda page, angle=90: f'{page}-rotated-{angle}',
@@ -1547,7 +1581,7 @@ def test_sideways_personnel_pdf_retries_both_orientations(monkeypatch):
 def test_pdf_reports_progress_for_each_recognition_batch(monkeypatch):
     monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 3)
-    monkeypatch.setattr(server, '_pdf_pages_to_images', lambda *_args, **_kwargs: ['a', 'b', 'c'])
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda _data, index, **_kwargs: ['a', 'b', 'c'][index])
     progress = []
 
     class Response:

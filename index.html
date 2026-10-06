@@ -3540,7 +3540,11 @@ async function aiSend() {
     const typingMsg = document.getElementById('ai-messages').lastElementChild;
     for(let i = 0; i < total; i += BATCH) {
       const batch = aiAttachedFiles.slice(i, i + BATCH);
-      aiAddMsg('ai', `⏳ Читаю файлы ${i+1}-${Math.min(i+BATCH,total)} из ${total}...`);
+      // ZIP/RAR create their own detailed progress card. Showing the browser
+      // attachment count (always "1 of 1" for one archive) above it was both
+      // misleading and looked like the reader had stopped.
+      const hasOnlyArchives = batch.every(file => /\.(zip|rar)$/i.test(file.name));
+      if(!hasOnlyArchives) aiAddMsg('ai', `⏳ Читаю файлы ${i+1}-${Math.min(i+BATCH,total)} из ${total}...`);
       const results = await Promise.all(batch.map(file => aiReadFile(file, archiveProductHint)));
       fileData.push(...results);
       // убираем промежуточное сообщение о прогрессе
@@ -3891,6 +3895,28 @@ async function aiCompressArchiveClientSide(file, onProgress) {
   return new File([outBlob], file.name, {type: 'application/zip'});
 }
 
+function aiArchiveProgressHtml(filename, message, step, total) {
+  const safeName = aiEscapeHtml(filename);
+  const safeMessage = aiEscapeHtml(message).replace(/\n/g, '<br>');
+  const done = Math.max(0, Number(step) || 0);
+  const count = Math.max(0, Number(total) || 0);
+  const pageMatch = String(message || '').match(/страниц[аы]\s+(\d+)(?:[–-](\d+))?\s+из\s+(\d+)/i);
+  const pageNote = pageMatch
+    ? ` · страница ${pageMatch[2] || pageMatch[1]} из ${pageMatch[3]}`
+    : '';
+  // ``step`` is the number of completed documents. During a long scanned PDF
+  // the current page is shown alongside the bar, so it no longer looks frozen.
+  const pct = count ? Math.min(99, Math.round((done / count) * 100)) : 0;
+  const details = count
+    ? `Обработано ${Math.min(done, count)} из ${count} документов${pageNote} · ${pct}%`
+    : 'Подготавливаю обработку';
+  return `<div style="font-weight:600">⏳ «${safeName}»</div>`
+    + `<div style="margin-top:6px">${safeMessage}</div>`
+    + `<div style="margin-top:10px;background:#EDE1D6;border-radius:6px;height:8px;overflow:hidden">`
+    + `<div style="height:100%;width:${pct}%;background:#A56B75;transition:width .35s ease"></div></div>`
+    + `<div style="font-size:12px;color:#856F68;margin-top:5px">${details}</div>`;
+}
+
 async function aiReadArchiveAsync(file, productHint = '') {
   // Архив (zip/rar) обрабатывается в фоне на сервере: текстовые файлы читаются как раньше,
   // а ФОТО внутри теперь тоже распознаются через vision (раньше пропускались молча).
@@ -3898,7 +3924,8 @@ async function aiReadArchiveAsync(file, productHint = '') {
   const progressMsgId = 'archive-prog-' + Date.now();
   const ext = file.name.split('.').pop().toLowerCase();
   const isArchive = ext === 'zip' || ext === 'rar';
-  aiAddMsg('ai', `⏳ ${isArchive ? 'Загружаю архив' : 'Загружаю документ'} «${file.name}»...`, null, progressMsgId);
+  aiAddMsg('ai', aiArchiveProgressHtml(file.name,
+    isArchive ? 'Загружаю архив...' : 'Загружаю документ...', 0, 0), null, progressMsgId);
 
   let uploadFile = file;
   // Сжимаем фото внутри ДО отправки — иначе тело запроса может вообще не долететь
@@ -3906,13 +3933,16 @@ async function aiReadArchiveAsync(file, productHint = '') {
   // объяснений — это выглядит как "Unexpected token '<'"). RAR так сжать не можем
   // (нет библиотеки в браузере) — для него просто пробуем отправить как есть.
   if(ext === 'zip' && file.size > 15 * 1024 * 1024) {
-    aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: сжимаю фото перед загрузкой (${(file.size/1024/1024).toFixed(0)} МБ)...`);
+    aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(file.name,
+      `Сжимаю фото перед загрузкой (${(file.size/1024/1024).toFixed(0)} МБ)...`, 0, 0));
     try {
       uploadFile = await aiCompressArchiveClientSide(file, (done, total, name) => {
-        aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: сжимаю ${done}/${total} — ${name}`);
+        aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(file.name,
+          `Сжимаю ${done}/${total} — ${name}`, 0, 0));
       });
       aiUpdateMsg(progressMsgId,
-        `⏳ «${file.name}»: сжато с ${(file.size/1024/1024).toFixed(0)} МБ до ${(uploadFile.size/1024/1024).toFixed(0)} МБ, загружаю...`);
+        aiArchiveProgressHtml(file.name,
+          `Сжато с ${(file.size/1024/1024).toFixed(0)} МБ до ${(uploadFile.size/1024/1024).toFixed(0)} МБ, загружаю...`, 0, 0));
     } catch(e) {
       console.warn('Сжатие архива не удалось, отправляю как есть:', e);
       uploadFile = file;
@@ -3926,7 +3956,8 @@ async function aiReadArchiveAsync(file, productHint = '') {
     // The same id is sent on a transport retry. The server uses it to return
     // an already-created task if its JSON response was lost during a restart.
     formData.append('upload_id', aiArchiveUploadId());
-    aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: загружаю ${(uploadFile.size / 1024 / 1024).toFixed(1)} МБ...`);
+    aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(file.name,
+      `Загружаю ${(uploadFile.size / 1024 / 1024).toFixed(1)} МБ...`, 0, 0));
     let startResp;
     let queuePolls = 0;
     let transportRetries = 0;
@@ -3937,7 +3968,8 @@ async function aiReadArchiveAsync(file, productHint = '') {
       } catch(err) {
         if(transportRetries < 3 && aiArchiveUploadIsRetryable(err.message)) {
           transportRetries++;
-          aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: соединение прервалось, повторяю передачу (${transportRetries}/3)...`);
+          aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(file.name,
+            `Соединение прервалось, повторяю передачу (${transportRetries}/3)...`, 0, 0));
           await new Promise(res => setTimeout(res, 3000));
           continue;
         }
@@ -3945,12 +3977,13 @@ async function aiReadArchiveAsync(file, productHint = '') {
       }
       if(startResp.success || !aiArchiveIsBusyError(startResp.error)) break;
       queuePolls++;
-      aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ожидаю завершения обработки предыдущего файла...`);
+      aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(file.name,
+        'Ожидаю завершения обработки предыдущего файла...', 0, 0));
       await new Promise(res => setTimeout(res, 3000));
     }
     if(!startResp.success) {
       const reason = aiFileReadError(startResp.error);
-      aiUpdateMsg(progressMsgId, `❌ ${file.name}: ${reason}`);
+      aiUpdateMsg(progressMsgId, `❌ «${aiEscapeHtml(file.name)}»: ${aiEscapeHtml(reason)}`);
       return {name: file.name, content: `[${reason}.]`, read_failed: true};
     }
     const taskId = startResp.task_id;
@@ -3971,18 +4004,20 @@ async function aiReadArchiveAsync(file, productHint = '') {
 
       if(tr.status === 'running') {
         const lastMsg = tr.progress && tr.progress.length ? tr.progress[tr.progress.length-1] : 'обрабатываю...';
-        aiUpdateMsg(progressMsgId, `⏳ «${file.name}»: ${lastMsg}`);
+        aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(file.name, lastMsg, tr.step, tr.total));
       } else if(tr.status === 'queued') {
         const ahead = Math.max(0, Number(tr.queuePosition || 0) - 1);
-        aiUpdateMsg(progressMsgId, ahead
+        const message = ahead
           ? `⏳ «${file.name}»: в очереди на обработку. Перед вами ${ahead} ${ahead === 1 ? 'файл' : 'файла'}; загрузка сохранена.`
-          : `⏳ «${file.name}»: ожидаю начала обработки. Загрузка сохранена.`);
+          : `Ожидаю начала обработки. Загрузка сохранена.`;
+        aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(file.name, message, 0, 0));
       } else if(tr.status === 'done') {
         const warnings = Array.isArray(tr.warnings) ? tr.warnings : [];
+        const safeName = aiEscapeHtml(file.name);
         if(warnings.length) {
-          aiUpdateMsg(progressMsgId, `⚠️ «${file.name}» разобран частично. Не прочитано: ${warnings.join(', ')}.`);
+          aiUpdateMsg(progressMsgId, `⚠️ «${safeName}» разобран частично. Не прочитано: ${warnings.map(aiEscapeHtml).join(', ')}.`);
         } else {
-          aiUpdateMsg(progressMsgId, `✅ ${isArchive ? 'Архив' : 'Документ'} «${file.name}» разобран`);
+          aiUpdateMsg(progressMsgId, `✅ ${isArchive ? 'Архив' : 'Документ'} «${safeName}» разобран`);
         }
         return {name: file.name,
                 content: tr.analysis_text || tr.text || '[Архив: данные не найдены]',
@@ -3992,18 +4027,18 @@ async function aiReadArchiveAsync(file, productHint = '') {
                 structured_data: tr.structured_data || null};
       } else if(tr.status === 'error') {
         const reason = aiFileReadError(tr.error);
-        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${reason}`);
+        aiUpdateMsg(progressMsgId, `❌ «${aiEscapeHtml(file.name)}»: ${aiEscapeHtml(reason)}`);
         return {name: file.name, content: `[${reason}.]`, read_failed: true};
       } else if(tr.status === 'not_found') {
-        aiUpdateMsg(progressMsgId, `❌ «${file.name}»: обработка прервалась до завершения. Загрузите файл ещё раз.`);
+        aiUpdateMsg(progressMsgId, `❌ «${aiEscapeHtml(file.name)}»: обработка прервалась до завершения. Загрузите файл ещё раз.`);
         return {name: file.name, content: '[Обработка файла прервалась до завершения.]', read_failed: true};
       }
     }
-    aiUpdateMsg(progressMsgId, `⚠️ «${file.name}»: обработка ещё не завершилась. Файл продолжает обрабатываться на сервере; не загружайте его повторно, пока не появится результат.`);
+    aiUpdateMsg(progressMsgId, `⚠️ «${aiEscapeHtml(file.name)}»: обработка ещё не завершилась. Файл продолжает обрабатываться на сервере; не загружайте его повторно, пока не появится результат.`);
     return {name: file.name, content: '[Обработка архива ещё не завершилась.]'};
   } catch(err) {
     const reason = aiFileReadError(err.message);
-    aiUpdateMsg(progressMsgId, `❌ «${file.name}»: ${reason}`);
+    aiUpdateMsg(progressMsgId, `❌ «${aiEscapeHtml(file.name)}»: ${aiEscapeHtml(reason)}`);
     return {name: file.name, content: `[${reason}.]`, read_failed: true};
   }
 }
