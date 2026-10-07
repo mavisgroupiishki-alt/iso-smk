@@ -3956,6 +3956,47 @@ function aiArchiveProgressHtml(filename, message, step, total, minimumPercent = 
     + `<div style="font-size:12px;color:#856F68;margin-top:5px">${details}</div>`;
 }
 
+function aiArchiveQueueHtml(filename, queueAhead, taskId, messageId, queuePosition = 0) {
+  const ahead = Array.isArray(queueAhead) ? queueAhead : [];
+  const aheadCount = Math.max(0, Number(queuePosition || 0) - 1);
+  const rows = ahead.map(task => {
+    const taskIdSafe = aiEscapeHtml(task && task.taskId || '');
+    const fileName = aiEscapeHtml(task && task.filename || 'Без названия');
+    const isRunning = task && task.status === 'running';
+    const state = isRunning ? 'читается сейчас' : 'ожидает обработки';
+    const action = taskIdSafe
+      ? `<button type="button" class="co-btn del" style="margin-top:7px" data-task-id="${taskIdSafe}" data-message-id="${aiEscapeHtml(messageId)}" data-filename="${fileName}" onclick="aiCancelArchiveTask(this.dataset.taskId, this.dataset.messageId, this.dataset.filename)">${isRunning ? 'Остановить после текущей страницы' : 'Убрать из очереди'}</button>`
+      : '';
+    return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #EDE1D6"><b>Перед вами:</b> «${fileName}» — ${state}<br>${action}</div>`;
+  }).join('');
+  const message = ahead.length
+    ? 'Ваша загрузка сохранена. Ниже указаны только ваши более ранние файлы.'
+    : aheadCount
+      ? `Файл в очереди на обработку. Перед вами ${aheadCount} ${aheadCount === 1 ? 'файл' : 'файла'}; загрузка сохранена.`
+      : 'Ожидаю запуска обработки. Загрузка сохранена.';
+  const ownTask = aiEscapeHtml(taskId || '');
+  const ownAction = ownTask
+    ? `<button type="button" class="co-btn del" style="margin-top:9px" data-task-id="${ownTask}" data-message-id="${aiEscapeHtml(messageId)}" data-filename="${aiEscapeHtml(filename)}" onclick="aiCancelArchiveTask(this.dataset.taskId, this.dataset.messageId, this.dataset.filename)">Отменить мою загрузку</button>`
+    : '';
+  return aiArchiveProgressHtml(filename, message, 0, 0) + rows + ownAction;
+}
+
+async function aiCancelArchiveTask(taskId, messageId, filename) {
+  if(!taskId || !window.confirm(`Остановить обработку файла «${filename || 'без названия'}»?`)) return;
+  try {
+    const response = await fetch('/api/task/cancel', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({task_id: taskId}),
+    });
+    const payload = await aiReadJsonResponse(response);
+    if(!payload.success) throw new Error(payload.error || 'Не удалось отменить обработку.');
+    aiUpdateMsg(messageId, `⏳ «${aiEscapeHtml(filename)}»: отмена принята. Если файл уже читается, остановлю его после текущей страницы.`);
+  } catch(error) {
+    aiUpdateMsg(messageId, `❌ «${aiEscapeHtml(filename)}»: ${aiEscapeHtml(aiFileReadError(error.message))}`);
+  }
+}
+
 async function aiReadArchiveAsync(file, productHint = '') {
   // Архив (zip/rar) обрабатывается в фоне на сервере: текстовые файлы читаются как раньше,
   // а ФОТО внутри теперь тоже распознаются через vision (раньше пропускались молча).
@@ -4052,11 +4093,10 @@ async function aiReadArchiveAsync(file, productHint = '') {
           file.name, lastMsg, tr.step, tr.total, displayedProgress,
         ));
       } else if(tr.status === 'queued') {
-        const ahead = Math.max(0, Number(tr.queuePosition || 0) - 1);
-        const message = ahead
-          ? `⏳ «${file.name}»: в очереди на обработку. Перед вами ${ahead} ${ahead === 1 ? 'файл' : 'файла'}; загрузка сохранена.`
-          : `Ожидаю начала обработки. Загрузка сохранена.`;
-        aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(file.name, message, 0, 0));
+        const queueAhead = Array.isArray(tr.queueAhead) ? tr.queueAhead : [];
+        aiUpdateMsg(progressMsgId, aiArchiveQueueHtml(
+          file.name, queueAhead, taskId, progressMsgId, tr.queuePosition,
+        ));
       } else if(tr.status === 'done') {
         const warnings = Array.isArray(tr.warnings) ? tr.warnings : [];
         const safeName = aiEscapeHtml(file.name);

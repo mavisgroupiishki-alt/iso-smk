@@ -81,6 +81,7 @@ vm.runInContext([
   extractFunction('aiArchiveUploadIsRetryable'),
   extractFunction('aiArchiveProgressPercent'),
   extractFunction('aiArchiveProgressHtml'),
+  extractFunction('aiArchiveQueueHtml'),
   extractFunction('aiReadArchiveAsync'),
 ].join('\n\n'), context);
 
@@ -171,6 +172,14 @@ vm.runInContext([
   }
   if (!context.aiArchiveProgressHtml('архив.rar', 'чтение', 2, 11, 30).includes('width:30%')) {
     throw new Error('archive progress can move backwards after a service restart');
+  }
+  const queueDetails = context.aiArchiveQueueHtml('текущий.rar', [
+    {taskId: 'previous', filename: 'предыдущий.rar', status: 'running'},
+  ], 'current');
+  if (!queueDetails.includes('предыдущий.rar') ||
+      !queueDetails.includes('data-task-id="previous"') ||
+      !queueDetails.includes('Остановить после текущей страницы')) {
+    throw new Error('queue does not identify or allow cancelling the previous archive');
   }
   if (context.aiArchiveProgressHtml('<img>.rar', 'чтение', 0, 0).includes('<img>')) {
     throw new Error('archive progress displays a raw filename as HTML');

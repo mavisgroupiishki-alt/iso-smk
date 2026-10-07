@@ -204,6 +204,32 @@ def test_archive_queue_accepts_second_user_and_reports_position(monkeypatch, tmp
     server.release_archive_processing()
 
 
+def test_archive_queue_ahead_shows_only_the_owner_previous_files(monkeypatch, tmp_path):
+    task_dir = tmp_path / 'tasks'
+    task_dir.mkdir()
+    monkeypatch.setattr(server, 'TASKS_DIR', task_dir)
+    monkeypatch.setattr(server, 'TASKS', {
+        'other': {
+            'kind': 'archive', 'status': 'running', 'owner_user_id': 'other-user',
+            'queued_at': '2026-10-07T09:00:00', 'filename': 'чужая трудовая.pdf',
+        },
+        'previous': {
+            'kind': 'archive', 'status': 'running', 'owner_user_id': 'owner-user',
+            'queued_at': '2026-10-07T09:01:00', 'filename': 'предыдущий архив.rar',
+        },
+        'current': {
+            'kind': 'archive', 'status': 'queued', 'owner_user_id': 'owner-user',
+            'queued_at': '2026-10-07T09:02:00', 'filename': 'текущий архив.rar',
+        },
+    })
+
+    ahead = server.archive_queue_ahead('current', 'owner-user')
+
+    assert ahead == [{
+        'taskId': 'previous', 'filename': 'предыдущий архив.rar', 'status': 'running',
+    }]
+
+
 def test_generation_queue_accepts_second_user_without_parallel_start(monkeypatch, tmp_path):
     task_dir = tmp_path / 'tasks'
     task_dir.mkdir()

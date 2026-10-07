@@ -807,6 +807,42 @@ def archive_queue_position(task_id, owner_user_id=None):
     return 0
 
 
+def archive_queue_ahead(task_id, owner_user_id):
+    """Return only the current user's earlier archive tasks for the queue UI.
+
+    File names are business documents, so another employee's queue must never be
+    exposed merely to explain a delay.  Dedicated services normally contain one
+    account; in the shared case this still lets an operator cancel their own
+    abandoned upload without seeing anyone else's files.
+    """
+    records = _archive_task_records()
+    active = [
+        (candidate_id, task) for candidate_id, task in records.items()
+        if task.get('kind') == 'archive' and task.get('status') == 'running'
+        and task.get('owner_user_id') == owner_user_id
+    ]
+    queued = [
+        (candidate_id, task) for candidate_id, task in records.items()
+        if task.get('kind') == 'archive' and task.get('status') == 'queued'
+        and task.get('owner_user_id') == owner_user_id
+    ]
+    ordered = sorted(active, key=lambda pair: _archive_queue_key(*pair)) + sorted(
+        queued, key=lambda pair: _archive_queue_key(*pair)
+    )
+    for index, (candidate_id, _) in enumerate(ordered):
+        if candidate_id != task_id:
+            continue
+        return [
+            {
+                'taskId': earlier_id,
+                'filename': Path(str(earlier_task.get('filename') or '')).name,
+                'status': earlier_task.get('status'),
+            }
+            for earlier_id, earlier_task in ordered[:index]
+        ]
+    return []
+
+
 def _archive_pick_next(candidates, last_owner_id=None):
     """Choose fairly without running more than one expensive OCR task at once."""
     ordered = sorted(candidates, key=lambda pair: _archive_queue_key(*pair))
@@ -5740,6 +5776,11 @@ class H(http.server.BaseHTTPRequestHandler):
                         archive_queue_position(task_id, self._request_user.get('id'))
                         if task.get('kind') == 'archive' and task.get('status') in ('queued', 'running')
                         else 0
+                    ),
+                    'queueAhead': (
+                        archive_queue_ahead(task_id, self._request_user.get('id'))
+                        if task.get('kind') == 'archive' and task.get('status') in ('queued', 'running')
+                        else []
                     ),
                 })
             else:
