@@ -1288,6 +1288,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 - Если в содержимом файла видишь "[Ошибка...]", "[не удалось начать обработку]" или файл пришёл пустым — НЕ ПРИДУМЫВАЙ данные и не переключайся на другой продукт (например СПК) молча. Прямо скажи: "Файл не прочитался, попробуйте загрузить ещё раз" — и жди повторной попытки.
 - Никогда не игнорируй явные подсказки в САМОМ ИМЕНИ файла — если имя содержит "аттестац" (без указания органа СПК) → это АТТ спеца (продукт "att"), не СПК. Если имя содержит "спк" → это СПК. Если "исо"/"суот" → соответствующий продукт. Название файла — сильный сигнал какой продукт нужен, используй его даже если содержимое ещё не прочиталось.
 - Не продолжай молча логику из более ранних сообщений в этом же чате (например "делаем СПК по общестрою"), если новый файл явно про другой продукт — переспроси, если есть противоречие, а не выбирай сам.
+- Если в документах одного человека ФИО расходятся или в папке с должностью оказались документы с разными ФИО, НЕ добавляй ни один из этих вариантов в staff[], itr[] или workers[] автоматически. Покажи расхождение в review_items и попроси подтвердить ФИО. Запрещено переносить диплом, трудовую или должность от одного варианта ФИО к другому.
 
 ВАЖНОЕ ПРАВИЛО — ТЕКСТ И ДАННЫЕ ДОЛЖНЫ СОВПАДАТЬ:
 - Кнопка "Сформировать пакет" у оформителя берёт продукт СТРОГО из поля certification.standard в твоём JSON — не из того что ты написал текстом в чате. Если ты говоришь "делаю аттестацию" или "делаю СПК" — это ОБЯЗАТЕЛЬНО должно сопровождаться обновлением certification.standard в JSON в этом же ответе (att / company_att / iso / suot / iso_suot / spk_stroy / spk_bisp). Никогда не меняй словами то, что не поменял в JSON — иначе кнопка сгенерирует не то, что ты только что пообещал.
@@ -2356,6 +2357,40 @@ def _tesseract_text_is_usable(text: str) -> bool:
     return True
 
 
+def _personnel_tesseract_page_is_complete(text: str) -> bool:
+    """Accept only a clearly printed personnel-document page from local OCR.
+
+    Labour-book entries are often handwritten. They must still go through the
+    visual reader, while a printed diploma, passport or appointment order can
+    be accepted locally without waiting for an external request.
+    """
+    value = str(text or '').strip()
+    if len(value) < 80 or not _tesseract_text_is_usable(value) or _is_labour_book_text(value):
+        return False
+    normalized = value.casefold().replace('ё', 'е')
+    markers = (
+        'диплом', 'паспорт', 'свидетельств', 'аттестат', 'удостоверен',
+        'приказ', 'квалификац', 'специальност', 'министерств',
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _read_personnel_pdf_page_locally(page_b64: str) -> str | None:
+    """Read one rendered personnel page without keeping an entire PDF in RAM."""
+    status = _check_tesseract()
+    if not (status['available'] and status['has_rus']):
+        return None
+    try:
+        from PIL import Image
+        import io as _io_personnel
+        with Image.open(_io_personnel.BytesIO(base64.b64decode(page_b64))) as image:
+            text = _tesseract_ocr_image(image)
+        return text if _personnel_tesseract_page_is_complete(text) else None
+    except Exception as exc:
+        print(f"  ℹ️ Tesseract OCR: локальное чтение страницы персонала не удалось ({type(exc).__name__})")
+        return None
+
+
 def _tesseract_pdf_pages(file_bytes, filename, max_pages_override=None, progress_cb=None):
     """Render a PDF once and return local OCR for each page when available.
 
@@ -2557,14 +2592,15 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # One weak SI page must not keep the complete archive waiting four
         # minutes (two 120-second attempts).  The local OCR has already had a
         # chance; the exact fallback gets a bounded two attempts of 70 seconds.
-        vision_timeout = 70 if single_page_batches else 120
+        vision_timeout = 70 if (single_page_batches or retry_sideways_personnel_page) else 120
         def read_batch(batch_start):
             if pages_b64 is None:
                 page_indexes = range(batch_start, min(batch_start + batch_size, page_count))
                 batch = [
                     _pdf_page_to_image(
                         file_bytes, page_index,
-                        max_dim=2400 if prompt_override != SPK_SI_VISION_PROMPT else 1900,
+                        max_dim=(1900 if (prompt_override == SPK_SI_VISION_PROMPT or retry_sideways_personnel_page)
+                                 else 2400),
                     )
                     for page_index in page_indexes
                 ]
@@ -2572,15 +2608,25 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 batch = pages_b64[batch_start:batch_start + batch_size]
             first_page = batch_start + 1
             last_page = batch_start + len(batch)
+            # A printed diploma, passport or order should not wait behind a
+            # handwritten labour-book page. This check is per-page so a long
+            # file never holds every rendered page in memory at once.
+            if retry_sideways_personnel_page and len(batch) == 1:
+                local_text = _read_personnel_pdf_page_locally(batch[0])
+                if local_text:
+                    if progress_cb:
+                        progress_cb(f"Локально прочитана страница {first_page} из {page_count}")
+                    return batch_start, f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n{local_text}"
             page_note = (
                 "Верни только структурированные строки из инструкции; полный текст страницы не нужен."
                 if is_spk_si_read else
                 "Сохраняй каждую запись трудовой книжки отдельно с точными датами; не придумывай день или месяц."
             )
-            # Phone scans of labour books are commonly stored sideways.  An
-            # empty/failed first answer therefore gets two rotated retries,
-            # covering both directions.  Normal documents keep the former
-            # single retry and never pay this extra cost.
+            # Phone scans can be stored in either sideways orientation. Keep
+            # both recovery rotations: skipping one of them made some real
+            # labour-book pages unreadable. Pages are now processed two at a
+            # time, so retaining this correctness fallback no longer turns a
+            # long scan into an hours-long serial wait.
             retry_angles = (None, 90, 270) if retry_sideways_personnel_page else (None, None)
             for attempt, angle in enumerate(retry_angles):
                 request_batch = batch
@@ -2700,8 +2746,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # pages are submitted together; a single unreadable page then made the
         # whole file look unreadable in the archive result.
         allow_parallel_page_groups = (
-            not retry_sideways_personnel_page
-            and (single_page_batches or parallel_page_batches or detailed_pdf_read)
+            single_page_batches or parallel_page_batches or detailed_pdf_read
         )
         if allow_parallel_page_groups and len(starts) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3145,6 +3190,23 @@ def _is_unnamed_personal_visual(path: str) -> bool:
     return bool(re.match(r'(?:photo|img|image|изображение|фото|скан)[_.-]', name))
 
 
+def _person_folder_is_named_person(folder_name: str) -> bool:
+    """Whether a folder label can safely be used as a person's identity."""
+    leaf = str(folder_name or '').replace('\\', '/').rstrip('/').split('/')[-1]
+    normalized = re.sub(r'^\s*\d+[.)_-]*\s*', '', leaf.casefold().replace('ё', 'е')).strip()
+    if not normalized:
+        return False
+    role_words = {
+        'директор', 'заместитель', 'главный', 'инженер', 'прораб', 'мастер',
+        'сметчик', 'бухгалтер', 'кадровик', 'специалист', 'сотрудник',
+    }
+    tokens = [token for token in re.split(r'\s+', normalized) if token]
+    if not tokens or any(token in role_words for token in tokens):
+        return False
+    token_re = re.compile(r'^[а-я-]+$|^[а-я]\.?[а-я]\.?$', re.I)
+    return 1 <= len(tokens) <= 4 and all(token_re.match(token) for token in tokens)
+
+
 def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
     """Reconcile one person's documents without losing labour-book chronology.
 
@@ -3155,6 +3217,15 @@ def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
     combined = '\n\n'.join(raw_blocks)
     if len(combined) > 80000:
         combined = combined[:80000] + '\n[...обрезано для сверки...]'
+    folder_identity_rule = (
+        f"3. Название папки «{person_name}» — дополнительный ориентир для ФИО. Если фамилия в скане "
+        f"читается иначе, в строке ФИО оставь фамилию из папки, а расхождение укажи в "
+        f"«НЕУВЕРЕННЫЕ ПОЛЯ»; все даты, номера и должности бери из документов.\n"
+        if _person_folder_is_named_person(person_name) else
+        f"3. Папка «{person_name}» обозначает должность, а не ФИО. Не используй её как имя и не "
+        f"склеивай документы разных людей. Если ФИО в документах расходятся, напиши «ФИО: не "
+        f"подтверждено» и перечисли варианты только в «НЕУВЕРЕННЫЕ ПОЛЯ».\n"
+    )
     prompt = (
         f"Ниже — результаты распознавания нескольких документов одного человека "
         f"(папка «{person_name}»): паспорт, дипломы, ТРУДОВАЯ КНИЖКА И ВКЛАДЫШИ, "
@@ -3177,9 +3248,7 @@ def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
         f"«год 1986, день/месяц не видны» в строке НЕУВЕРЕННЫЕ ПОЛЯ.\n"
         f"2. Не пропускай записи о переводе/совмещении: они определяют, можно ли засчитать "
         f"директора как прораба/главного инженера.\n"
-        f"3. Название папки «{person_name}» — надёжный ориентир для ФИО. Если фамилия в скане "
-        f"читается иначе, в строке ФИО оставь фамилию из папки, а расхождение укажи в "
-        f"«НЕУВЕРЕННЫЕ ПОЛЯ»; все даты, номера и должности бери из документов.\n"
+        f"{folder_identity_rule}"
         f"4. При расхождении не выбирай вариант молча: укажи оба варианта в НЕУВЕРЕННЫХ ПОЛЯХ.\n"
         f"5. Название файла не доказывает его тип. Дипломом считай только страницу с самим "
         f"дипломом и сведениями об образовании. Если файл назван «диплом», но содержит "
@@ -3199,6 +3268,8 @@ def _reconcile_person_summary(person_name, raw_blocks, api_key, person_num):
 
 def _prefer_person_folder_surname(person_name: str, summary: str) -> str:
     """Keep the user-labelled personal folder authoritative over an unclear scan surname."""
+    if not _person_folder_is_named_person(person_name):
+        return summary
     expected = _person_surname_from_loose_filename(person_name)
     # Shared folders such as «Спецы» or «Персонал» are not a person's surname.
     # They can contain documents for several employees and must never overwrite a

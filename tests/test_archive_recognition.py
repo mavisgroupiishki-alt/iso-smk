@@ -654,6 +654,30 @@ def test_person_folder_surname_wins_over_unclear_labour_book_reading(monkeypatch
     assert '1) ФИО: Трон Федор Александрович' in summary
 
 
+def test_role_folder_is_not_presented_as_identity_evidence(monkeypatch):
+    prompts = []
+
+    def fake_call(prompt, *_args, **_kwargs):
+        prompts.append(prompt)
+        return '1) ФИО: не подтверждено\nНЕУВЕРЕННЫЕ ПОЛЯ: два разных ФИО'
+
+    monkeypatch.setattr(server, '_simple_ai_call', fake_call)
+
+    server._reconcile_person_summary('главный инженер', ['--- диплом.pdf ---\nДиплом'], 'unused', 1)
+
+    assert 'обозначает должность, а не ФИО' in prompts[0]
+    assert 'надёжный ориентир для ФИО' not in prompts[0]
+
+
+def test_personnel_local_ocr_accepts_only_printed_document_pages():
+    assert server._personnel_tesseract_page_is_complete(
+        'ДИПЛОМ о высшем образовании\nСпециальность: инженер-строитель\n' + 'подтверждение ' * 8
+    )
+    assert not server._personnel_tesseract_page_is_complete(
+        'Трудовая книжка\nСведения о работе\n' + 'рукописная запись ' * 8
+    )
+
+
 def test_spk_si_certificate_facts_are_extracted_without_waiting_for_chat_model():
     source = '''
 --- СИ/Калибровка манометра.pdf ---
@@ -961,7 +985,7 @@ def test_generic_pdf_fallback_uses_detailed_page_render(monkeypatch):
 
     server.vision_extract(b'%PDF', 'ТК сотрудника.pdf', 'unused')
 
-    assert rendered == [(0, {'max_dim': 2400})]
+    assert rendered == [(0, {'max_dim': 1900})]
 
 
 def test_detailed_pdf_fallback_reads_each_page_separately(monkeypatch):
@@ -1455,7 +1479,7 @@ def test_handwritten_personnel_pdf_pages_are_read_one_by_one(monkeypatch):
     )
 
     assert text.count('Запись трудовой книжки') == 3
-    assert active['maximum'] == 1
+    assert active['maximum'] == 2
 
 
 def test_spk_si_folder_stays_a_source_block_and_reaches_evidence_parser(monkeypatch):
@@ -1584,7 +1608,24 @@ def test_pdf_resume_keeps_completed_pages_after_a_service_restart(monkeypatch):
 
     assert rendered_pages == [1, 2]
     assert 'страница уже прочитана' in text
-    assert [page for page, _ in saved_pages] == [1, 2]
+    assert sorted(page for page, _ in saved_pages) == [1, 2]
+
+
+def test_personnel_pdf_keeps_a_verified_printed_page_out_of_vision(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda _data: 1)
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda *_args, **_kwargs: 'rendered-page')
+    monkeypatch.setattr(
+        server, '_read_personnel_pdf_page_locally',
+        lambda _page: 'Диплом инженера-строителя № 123',
+    )
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: calls.append(True))
+
+    text = server.vision_extract(b'pdf', 'прораб/диплом.pdf', 'unused')
+
+    assert 'Диплом инженера-строителя № 123' in text
+    assert calls == []
 
 
 def test_visual_ocr_retries_once_only_after_a_read_failure(monkeypatch):
