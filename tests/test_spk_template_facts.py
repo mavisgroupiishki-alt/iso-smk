@@ -187,8 +187,9 @@ def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
         'director_position': 'Директор',
     }
     itr = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
         {
-            'fio': 'Иванов Иван Иванович', 'position': 'Директор',
+            'fio': 'Петров Петр Петрович', 'position': 'Главный инженер',
             'diplomas': [
                 {'number': 'В-100', 'institution': 'БГТУ', 'speciality': 'ПГС'},
                 {'number': 'ПТУ-200', 'institution': 'ПТУ № 15', 'speciality': 'каменщик'},
@@ -198,7 +199,6 @@ def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
             ],
             'trudovye_numbers': ['ПК № 1111111', 'Вкладыш № 2222222'],
         },
-        {'fio': 'Петров Петр Петрович', 'position': 'Главный инженер'},
         {'fio': 'Сидоров Сидор Сидорович', 'position': 'Производитель работ'},
     ]
     result = generate_spk_package_v2(
@@ -213,6 +213,40 @@ def test_spk_itr_keeps_all_non_ptu_diplomas_and_workbook_numbers():
     assert 'ПТУ-500' not in text
     assert 'ПК № 1111111' in text
     assert 'Вкладыш № 2222222' in text
+
+
+def test_spk_stroy_keeps_every_confirmed_technical_specialist_outside_director():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    itr = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        {'fio': 'Петров Петр Петрович', 'position': 'Инженер по качеству', 'trudovye_numbers': ['ТК-1']},
+        {'fio': 'Сидоров Сидор Сидорович', 'position': 'Производитель работ', 'trudovye_numbers': ['ТК-2']},
+        {'fio': 'Кузнецов Кузьма Кузьмич', 'position': 'Сметчик', 'trudovye_numbers': ['ТК-3']},
+        {'fio': 'Бухгалтерова Анна Антоновна', 'position': 'Бухгалтер'},
+    ]
+
+    result = generate_spk_package_v2(
+        company, itr, [], dates, generator.select_responsible(itr), variant='spk_stroy',
+    )
+    itr_text = _xml_text(_document(result, '2 Справка ИТР')['bytes'])
+    org_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', _xml_text(
+        _document(result, '3 Организационная структура')['bytes'])))
+    order_text = _xml_text(_document(result, '4.1 Приказ о СПК')['bytes'])
+    protocol_text = _xml_text(_document(result, '4.2.2 Протокол обучения')['bytes'])
+
+    technical_names = ('Петров Петр Петрович', 'Сидоров Сидор Сидорович', 'Кузнецов Кузьма Кузьмич')
+    assert all(name in itr_text for name in technical_names)
+    assert all(name in org_text for name in technical_names)
+    assert all(name in protocol_text for name in technical_names)
+    assert 'Бухгалтерова Анна Антоновна' not in itr_text + org_text + protocol_text
+    assert 'Петрова П.П.' in order_text
+    assert 'Сидорова С.С.' in order_text
+    assert 'Кузнецова К.К.' in order_text
 
 
 def test_spk_bisp_uses_all_technical_staff_and_excludes_director_from_personnel_forms():
@@ -385,10 +419,13 @@ def test_spk_itr_uses_manually_confirmed_bsc_attestation_details():
         'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
         'director_position': 'Директор',
     }
-    itr = [{
-        'fio': 'Иванов Иван Иванович', 'position': 'Директор',
+    itr = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        {
+        'fio': 'Петров Петр Петрович', 'position': 'Главный инженер',
         'attestat_number': 'АТ-12345', 'attestat_date_from': '12.09.2026',
-    }]
+        },
+    ]
     result = generate_spk_package_v2(
         company, itr, [], dates, generator.select_responsible(itr), variant='spk_stroy',
     )
@@ -681,6 +718,45 @@ def test_spk_si_copy_list_keeps_every_listed_tool_and_two_thermometers():
     assert tools[0]['range'] == 'Диапазон измерений: (-50 +50) °С'
     assert tools[6]['range'] == 'Диапазон измерений: (0 +200) °С'
     assert next(tool for tool in tools if tool['name'] == 'Манометр')['quantity'] == 2
+
+
+def test_spk_si_copy_list_reads_numbered_word_table_rows():
+    source = '''
+Перечень копий СПК
+Перечень средств измерения
+1. Нивелир
+2. Рейка нивелирная
+3. Теодолит
+4. Термометр -50 °С - +50 °С
+'''
+
+    tools = server._extract_spk_tools_from_copy_list(source)
+
+    assert [item['name'] for item in tools] == [
+        'Нивелир', 'Рейка нивелирная', 'Теодолит', 'Термометр',
+    ]
+    assert tools[-1]['range'] == 'Диапазон измерений: (-50 +50) °С'
+
+
+def test_spk_ttk_invoice_evidence_fills_missing_ttk_rows_without_guessing_details():
+    source = '''
+--- Счет на ТТК.docx ---
+Счет № 14
+Технологическая карта ТТК-3.01.01-2026 «Монтаж металлических конструкций»
+Разработчик: ООО «Техкарта»
+Срок действия: до 31.12.2028
+'''
+
+    rows = server._extract_spk_ttk_from_sources(source)
+    merged = server._merge_spk_ttk_evidence({'ttk': []}, rows)
+
+    assert merged['ttk'] == [{
+        'code': 'ТТК-3.01.01-2026',
+        'name': 'Монтаж металлических конструкций',
+        'developer': 'ООО «Техкарта»',
+        'valid_until': 'до 31.12.2028',
+        'source': 'invoice_or_ttk_source',
+    }]
 
 
 def test_spk_si_keeps_standard_template_characteristics_until_a_document_changes_them():

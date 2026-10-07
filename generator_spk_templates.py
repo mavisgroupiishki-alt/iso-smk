@@ -215,6 +215,18 @@ def _responsible_position_forms(position: str) -> tuple[str, str]:
         return 'Заместителя директора-главного инженера', 'Заместителю директора-главному инженеру'
     if 'главн' in value and 'инженер' in value:
         return 'Главного инженера', 'Главному инженеру'
+    if 'инженер' in value:
+        return 'Инженера', 'Инженеру'
+    if 'технолог' in value:
+        return 'Технолога', 'Технологу'
+    if 'сметчик' in value:
+        return 'Сметчика', 'Сметчику'
+    if 'геодезист' in value:
+        return 'Геодезиста', 'Геодезисту'
+    if 'специалист' in value:
+        return 'Специалиста', 'Специалисту'
+    if 'заместител' in value:
+        return 'Заместителя директора', 'Заместителю директора'
     return 'Производителя работ', 'Производителю работ'
 
 
@@ -314,7 +326,8 @@ def _replace_director_signature(xml: str, paras: list, dir_init: str) -> str:
 # ═══════════════════ Документ 2: Приказ о СПК (назначение ответственных) ═══════════════════
 def render_prikaz_spk(company: dict, order_number: str, order_date: str, city: str,
                        director_fio: str, gl_inzhener_fio: str, foremen_fio: list,
-                       profile: dict = None, operational_position: str = '') -> bytes:
+                       profile: dict = None, operational_position: str = '',
+                       technical_people: list | None = None) -> bytes:
     """
     director_fio: ФИО директора (обязателен, всегда в списке).
     gl_inzhener_fio: ФИО главного инженера (может быть пустым, если нет такой роли).
@@ -339,14 +352,26 @@ def render_prikaz_spk(company: dict, order_number: str, order_date: str, city: s
 
     # --- Список лиц, задействованных в СПК (абзацы 16-19 в образце): по одному на
     #     каждого человека, формат "Фамилия И.О., Должность" (родительный падеж) ---
+    # Old packages only used a chief engineer and foremen here.  A recognised
+    # technical specialist (for example an engineer, technologist or estimator)
+    # is equally part of the SPK system and must not disappear from the order.
+    if technical_people is None:
+        technical_people = []
+        if gl_inzhener_fio:
+            technical_people.append({'fio': gl_inzhener_fio, 'position': 'Главный инженер'})
+        technical_people.extend({'fio': fio, 'position': operational_position} for fio in foremen_fio)
+
+    people = [(director_fio, 'Директора')]
+    for person in technical_people:
+        fio = str(person.get('fio') or '').strip()
+        if not fio:
+            continue
+        position_acc, _ = _responsible_position_forms(person.get('position') or '')
+        people.append((fio, position_acc))
+
     idx_list_start = _find_para_index(paras, lambda t: t.startswith('2. В системе'))
     idx_resp_dir = _find_para_index(paras, lambda t: t.startswith('3. Директора'))
     if idx_list_start >= 0 and idx_resp_dir >= 0:
-        people = [(director_fio, 'Директора')]
-        if gl_inzhener_fio:
-            people.append((gl_inzhener_fio, 'Главного инженера'))
-        for f in foremen_fio:
-            people.append((f, operational_position_acc))
         style_line = paras[idx_list_start + 1]
         new_lines = []
         for fio, pos_gen in people:
@@ -372,11 +397,22 @@ def render_prikaz_spk(company: dict, order_number: str, order_date: str, city: s
         old_t = re.sub(r'<[^>]+>', '', paras[idx4]).strip().replace('\xa0', ' ')
         new_t = re.sub(r'Главного инженера [^\s]+ [^\s]+', f'Главного инженера {_fio_initials_surname_first(gl_inzhener_fio)}', old_t, count=1)
         xml = xml.replace(paras[idx4], _replace_para_text(paras[idx4], new_t), 1)
-    if idx5 >= 0 and paras[idx5] in xml and foremen_fio:
-        if len(foremen_fio) == 1:
-            new_t = f"5. {operational_position_acc} {_fio_initials_surname_first(foremen_fio[0])}, назначить ответственным за Входной, операционный, приемочный контроль;"
+    if idx5 >= 0 and paras[idx5] in xml and technical_people:
+        responsible_people = []
+        for person in technical_people:
+            fio = str(person.get('fio') or '').strip()
+            if not fio:
+                continue
+            position_acc, _ = _responsible_position_forms(person.get('position') or '')
+            responsible_people.append((fio, position_acc))
+        if len(responsible_people) == 1:
+            fio, position_acc = responsible_people[0]
+            new_t = f"5. {position_acc} {_fio_initials_surname_first(fio)}, назначить ответственным за Входной, операционный, приемочный контроль;"
         else:
-            names_part = ', '.join(f"{operational_position_acc.lower()} {_fio_initials_surname_first(f)}" for f in foremen_fio)
+            names_part = ', '.join(
+                f"{position_acc.lower()} {_fio_initials_surname_first(fio)}"
+                for fio, position_acc in responsible_people
+            )
             new_t = f"5. {names_part}, назначить ответственными за Входной, операционный, приемочный контроль;"
         xml = xml.replace(paras[idx5], _replace_para_text(paras[idx5], new_t), 1)
     elif idx5 >= 0 and paras[idx5] in xml:
@@ -524,6 +560,7 @@ ROLE_RESPONSIBILITIES = {
     'главный инженер': "Входной, операционный, приемочный контроль; Обеспечение и содержание в рабочем состоянии машин и механизмов; учет, хранение, актуализация, выдача ТНПА, ТК; метрологическое обеспечение.",
     'производитель работ': "Входной, операционный, приемочный контроль; Обеспечение и содержание в рабочем состоянии машин и механизмов; учет, хранение, актуализация, выдача ТНПА, ТК; метрологическое обеспечение.",
     'мастер': "Входной, операционный, приемочный контроль; Обеспечение и содержание в рабочем состоянии машин и механизмов; учет, хранение, актуализация, выдача ТНПА, ТК; метрологическое обеспечение.",
+    'специалист': "Входной, операционный, приемочный контроль; ведение и актуализация технической документации; метрологическое обеспечение.",
 }
 
 
@@ -633,7 +670,12 @@ def render_spravka_itr(company: dict, people: list, profile: dict = None) -> byt
     xml = _splice_rows(xml, rows[1:], new_rows)
 
     paras = _paragraphs(xml)
-    dir_fio = next((p.get('fio') for p in people if (p.get('role_key') or '').lower() == 'директор'), '')
+    # The director signs the reference but is not an ITR row in the SPK system.
+    # Use the company card for the signature when the people list intentionally
+    # contains technical specialists only.
+    dir_fio = (next((p.get('fio') for p in people
+                    if (p.get('role_key') or '').lower() == 'директор'), '')
+               or company.get('director_fio', ''))
     xml = _replace_director_signature(xml, paras, _dir_initials(dir_fio))
 
     parts['word/document.xml'] = xml.encode('utf-8')
@@ -649,7 +691,32 @@ def _spk_person_role_key(person: dict) -> str:
         return 'производитель работ'
     if 'мастер' in position:
         return 'мастер'
+    if any(marker in position for marker in (
+        'инженер', 'технолог', 'геодезист', 'механик', 'энергетик',
+        'контрол', 'лаборант', 'сметчик', 'специалист', 'заместител',
+    )):
+        return 'специалист'
     return ''
+
+
+def _is_spk_technical_person(person: dict, director_fio: str) -> bool:
+    """Whether a confirmed staff row belongs in official SPK technical forms.
+
+    Directors sign the package but are not technical personnel.  Ordinary
+    office staff must not leak into the ITR reference either; all recognised
+    engineering and control roles are retained, including roles other than the
+    old chief-engineer/foreman pair.
+    """
+    fio = str(person.get('fio') or '').strip()
+    position = str(person.get('position') or '').lower().replace('ё', 'е')
+    role = str(person.get('role') or person.get('role_key') or '').lower()
+    if not fio or person.get('is_worker'):
+        return False
+    if fio == director_fio or (('директор' in position or role == 'director') and 'замест' not in position):
+        return False
+    return bool(_spk_person_role_key(person) or role in {
+        'itr', 'engineer', 'chief_engineer', 'foreman', 'responsible', 'auditor',
+    })
 
 
 def _spk_person_responsibility(person: dict) -> str:
@@ -684,64 +751,69 @@ def render_orgstruktura(company: dict, director_fio: str, people: list,
     )
     position_tokens = []
     for index, (old_name, old_rest, old_position) in enumerate(template_slots):
-        person = slots[index] if index < len(slots) else {}
+        shape_start = xml.find('<mc:AlternateContent>', 0)
+        while shape_start >= 0:
+            shape_end = xml.find('</mc:AlternateContent>', shape_start)
+            if shape_end < 0:
+                break
+            shape_end += len('</mc:AlternateContent>')
+            if old_name in xml[shape_start:shape_end]:
+                break
+            shape_start = xml.find('<mc:AlternateContent>', shape_end)
+        if shape_start < 0 or shape_end < 0:
+            continue
+        shape = xml[shape_start:shape_end]
+        if index >= len(slots):
+            # This exact AlternateContent block belongs to an unused sample
+            # role.  Remove it before changing the others; XML order is not the
+            # visual order, so a generic "last shape" deletion is unsafe.
+            xml = xml[:shape_start] + xml[shape_end:]
+            continue
+        person = slots[index]
         fio = str(person.get('fio') or '—')
         position = str(person.get('position') or '—')
         if old_rest:
             name_parts = fio.split(maxsplit=1)
             surname = name_parts[0] if name_parts else '—'
-            rest = f' {name_parts[1]}' if len(name_parts) > 1 else ' —'
-            # The first two boxes store surname and the rest in separate styled
-            # runs.  Replace the text runs only; rewriting text-box paragraphs
-            # makes Word's drawing XML invalid.
-            xml = xml.replace(old_name, surname, 2)
-            xml = xml.replace(old_rest, rest.strip(), 2)
+            rest = name_parts[1] if len(name_parts) > 1 else '—'
+            # Replace only inside this drawing.  The first sample surname also
+            # occurs in the approval signature and must never be used as a
+            # global replacement target.
+            shape = shape.replace(old_name, surname)
+            shape = shape.replace(old_rest, rest)
             old_rest_parts = old_rest.split()
-            new_rest_parts = rest.strip().split()
+            new_rest_parts = rest.split()
             if len(old_rest_parts) == 2 and len(new_rest_parts) == 2:
-                # In the source shape the name can be split over two runs:
-                # "Фамилия Имя " and "Отчество".
-                xml = xml.replace(f'>{surname} {old_rest_parts[0]} </w:t>',
-                                  f'>{surname} {new_rest_parts[0]} </w:t>', 2)
-                xml = xml.replace(f'>{old_rest_parts[1]}</w:t>',
-                                  f'>{new_rest_parts[1]}</w:t>', 2)
+                # The second sample text box splits the first name and
+                # patronymic across separate Word runs.
+                shape = shape.replace(
+                    f'>{surname} {old_rest_parts[0]} </w:t>',
+                    f'>{surname} {new_rest_parts[0]} </w:t>',
+                )
+                shape = shape.replace(
+                    f'>{old_rest_parts[1]}</w:t>',
+                    f'>{new_rest_parts[1]}</w:t>',
+                )
         else:
-            xml = xml.replace(old_name, fio, 2)
-        # The first two copies are the visible and compatibility representations
-        # of the chart.  The approval signature has a different text node and is
-        # deliberately not touched.
+            shape = shape.replace(old_name, fio)
         token = f'__SPK_ROLE_{index}__'
         position_tokens.append((token, position))
-        xml = xml.replace(f'>{old_position}  </w:t>', f'>{token}  </w:t>', 2)
-        xml = xml.replace(f'>{old_position} </w:t>', f'>{token} </w:t>', 2)
+        shape = shape.replace(f'>{old_position}  </w:t>', f'>{token}  </w:t>')
+        shape = shape.replace(f'>{old_position} </w:t>', f'>{token} </w:t>')
+        xml = xml[:shape_start] + shape + xml[shape_end:]
     for token, position in position_tokens:
         xml = xml.replace(token, position)
-    # Word split the second template person's name into several drawing runs in
-    # some Office versions.  A final literal pass covers that representation
-    # without touching the director approval signature.
-    for index, (_old_name, old_rest, _old_position) in enumerate(template_slots[1:], start=1):
-        if not old_rest:
-            continue
-        person = slots[index] if index < len(slots) else {}
-        name_parts = str(person.get('fio') or '—').split(maxsplit=1)
-        rest = name_parts[1] if len(name_parts) > 1 else '—'
-        xml = xml.replace(old_rest, rest, 2)
     if exclude_director and slots:
-        xml = xml.replace(profile['director_responsibility'], _spk_person_responsibility(slots[0]), 2)
+        replacement = _spk_person_responsibility(slots[0])
+        # The responsibility sits in the same text-box paragraph as the first
+        # specialist's name.  Replace the exact old sentence, never the whole
+        # paragraph, or Word loses that person's name.
+        for candidate in SPK_ACTIVITY_PROFILES.values():
+            xml = xml.replace(candidate['director_responsibility'], replacement)
     elif not exclude_director:
         xml = _replace_paragraphs_by_marker(xml, [
             ('Функционирование СПК; организация проведения внутренних аудитов', profile['director_responsibility']),
         ])
-    if len(slots) < len(template_slots) and slots:
-        # The last shape is a spare template box.  Remove the whole drawing,
-        # including its VML fallback, rather than leaving a fictitious role or
-        # an empty framed position in the organisation chart.
-        last_shape_start = xml.rfind('<mc:AlternateContent>')
-        last_shape_end = xml.find('</mc:AlternateContent>', last_shape_start)
-        if last_shape_start >= 0 and last_shape_end >= 0:
-            last_shape_end += len('</mc:AlternateContent>')
-            xml = xml[:last_shape_start] + xml[last_shape_end:]
-
     # Keep the director only in the approval signature, not in the chart itself.
     xml = _replace_director_signature(xml, _paragraphs(xml), _dir_initials(director_fio))
 
@@ -1203,9 +1275,10 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
         if alt and alt.get('fio') != director_fio:
             foremen = [alt.get('fio', '')]
 
-    responsible_person = next((p for p in itr if p.get('fio') in foremen), None)
+    technical_sources = [person for person in itr if _is_spk_technical_person(person, director_fio)]
+    responsible_person = next((p for p in technical_sources if p.get('fio') in foremen), None)
     if not responsible_person:
-        responsible_person = gl_person or next((p for p in itr if p.get('fio') == director_fio), None) or {}
+        responsible_person = gl_person or next(iter(technical_sources), None) or {}
     responsible_fio = responsible_person.get('fio') or director_fio
     responsible_position = responsible_person.get('position') or company.get('director_position', 'Директор')
 
@@ -1226,39 +1299,20 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
         item.setdefault('trudovaya_number', (item.get('trudovye_numbers') or [''])[0] if item.get('trudovye_numbers') else '')
         return item
 
+    # Both СПК variants use the same factual personnel rule: every confirmed
+    # technical specialist belongs in the ITR reference, orders, organisation
+    # structure and training protocol.  The director signs those documents but
+    # is not a specialist row.
     all_people = []
     seen_people = set()
-    if variant == 'spk_bisp':
-        for source in itr:
-            fio = str(source.get('fio') or '').strip()
-            position = str(source.get('position') or '').lower()
-            if not fio or fio == director_fio or 'директор' in position:
-                continue
-            role_key = _spk_person_role_key(source)
-            person = _person_copy(source, role_key, fio, source.get('position') or '')
-            fio_key = (person.get('fio') or '').strip().lower()
-            if fio_key and fio_key not in seen_people:
-                seen_people.add(fio_key)
-                all_people.append(person)
-    else:
-        director_person = next((p for p in itr if p.get('fio') == director_fio), None)
-        for source, role_key, fallback_fio, fallback_pos in [
-            (director_person, 'директор', director_fio, company.get('director_position', 'Директор')),
-            (gl_person, 'главный инженер', gl_inzhener_fio, 'Главный инженер'),
-        ]:
-            person = _person_copy(source, role_key, fallback_fio, fallback_pos)
-            fio_key = (person.get('fio') or '').strip().lower()
-            if fio_key and fio_key not in seen_people:
-                seen_people.add(fio_key)
-                all_people.append(person)
-        for f in foremen:
-            fp = next((p for p in itr if p.get('fio') == f), {})
-            role_key = 'мастер' if 'мастер' in (fp.get('position') or '').lower() else 'производитель работ'
-            person = _person_copy(fp, role_key, f, 'Производитель работ')
-            fio_key = (person.get('fio') or '').strip().lower()
-            if fio_key and fio_key not in seen_people:
-                seen_people.add(fio_key)
-                all_people.append(person)
+    for source in technical_sources:
+        fio = str(source.get('fio') or '').strip()
+        role_key = _spk_person_role_key(source)
+        person = _person_copy(source, role_key, fio, source.get('position') or '')
+        fio_key = (person.get('fio') or '').strip().lower()
+        if fio_key and fio_key not in seen_people:
+            seen_people.add(fio_key)
+            all_people.append(person)
 
     order_date = dates.get('goals', '')
     policy_date = dates.get('policy', order_date)
@@ -1286,7 +1340,7 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
     p("2. Приказ о СПК")
     add(f"{org} СПК - 4.1 Приказ о СПК.docx",
         render_prikaz_spk(company, '1/СПК', order_date, city, director_fio, gl_inzhener_fio, foremen,
-                          profile, responsible_position))
+                          profile, responsible_position, technical_people=all_people))
 
     p("3. Приказ о внутреннем обучении")
     add(f"{org} СПК - 4.2.1 Приказ о внутреннем обучении.docx",
@@ -1324,12 +1378,7 @@ def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict
 
     p("7. Организационная структура")
     add(f"{org} СПК - 3 Организационная структура.docx",
-        render_orgstruktura(company, director_fio,
-                             all_people if variant == 'spk_bisp' else [
-                                 next((p for p in all_people if p.get('fio') == director_fio), {}),
-                                 next((p for p in all_people if p.get('fio') == gl_inzhener_fio), {}),
-                                 *[p for p in all_people if p.get('fio') in foremen],
-                             ], profile, exclude_director=(variant == 'spk_bisp')))
+        render_orgstruktura(company, director_fio, all_people, profile, exclude_director=True))
 
     p("8. Протокол о внутреннем обучении")
     add(f"{org} СПК - 4.2.2 Протокол обучения.docx",

@@ -4197,12 +4197,23 @@ def _extract_spk_tools_from_copy_list(text: str) -> list:
     # heading («Перечень…: - нивелир»). Make it a regular bullet so the first
     # instrument is not silently dropped.
     section = re.sub(r'(:)\s*[-–]\s+', r'\1\n- ', section, count=1)
+    # Word tables frequently arrive as a numbered list with no bullet symbols.
+    # Previously the whole table was treated as one entry, which retained only
+    # the first matching instrument in a complete approved copy list.
+    section = re.sub(r'(?m)(^|\n)\s*\d{1,3}[.)]\s+', r'\1- ', section)
     tools = []
     # The client list is a checklist, not a set: two thermometers with different
     # ranges are two different rows.  Parse its bullets in order and keep each
     # entry rather than scanning the whole text once per known instrument.
     bullets = re.split(r'(?:^|\n|;)\s*[-–]\s+', section)
-    entries = bullets[1:] if len(bullets) > 1 else section.split(';')
+    if len(bullets) > 1:
+        entries = bullets[1:]
+    elif ';' in section:
+        entries = section.split(';')
+    else:
+        # A table may expose one instrument per line without either a number
+        # or a bullet.  Preserve every explicit occurrence in document order.
+        entries = _spk_si_inventory_segments(section) or section.splitlines()
     for bullet in entries:
         selected_name = ''
         for name, pattern in sorted(_SPK_COPY_LIST_TOOLS, key=lambda item: len(item[0]), reverse=True):
@@ -4724,6 +4735,78 @@ def _merge_spk_copy_list_baseline(spk: dict, evidence: dict, copy_list_tools: li
     return merged
 
 
+def _extract_spk_ttk_from_sources(text: str) -> list:
+    """Extract only explicit TTK facts from invoices and technical-card files.
+
+    The chat model can correctly describe an invoice in its answer but omit the
+    nested ``spk.ttk`` JSON.  Keep the extraction deterministic: a row is made
+    only when the source actually gives a TTK code.  Unknown developer or term
+    remains empty for the document's visible review marker rather than guessed.
+    """
+    rows = []
+    sources = _archive_document_blocks(str(text or '')) or [('', str(text or ''))]
+    code_re = re.compile(
+        r'(?<![\w-])((?:ТТК|ТК)\s*(?:№\s*)?[-–]?\s*'
+        r'[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{2,})(?![\w-])', re.IGNORECASE,
+    )
+    for path, body in sources:
+        source_text = f'{path}\n{body}'
+        if not re.search(r'технологическ\w*\s+карт|\bттк\b|\bтк\s*[-№]', source_text, re.IGNORECASE):
+            continue
+        matches = list(code_re.finditer(source_text))
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(source_text)
+            segment = source_text[match.start():end]
+            segment = re.split(r'\n\s*\n|(?=\b(?:кол-?во|цена|сумма|итого)\b)', segment, maxsplit=1,
+                               flags=re.IGNORECASE)[0]
+            compact = re.sub(r'\s+', ' ', segment).strip(' .;,:-–—')
+            code = re.sub(r'\s+', '', match.group(1)).upper().replace('–', '-')
+            title_match = re.search(r'[«\"]([^»\"]{4,240})[»\"]', compact)
+            if title_match:
+                name = title_match.group(1).strip()
+            else:
+                name = compact[len(match.group(1)):].strip(' .;,:-–—')
+                name = re.sub(r'^(?:технологическ\w*\s+карт\w*\s*)', '', name, flags=re.IGNORECASE)
+                name = name[:240].strip()
+            developer_match = re.search(
+                r'(?:разработчик|организац\w*[- ]разработчик)\s*[:—-]\s*([^\n;]{2,180})',
+                body, re.IGNORECASE,
+            )
+            validity_match = re.search(
+                r'(?:срок\s+действия|действует\s+до)\s*[:—-]?\s*([^\n;]{2,80})',
+                body, re.IGNORECASE,
+            )
+            row = {
+                'code': code,
+                'name': name,
+                'developer': developer_match.group(1).strip(' .;') if developer_match else '',
+                'valid_until': validity_match.group(1).strip(' .;') if validity_match else '',
+                'source': 'invoice_or_ttk_source',
+            }
+            key = _spk_si_norm(code)
+            if key and not any(_spk_si_norm(item.get('code')) == key for item in rows):
+                rows.append(row)
+    return rows
+
+
+def _merge_spk_ttk_evidence(spk: dict, evidence: list) -> dict:
+    """Add explicit invoice TTK rows without discarding model-extracted rows."""
+    merged = dict(spk or {})
+    rows = [dict(item) for item in (merged.get('ttk') or []) if isinstance(item, dict)]
+    for item in evidence or []:
+        key = _spk_si_norm(item.get('code'))
+        existing = next((row for row in rows if key and _spk_si_norm(row.get('code')) == key), None)
+        if existing is None:
+            rows.append(dict(item))
+            continue
+        for field in ('name', 'developer', 'valid_until', 'work_type'):
+            if item.get(field) and not existing.get(field):
+                existing[field] = item[field]
+    if rows:
+        merged['ttk'] = rows
+    return merged
+
+
 def _single_visual_as_zip(file_bytes, filename):
     """Make one document compatible with the background archive worker.
 
@@ -5214,6 +5297,11 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             )
         else:
             structured_data['spk'] = _merge_spk_si_evidence(structured_data.get('spk') or {}, si_evidence)
+    ttk_evidence = _extract_spk_ttk_from_sources(final_text)
+    if ttk_evidence:
+        structured_data['spk'] = _merge_spk_ttk_evidence(
+            structured_data.get('spk') or {}, ttk_evidence,
+        )
     if str(product) in ('spk_stroy', 'spk_bisp'):
         summary_staff = _extract_spk_staff_from_person_summaries(final_text)
         # A hiring order can provide the missing role for a person whose folder
@@ -5229,8 +5317,13 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             if _spk_staff_key(person.get('fio')) in order_keys
         ]
         named_diplomas = _extract_spk_diplomas_from_named_sources(final_text)
+        # The structured archive/forms result may already contain complete
+        # technical staff that a partial OCR reconciliation did not repeat.
+        # Treat the reconciler as additional evidence, never as a replacement
+        # for that fuller staff list.
         summary_staff = _merge_spk_staff_rows(
-            summary_staff, ordered_candidates, order_staff, named_diplomas,
+            structured_data.get('staff') or [], summary_staff,
+            ordered_candidates, order_staff, named_diplomas,
         )
         # For BISP SPK the director signs the documents but is not a row in the
         # ITR reference.  The archive can mention the director in a diploma or
