@@ -2657,6 +2657,21 @@ function aiNormIdentity(value) {
   return String(value || '').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/gi,' ').trim();
 }
 
+function aiIsOfficialStaffRow(row) {
+  if(!row || typeof row !== 'object' || Array.isArray(row)) return false;
+  const fio = String(row.fio || row.name || row.full_name || '').replace(/\s+/g, ' ').trim();
+  const position = String(row.position || '').replace(/\s+/g, ' ').trim();
+  if(!/^[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2}$/u.test(fio)) return false;
+  if(/[\[\]<>?]/.test(fio) || /имя|отчество|фамил|фио|не\s*указан|неизвест|должност/iu.test(fio)) return false;
+  if(!position || !/[А-ЯЁа-яё]/u.test(position)) return false;
+  if(/[\[\]<>?]/.test(position) || /не\s*(?:указан|найден)|неизвест|должност/iu.test(position)) return false;
+  return !['итр', 'специалист', 'сотрудник', 'работник'].includes(position.toLowerCase());
+}
+
+function aiOfficialStaffRows(value) {
+  return (Array.isArray(value) ? value : []).filter(aiIsOfficialStaffRow);
+}
+
 function aiMergeEntityArray(previous, incoming, keyFn) {
   const oldRows = Array.isArray(previous) ? previous : [];
   const newRows = Array.isArray(incoming) ? incoming : [];
@@ -2719,7 +2734,9 @@ function aiRenderCard(data) {
   if(data.dates !== undefined) aiCurrentData.dates = aiDeepMergeDefined(aiCurrentData.dates, data.dates);
 
   if(data.staff !== undefined) {
-    aiCurrentData.staff = aiMergeEntityArray(aiCurrentData.staff, data.staff,
+    // Only a full FIO and an actual job title may become an official person.
+    // This also removes old template rows from a saved company card.
+    aiCurrentData.staff = aiMergeEntityArray(aiOfficialStaffRows(aiCurrentData.staff), aiOfficialStaffRows(data.staff),
       row => aiNormIdentity(row?.fio || row?.name || row?.full_name));
   }
   if(data.workers !== undefined) {
@@ -3151,7 +3168,7 @@ function aiMergeStructuredSource(baseData, sourceData) {
     });
   });
   if(Array.isArray(source.staff) && source.staff.length) {
-    base.staff = aiMergeEntityArray(base.staff, source.staff,
+    base.staff = aiMergeEntityArray(aiOfficialStaffRows(base.staff), aiOfficialStaffRows(source.staff),
       row => aiNormIdentity(row?.fio || row?.name || row?.full_name));
   }
   if(source.company_attestation) {
@@ -4107,6 +4124,9 @@ function selectProduct(key, label, short) {
 
 async function aiGenerate() {
   aiNormalizeCompanyAttestation();
+  // A card saved before the validation rule may still contain a placeholder.
+  // Final cleanup here ensures it can never reach a generated document.
+  aiCurrentData.staff = aiOfficialStaffRows(aiCurrentData.staff);
   const validation = aiValidateReadiness(aiCurrentData);
   if(!validation.ready) {
     aiAddMsg('ai', '❌ Нельзя сформировать пакет. Не заполнено:<br>• ' + validation.missing.join('<br>• '));

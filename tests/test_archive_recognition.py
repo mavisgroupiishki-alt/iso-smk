@@ -1228,6 +1228,20 @@ def test_spk_diploma_holder_in_dative_case_merges_with_hiring_order():
     )
 
 
+def test_spk_staff_merge_rejects_placeholder_and_incomplete_rows():
+    staff = server._merge_spk_staff_rows([
+        {'fio': 'Не указано Должность', 'position': 'инженер'},
+        {'fio': 'Рудницкий [Имя Отчество]', 'position': '[Должность]'},
+        {'fio': 'Рудницкий Виктор Анатольевич', 'position': ''},
+        {'fio': 'Козлов Владислав Евгеньевич', 'position': 'производитель работ'},
+    ])
+
+    assert staff == [{
+        'fio': 'Козлов Владислав Евгеньевич',
+        'position': 'производитель работ',
+    }]
+
+
 def test_phone_gallery_overlay_retries_with_document_only_prompt(monkeypatch):
     calls = []
 

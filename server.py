@@ -3620,16 +3620,51 @@ def _spk_staff_same_person(first: str, second: str) -> bool:
     return True
 
 
+def _spk_staff_has_full_name(row: dict) -> bool:
+    """Only a complete, non-template FIO may become an official SPK person."""
+    fio = re.sub(r'\s+', ' ', str((row or {}).get('fio') or '')).strip()
+    if not re.fullmatch(r'[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2}', fio):
+        return False
+    return not re.search(
+        r'(?iu)\b(?:имя|отчество|фамили\w*|фио|не\s*указан\w*|неизвест\w*|должност\w*)\b',
+        fio,
+    )
+
+
+def _spk_staff_has_position(row: dict) -> bool:
+    """A generic marker is not a job title for an official SPK form."""
+    position = re.sub(r'\s+', ' ', str((row or {}).get('position') or '')).strip()
+    if not position or not re.search(r'[А-ЯЁа-яё]', position):
+        return False
+    if re.search(r'[\[\]<>]|(?iu:\b(?:не\s*(?:указан\w*|найден\w*)|нет|неизвест\w*|должност\w*)\b)', position):
+        return False
+    return position.casefold() not in {'итр', 'специалист', 'сотрудник', 'работник'}
+
+
+def _merge_spk_staff_evidence(current: dict, row: dict, *, take_position: bool) -> None:
+    if take_position and row.get('position') not in ('', None, False):
+        current['position'] = row['position']
+    for field in ('is_worker', 'employment_type'):
+        if row.get(field) not in ('', None, False):
+            current[field] = row[field]
+    current['needs_review'] = bool(current.get('needs_review')) and bool(row.get('needs_review'))
+    for field in ('diplomas', 'trudovye_numbers'):
+        values = list(current.get(field) or [])
+        for value in row.get(field) or []:
+            if value not in values:
+                values.append(value)
+        if values:
+            current[field] = values
+
+
 def _merge_spk_staff_rows(*sources: list) -> list:
     """Merge a person's folder facts with their appointment order facts."""
-    merged, positions = [], {}
+    merged, positions, pending = [], {}, []
     for source in sources:
         for row in source or []:
-            if not isinstance(row, dict) or not row.get('fio'):
+            if not isinstance(row, dict) or not _spk_staff_has_full_name(row):
                 continue
             key = _spk_staff_key(row.get('fio'))
-            if not key:
-                continue
             existing_index = positions.get(key)
             if existing_index is None:
                 existing_index = next((
@@ -3637,22 +3672,30 @@ def _merge_spk_staff_rows(*sources: list) -> list:
                     if _spk_staff_same_person(candidate.get('fio', ''), row.get('fio', ''))
                 ), None)
             if existing_index is None:
+                # A diploma or a labour book may prove facts for someone whose
+                # role appears later in an appointment order. Keep it only as
+                # evidence; never create a blank staff card from it.
+                if not _spk_staff_has_position(row):
+                    pending.append(dict(row))
+                    continue
                 positions[key] = len(merged)
                 merged.append(dict(row))
                 continue
             positions[key] = existing_index
             current = merged[existing_index]
-            for field in ('position', 'is_worker', 'employment_type'):
-                if row.get(field) not in ('', None, False):
-                    current[field] = row[field]
-            current['needs_review'] = bool(current.get('needs_review')) and bool(row.get('needs_review'))
-            for field in ('diplomas', 'trudovye_numbers'):
-                values = list(current.get(field) or [])
-                for value in row.get(field) or []:
-                    if value not in values:
-                        values.append(value)
-                if values:
-                    current[field] = values
+            _merge_spk_staff_evidence(current, row, take_position=_spk_staff_has_position(row))
+
+    # Merge previously held documentary evidence into people who were later
+    # confirmed by a concrete job title.
+    for row in pending:
+        existing_index = positions.get(_spk_staff_key(row.get('fio')))
+        if existing_index is None:
+            existing_index = next((
+                index for index, candidate in enumerate(merged)
+                if _spk_staff_same_person(candidate.get('fio', ''), row.get('fio', ''))
+            ), None)
+        if existing_index is not None:
+            _merge_spk_staff_evidence(merged[existing_index], row, take_position=False)
     return merged
 
 
@@ -5332,8 +5375,9 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         if director_ref:
             summary_staff = [person for person in summary_staff
                              if not _spk_same_person(person.get('fio', ''), director_ref)]
-        if summary_staff:
-            structured_data['staff'] = summary_staff
+        # Never return raw model placeholders to the client card. An empty
+        # confirmed list is safer than adding a person without a real FIO/role.
+        structured_data['staff'] = summary_staff
     return {
         'text': final_text,
         'analysis_text': _compact_product_analysis_text(final_text, product),

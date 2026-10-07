@@ -67,6 +67,9 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext([
+  extractFunction('aiNormIdentity'),
+  extractFunction('aiIsOfficialStaffRow'),
+  extractFunction('aiOfficialStaffRows'),
   extractFunction('aiReadFile'),
   extractFunction('aiReadJsonResponse'),
   extractFunction('aiIsTransientChatError'),
@@ -81,6 +84,16 @@ vm.runInContext([
 ].join('\n\n'), context);
 
 (async () => {
+  const officialStaff = context.aiOfficialStaffRows([
+    {fio: 'Не указано Должность', position: 'инженер'},
+    {fio: 'Рудницкий [Имя Отчество]', position: '[Должность]'},
+    {fio: 'Рудницкий Виктор Анатольевич', position: ''},
+    {fio: 'Козлов Владислав Евгеньевич', position: 'производитель работ'},
+  ]);
+  if (officialStaff.length !== 1 || officialStaff[0].fio !== 'Козлов Владислав Евгеньевич') {
+    throw new Error('template or incomplete staff rows can still enter the company card');
+  }
+
   let visualStarts = 0;
   context.fetch = async (url) => {
     if (url === '/api/extract-archive-async') {
