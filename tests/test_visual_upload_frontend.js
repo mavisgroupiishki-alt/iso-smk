@@ -82,6 +82,7 @@ vm.runInContext([
   extractFunction('aiArchiveProgressPercent'),
   extractFunction('aiArchiveProgressHtml'),
   extractFunction('aiArchiveQueueHtml'),
+  extractFunction('aiShowArchiveQueue'),
   extractFunction('aiReadArchiveAsync'),
 ].join('\n\n'), context);
 

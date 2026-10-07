@@ -87,6 +87,7 @@ def test_operator_policy_allows_only_new_package_flow():
     assert server.auth_route_allowed('operator', 'POST', '/api/ai/chat')
     assert server.auth_route_allowed('operator', 'POST', '/api/generate')
     assert server.auth_route_allowed('operator', 'GET', '/api/task/abc123')
+    assert server.auth_route_allowed('operator', 'GET', '/api/archive-queue')
 
     assert server.auth_route_allowed('operator', 'GET', '/api/companies')
     assert server.auth_route_allowed('operator', 'GET', '/api/journal')

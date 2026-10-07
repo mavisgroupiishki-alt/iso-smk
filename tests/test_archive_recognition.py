@@ -228,6 +228,11 @@ def test_archive_queue_ahead_shows_only_the_owner_previous_files(monkeypatch, tm
     assert ahead == [{
         'taskId': 'previous', 'filename': 'предыдущий архив.rar', 'status': 'running',
     }]
+    assert server.archive_queue_items('owner-user') == [{
+        'taskId': 'previous', 'filename': 'предыдущий архив.rar', 'status': 'running',
+    }, {
+        'taskId': 'current', 'filename': 'текущий архив.rar', 'status': 'queued',
+    }]
 
 
 def test_generation_queue_accepts_second_user_without_parallel_start(monkeypatch, tmp_path):

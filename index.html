@@ -526,6 +526,7 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
             <button onclick="aiQuick('Добавь объект: ')" class="ai-qr">🏗 Объект</button>
             <button onclick="aiQuick('Поставщики: ')" class="ai-qr">📦 Поставщики</button>
             <button onclick="aiQuick('Удостоверения ОТ сотрудников: ')" class="ai-qr">🛡 ОТ</button>
+            <button onclick="aiShowArchiveQueue()" class="ai-qr">⏳ Очередь</button>
             <button data-owner-only onclick="aiQuick('Обучись: ')" class="ai-qr">🧠 Обучить</button>
           </div>
 
@@ -3994,6 +3995,36 @@ async function aiCancelArchiveTask(taskId, messageId, filename) {
     aiUpdateMsg(messageId, `⏳ «${aiEscapeHtml(filename)}»: отмена принята. Если файл уже читается, остановлю его после текущей страницы.`);
   } catch(error) {
     aiUpdateMsg(messageId, `❌ «${aiEscapeHtml(filename)}»: ${aiEscapeHtml(aiFileReadError(error.message))}`);
+  }
+}
+
+function aiArchiveQueueListHtml(tasks, messageId) {
+  if(!tasks.length) return '✅ В очереди нет ваших файлов.';
+  const rows = tasks.map((task, index) => {
+    const taskId = aiEscapeHtml(task && task.taskId || '');
+    const filename = aiEscapeHtml(task && task.filename || 'Без названия');
+    const running = task && task.status === 'running';
+    const state = running ? 'читается сейчас' : 'ожидает обработки';
+    const action = taskId
+      ? `<button type="button" class="co-btn del" style="margin-top:6px" data-task-id="${taskId}" data-message-id="${aiEscapeHtml(messageId)}" data-filename="${filename}" onclick="aiCancelArchiveTask(this.dataset.taskId, this.dataset.messageId, this.dataset.filename)">${running ? 'Остановить после текущей страницы' : 'Убрать из очереди'}</button>`
+      : '';
+    return `<div style="margin-top:9px;padding-top:9px;border-top:1px solid #EDE1D6"><b>${index + 1}. «${filename}»</b> — ${state}<br>${action}</div>`;
+  }).join('');
+  return `<b>⏳ Моя очередь обработки</b>${rows}`;
+}
+
+async function aiShowArchiveQueue() {
+  const messageId = 'archive-queue-' + Date.now();
+  aiAddMsg('ai', '⏳ Проверяю очередь...', null, messageId);
+  try {
+    const response = await fetch('/api/archive-queue');
+    const payload = await aiReadJsonResponse(response);
+    if(!response.ok) throw new Error(payload.error || 'Не удалось получить очередь.');
+    aiUpdateMsg(messageId, aiArchiveQueueListHtml(
+      Array.isArray(payload.tasks) ? payload.tasks : [], messageId,
+    ));
+  } catch(error) {
+    aiUpdateMsg(messageId, `❌ Не удалось получить очередь: ${aiEscapeHtml(aiFileReadError(error.message))}`);
   }
 }
 

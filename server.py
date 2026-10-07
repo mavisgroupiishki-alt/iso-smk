@@ -405,7 +405,7 @@ def auth_route_allowed(role: str, method: str, path: str) -> bool:
     if role != 'operator':
         return False
     return ((method, path) in _AUTH_OPERATOR_ROUTES
-            or (method == 'GET' and path in ('/api/companies', '/api/journal', '/api/kv/get', '/api/kv/list'))
+            or (method == 'GET' and path in ('/api/companies', '/api/journal', '/api/kv/get', '/api/kv/list', '/api/archive-queue'))
             or (method == 'GET' and path.startswith('/api/task/'))
             or (method == 'GET' and path.startswith('/api/download/')))
 
@@ -815,6 +815,15 @@ def archive_queue_ahead(task_id, owner_user_id):
     account; in the shared case this still lets an operator cancel their own
     abandoned upload without seeing anyone else's files.
     """
+    items = archive_queue_items(owner_user_id)
+    for index, item in enumerate(items):
+        if item.get('taskId') == task_id:
+            return items[:index]
+    return []
+
+
+def archive_queue_items(owner_user_id):
+    """Return the caller's active archive queue without leaking other workspaces."""
     records = _archive_task_records()
     active = [
         (candidate_id, task) for candidate_id, task in records.items()
@@ -829,18 +838,14 @@ def archive_queue_ahead(task_id, owner_user_id):
     ordered = sorted(active, key=lambda pair: _archive_queue_key(*pair)) + sorted(
         queued, key=lambda pair: _archive_queue_key(*pair)
     )
-    for index, (candidate_id, _) in enumerate(ordered):
-        if candidate_id != task_id:
-            continue
-        return [
-            {
-                'taskId': earlier_id,
-                'filename': Path(str(earlier_task.get('filename') or '')).name,
-                'status': earlier_task.get('status'),
-            }
-            for earlier_id, earlier_task in ordered[:index]
-        ]
-    return []
+    return [
+        {
+            'taskId': candidate_id,
+            'filename': Path(str(task.get('filename') or '')).name,
+            'status': task.get('status'),
+        }
+        for candidate_id, task in ordered
+    ]
 
 
 def _archive_pick_next(candidates, last_owner_id=None):
@@ -5724,6 +5729,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 'commit': APP_COMMIT,
                 'environment': 'render' if RENDER_GIT_COMMIT else 'local',
             })
+        elif p == '/api/archive-queue':
+            self._json({'tasks': archive_queue_items(self._request_user.get('id'))})
         elif p=='/api/companies':             self._json(get_companies(self._request_user))
         elif p=='/api/journal':               self._json(get_journal(self._request_user))
         elif p=='/api/kv/get':
