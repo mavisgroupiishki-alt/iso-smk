@@ -863,10 +863,13 @@ def start_next_archive_task():
                 continue
             was_running = task.get('status') == 'running'
             task['status'] = 'running'
-            task['progress'] = (task.get('progress') or [])[-29:] + [
-                'Сервис перезапустился. Начинаю чтение заново; загруженный файл сохранён.'
-                if was_running else 'Файл принят. Начинаю чтение.'
-            ]
+            if was_running and task.get('pdf_page_checkpoints'):
+                resume_note = 'Сервис перезапустился. Продолжаю с уже прочитанных страниц PDF.'
+            elif was_running:
+                resume_note = 'Сервис перезапустился. Начинаю чтение заново; загруженный файл сохранён.'
+            else:
+                resume_note = 'Файл принят. Начинаю чтение.'
+            task['progress'] = (task.get('progress') or [])[-29:] + [resume_note]
             TASKS[task_id] = task
             save_task(task_id, task)
             ARCHIVE_PROCESSING_IN_PROGRESS['active'] = True
@@ -2332,8 +2335,8 @@ def _tesseract_pdf_pages(file_bytes, filename, max_pages_override=None, progress
         for index, b64 in enumerate(pages_b64, 1):
             if progress_cb:
                 progress_cb(f"Локально читаю страницу {index}/{len(pages_b64)}")
-            img = Image.open(_io5.BytesIO(base64.b64decode(b64)))
-            texts.append(_tesseract_ocr_image(img))
+            with Image.open(_io5.BytesIO(base64.b64decode(b64))) as img:
+                texts.append(_tesseract_ocr_image(img))
         return total_pages, pages_b64, texts
     except Exception as e:
         print(f"  ⚠️ Tesseract OCR упал с ошибкой на {filename} ({type(e).__name__}: {e}) — иду в vision")
@@ -2392,7 +2395,8 @@ def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
 
 def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None,
                    max_pages_override=None, progress_cb=None, single_page_batches=False,
-                   parallel_page_batches=False):
+                   parallel_page_batches=False, completed_page_outputs=None,
+                   page_checkpoint_cb=None):
     """Синхронный вызов vision для одного файла (фото/скан). Сначала пробует локальный
     Tesseract OCR (бесплатно, быстро, не зависит от внешнего API) — если он недоступен
     на сервере или не справился (плохой скан/рукопись), падает на внешний vision API
@@ -2403,6 +2407,16 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     local_spk_si_pages = None
     local_page_outputs = {}
+    # A running archive can survive a service restart. Store each completed PDF
+    # page as text, then reuse it instead of sending the same scan to Vision again.
+    resumed_page_outputs = {}
+    for page, output in (completed_page_outputs or {}).items():
+        try:
+            page_index = int(page)
+        except (TypeError, ValueError):
+            continue
+        if page_index >= 0 and isinstance(output, str) and output.strip():
+            resumed_page_outputs[page_index] = output
     if ext == 'pdf' and prompt_override == SPK_SI_VISION_PROMPT:
         # A full local OCR pass used to render and retain every page of a 20–32
         # page SI register before the first result was returned.  On the small
@@ -2631,7 +2645,11 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     VISION_SEMAPHORE.release()
 
         all_starts = list(range(0, page_count, batch_size))
-        starts = [start for start in all_starts if start not in local_page_outputs]
+        outputs_by_start = dict(local_page_outputs)
+        for start, output in resumed_page_outputs.items():
+            if start in all_starts and start not in outputs_by_start:
+                outputs_by_start[start] = output
+        starts = [start for start in all_starts if start not in outputs_by_start]
         # Independent page groups can share the two existing Vision slots.  This
         # is also safe for a short ordinary PDF (for example a four-page labour
         # book or lease): the groups remain separate in the result and are put
@@ -2647,16 +2665,18 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         if allow_parallel_page_groups and len(starts) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=2) as executor:
-                outputs_by_start = dict(local_page_outputs)
                 futures = [executor.submit(read_batch, start) for start in starts]
                 for future in as_completed(futures):
                     start, output = future.result()
                     outputs_by_start[start] = output
+                    if page_checkpoint_cb:
+                        page_checkpoint_cb(start, output)
             outputs = [outputs_by_start[start] for start in all_starts]
         else:
-            outputs_by_start = dict(local_page_outputs)
             for start in starts:
                 outputs_by_start[start] = read_batch(start)[1]
+                if page_checkpoint_cb:
+                    page_checkpoint_cb(start, outputs_by_start[start])
             outputs = [outputs_by_start[start] for start in all_starts]
 
         if total_pages > page_count:
@@ -4114,6 +4134,20 @@ def _run_archive_task(task_id):
                 'Архив слишком большой для безопасной обработки одним файлом. '
                 'Разделите его на несколько архивов до 60 МБ.'
             )
+        checkpoint_lock = threading.Lock()
+
+        def on_pdf_page_checkpoint(document_name, page_start, output):
+            """Persist finished pages before the next page is rendered."""
+            if not isinstance(output, str) or not output.strip():
+                return
+            with checkpoint_lock:
+                current = TASKS.get(task_id) or task
+                checkpoints = current.setdefault('pdf_page_checkpoints', {})
+                document = checkpoints.setdefault(str(document_name), {})
+                document[str(page_start)] = output
+                TASKS[task_id] = current
+                save_task(task_id, current)
+
         def on_prog(message):
             current = TASKS.get(task_id) or task
             if current.get('status') == 'cancelled':
@@ -4137,6 +4171,8 @@ def _run_archive_task(task_id):
             result_bundle = extract_archive_with_vision(
                 None, filename, api_key, progress_cb=on_prog, product=product,
                 archive_path=archive_path,
+                pdf_page_checkpoints=task.get('pdf_page_checkpoints') or {},
+                pdf_page_checkpoint_cb=on_pdf_page_checkpoint,
             )
         if isinstance(result_bundle, dict):
             result_text = result_bundle.get('text', '')
@@ -4156,6 +4192,7 @@ def _run_archive_task(task_id):
                      'summary': result_summary, 'analysis_text': result_analysis,
                      'structured_data': structured_data, 'warnings': read_warnings,
                      'filename': filename, 'product': product})
+        task.pop('pdf_page_checkpoints', None)
         save_task(task_id, task)
         _prune_tasks()
     except ArchiveTaskCancelled:
@@ -4946,7 +4983,8 @@ def _embedded_docx_image_count(file_bytes, filename: str) -> int:
 
 
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all",
-                                _archive_depth=0, archive_path=None):
+                                _archive_depth=0, archive_path=None,
+                                pdf_page_checkpoints=None, pdf_page_checkpoint_cb=None):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
     - текстовые файлы (docx/pdf/txt/csv/xlsx) читаются как раньше, быстро
@@ -4996,6 +5034,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
 
     def p(msg):
         if progress_cb: progress_cb(msg)
+
+    saved_pdf_pages = pdf_page_checkpoints if isinstance(pdf_page_checkpoints, dict) else {}
 
     def open_archive():
         return zipfile.ZipFile(zip_source if zip_source is not None else io.BytesIO(file_bytes))
@@ -5213,6 +5253,11 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     # to protect the 512 MB service from image expansion.
                     parallel_page_batches=(not is_spk_si_source and len(data) <= 8 * 1024 * 1024),
                     progress_cb=lambda message: p(f"{short}: {message}"),
+                    completed_page_outputs=saved_pdf_pages.get(fixed_name) or {},
+                    page_checkpoint_cb=(
+                        (lambda page, output: pdf_page_checkpoint_cb(fixed_name, page, output))
+                        if pdf_page_checkpoint_cb else None
+                    ),
                 )
             else:
                 vision_filename = fixed_name if _is_personnel_archive_path(fixed_name) else short

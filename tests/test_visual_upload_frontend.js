@@ -79,6 +79,7 @@ vm.runInContext([
   extractFunction('aiArchiveIsBusyError'),
   extractFunction('aiArchiveUploadId'),
   extractFunction('aiArchiveUploadIsRetryable'),
+  extractFunction('aiArchiveProgressPercent'),
   extractFunction('aiArchiveProgressHtml'),
   extractFunction('aiReadArchiveAsync'),
 ].join('\n\n'), context);
@@ -162,8 +163,14 @@ vm.runInContext([
   );
   if (!archiveProgress.includes('Обработано 2 из 11 документов') ||
       !archiveProgress.includes('страница 3 из 18') ||
-      !archiveProgress.includes('width:18%')) {
-    throw new Error('archive progress bar does not show document and page progress');
+      !archiveProgress.includes('width:20%')) {
+    throw new Error('archive progress bar does not include the current PDF page');
+  }
+  if (context.aiArchiveProgressPercent('Распознаю страницы 3–3 из 18', 2, 11) !== 20) {
+    throw new Error('archive progress does not account for the current PDF page');
+  }
+  if (!context.aiArchiveProgressHtml('архив.rar', 'чтение', 2, 11, 30).includes('width:30%')) {
+    throw new Error('archive progress can move backwards after a service restart');
   }
   if (context.aiArchiveProgressHtml('<img>.rar', 'чтение', 0, 0).includes('<img>')) {
     throw new Error('archive progress displays a raw filename as HTML');

@@ -3923,7 +3923,20 @@ async function aiCompressArchiveClientSide(file, onProgress) {
   return new File([outBlob], file.name, {type: 'application/zip'});
 }
 
-function aiArchiveProgressHtml(filename, message, step, total) {
+function aiArchiveProgressPercent(message, step, total) {
+  const done = Math.max(0, Number(step) || 0);
+  const count = Math.max(0, Number(total) || 0);
+  if(!count) return 0;
+  const pageMatch = String(message || '').match(/страниц[аы]\s+(\d+)(?:[–-](\d+))?\s+из\s+(\d+)/i);
+  const currentPage = pageMatch ? Number(pageMatch[2] || pageMatch[1]) : 0;
+  const pageTotal = pageMatch ? Number(pageMatch[3]) : 0;
+  // The current scanned PDF can take several minutes. Count the current page
+  // as a fraction of its document instead of showing a frozen document-only bar.
+  const currentDocumentPart = currentPage && pageTotal ? currentPage / pageTotal : 0;
+  return Math.min(99, Math.round(((Math.min(done, count) + currentDocumentPart) / count) * 100));
+}
+
+function aiArchiveProgressHtml(filename, message, step, total, minimumPercent = 0) {
   const safeName = aiEscapeHtml(filename);
   const safeMessage = aiEscapeHtml(message).replace(/\n/g, '<br>');
   const done = Math.max(0, Number(step) || 0);
@@ -3932,9 +3945,7 @@ function aiArchiveProgressHtml(filename, message, step, total) {
   const pageNote = pageMatch
     ? ` · страница ${pageMatch[2] || pageMatch[1]} из ${pageMatch[3]}`
     : '';
-  // ``step`` is the number of completed documents. During a long scanned PDF
-  // the current page is shown alongside the bar, so it no longer looks frozen.
-  const pct = count ? Math.min(99, Math.round((done / count) * 100)) : 0;
+  const pct = Math.max(Number(minimumPercent) || 0, aiArchiveProgressPercent(message, done, count));
   const details = count
     ? `Обработано ${Math.min(done, count)} из ${count} документов${pageNote} · ${pct}%`
     : 'Подготавливаю обработку';
@@ -4015,6 +4026,7 @@ async function aiReadArchiveAsync(file, productHint = '') {
       return {name: file.name, content: `[${reason}.]`, read_failed: true};
     }
     const taskId = startResp.task_id;
+    let displayedProgress = 0;
     // Архив уже обрабатывается на сервере в фоне.  20 минут недостаточно для
     // RAR с десятками сканов, а прекращение ожидания в браузере не должно
     // превращать ещё выполняющуюся задачу в ложную ошибку загрузки.
@@ -4032,7 +4044,13 @@ async function aiReadArchiveAsync(file, productHint = '') {
 
       if(tr.status === 'running') {
         const lastMsg = tr.progress && tr.progress.length ? tr.progress[tr.progress.length-1] : 'обрабатываю...';
-        aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(file.name, lastMsg, tr.step, tr.total));
+        displayedProgress = Math.max(
+          displayedProgress,
+          aiArchiveProgressPercent(lastMsg, tr.step, tr.total),
+        );
+        aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(
+          file.name, lastMsg, tr.step, tr.total, displayedProgress,
+        ));
       } else if(tr.status === 'queued') {
         const ahead = Math.max(0, Number(tr.queuePosition || 0) - 1);
         const message = ahead

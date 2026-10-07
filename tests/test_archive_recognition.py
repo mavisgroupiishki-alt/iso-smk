@@ -1529,6 +1529,33 @@ def test_visual_ocr_does_not_repeat_a_successful_read(monkeypatch):
     assert len(calls) == 1
 
 
+def test_pdf_resume_keeps_completed_pages_after_a_service_restart(monkeypatch):
+    rendered_pages = []
+    saved_pages = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': 'страница распознана'}}]}
+
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda _data: 3)
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda _data, page, **_kwargs: rendered_pages.append(page) or f'page-{page}')
+    monkeypatch.setattr(server, '_is_personnel_archive_path', lambda _name: True)
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: Response())
+
+    text = server.vision_extract(
+        b'pdf', 'прораб/трудовая.pdf', 'unused',
+        completed_page_outputs={0: '--- СТРАНИЦЫ 1-1 ---\nстраница уже прочитана'},
+        page_checkpoint_cb=lambda page, output: saved_pages.append((page, output)),
+    )
+
+    assert rendered_pages == [1, 2]
+    assert 'страница уже прочитана' in text
+    assert [page for page, _ in saved_pages] == [1, 2]
+
+
 def test_visual_ocr_retries_once_only_after_a_read_failure(monkeypatch):
     outcomes = iter([
         '[vision: таймаут после 90 сек]',
