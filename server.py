@@ -632,9 +632,10 @@ import threading
 # пользователю сорвать работу остальных перезапуском процесса.
 GENERATION_LOCK = threading.Lock()
 GENERATION_IN_PROGRESS = {'active': False}
-# Не более 2 одновременных vision-запросов — на Render Free (512 МБ) 4+ параллельных
-# тяжёлых запроса к медленной модели гарантированно роняют инстанс.
-VISION_SEMAPHORE = threading.Semaphore(2)
+# На выделенном Render 512 МБ два одновременных запроса с развёрнутыми PDF-страницами
+# всё ещё могут превысить лимит памяти. Один запрос сохраняет надёжность чтения: пока
+# ответ приходит, следующая страница не держит второй тяжёлый HTTP-пакет в памяти.
+VISION_SEMAPHORE = threading.Semaphore(1)
 # Rendering a high-resolution PDF page can temporarily consume more RAM than
 # the subsequent Vision request.  Limit that native bitmap work separately so
 # two worker threads cannot expand two large scans at once.
@@ -2129,11 +2130,16 @@ def _is_personnel_archive_path(filename: str) -> bool:
     ))
 
 
-def _archive_pdf_page_limit(filename: str, product: str) -> int | None:
-    """Keep complete personnel scans for every package, despite generic filenames."""
-    if _is_personnel_archive_path(filename):
-        return 24
-    return None
+def _archive_pdf_page_limit(filename: str, product: str) -> int:
+    """Keep complete archive scans without silently dropping generic PDFs.
+
+    A scan at archive root is often a labour book or a personnel document with
+    an unhelpful scanner name.  The former eight-page default therefore made a
+    correctly uploaded file look only partly read.  Thirty-two pages covers
+    full labour books in ordinary client archives; each page is still streamed
+    one by one, so this is a work limit rather than a memory allocation.
+    """
+    return 32
 
 
 def _is_labour_book_text(text: str) -> bool:
@@ -2545,7 +2551,21 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 return '\n\n'.join(local_page_outputs[index] for index in range(len(page_texts)))
     elif (ext in ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'pdf')
           and not _is_personnel_archive_path(filename)):
-        tesseract_text = _try_tesseract_first(file_bytes, filename, max_pages_override=max_pages_override)
+        # The old local pre-check rendered *all* pages of every generic PDF and
+        # retained their JPEGs before the first result.  A root-level scanned
+        # labour book can have an unhelpful name and 18+ pages, which was enough
+        # to make the 512 MB service restart.  Keep the fast local route for a
+        # short certificate, but stream a longer scan directly page by page.
+        local_ocr_is_safe = True
+        if ext == 'pdf':
+            try:
+                local_ocr_is_safe = _pdf_total_pages(file_bytes) <= 4
+            except Exception:
+                local_ocr_is_safe = False
+        tesseract_text = (
+            _try_tesseract_first(file_bytes, filename, max_pages_override=max_pages_override)
+            if local_ocr_is_safe else None
+        )
         if tesseract_text:
             print(f"  ✅ vision_extract({filename}): прочитано локальным Tesseract OCR, "
                   f"{len(tesseract_text)} символов — в vision API не ходили")
@@ -2592,15 +2612,21 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # One weak SI page must not keep the complete archive waiting four
         # minutes (two 120-second attempts).  The local OCR has already had a
         # chance; the exact fallback gets a bounded two attempts of 70 seconds.
-        vision_timeout = 70 if (single_page_batches or retry_sideways_personnel_page) else 120
+        # A slow external response must not retain a page for two minutes.  The
+        # retry below uses a smaller copy of the same page, so it is both faster
+        # and more useful than repeating the identical request.
+        vision_timeout = 60 if (single_page_batches or retry_sideways_personnel_page) else 70
         def read_batch(batch_start):
             if pages_b64 is None:
                 page_indexes = range(batch_start, min(batch_start + batch_size, page_count))
                 batch = [
                     _pdf_page_to_image(
                         file_bytes, page_index,
-                        max_dim=(1900 if (prompt_override == SPK_SI_VISION_PROMPT or retry_sideways_personnel_page)
-                                 else 2400),
+                        # 1900px reliably preserves document text but consumes
+                        # substantially less RAM than the former 2400px generic
+                        # path when JSON/base64 copies are being built.
+                        max_dim=1900,
+                        quality=78,
                     )
                     for page_index in page_indexes
                 ]
@@ -2627,15 +2653,17 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             # labour-book pages unreadable. Pages are now processed two at a
             # time, so retaining this correctness fallback no longer turns a
             # long scan into an hours-long serial wait.
-            retry_angles = (None, 90, 270) if retry_sideways_personnel_page else (None, None)
+            retry_angles = (None, 90, 270) if retry_sideways_personnel_page else (None, 'compact')
             for attempt, angle in enumerate(retry_angles):
                 request_batch = batch
-                if angle is not None:
+                if angle in (90, 270):
                     try:
                         request_batch = [_rotate_pdf_page_b64(page, angle=angle) for page in batch]
                     except Exception as exc:
                         print(f"  ℹ️ vision_extract({filename}): не удалось повернуть повторную попытку "
                               f"стр. {first_page}-{last_page} ({type(exc).__name__})")
+                elif angle == 'compact':
+                    request_batch = [_compact_pdf_page_b64(page) for page in batch]
                 content_blocks = [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
                     for b64 in request_batch
@@ -2737,17 +2765,10 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             if start in all_starts and start not in outputs_by_start:
                 outputs_by_start[start] = output
         starts = [start for start in all_starts if start not in outputs_by_start]
-        # Independent page groups can share the two existing Vision slots.  This
-        # is also safe for a short ordinary PDF (for example a four-page labour
-        # book or lease): the groups remain separate in the result and are put
-        # back in page order below.  Long/heavy PDFs stay sequential.
-        # Handwritten labour books must be read one page at a time.  The visual
-        # reader often returns an empty response when two difficult handwritten
-        # pages are submitted together; a single unreadable page then made the
-        # whole file look unreadable in the archive result.
-        allow_parallel_page_groups = (
-            single_page_batches or parallel_page_batches or detailed_pdf_read
-        )
+        # A 512 MB instance cannot safely retain a response payload and a second
+        # rendered page at once.  Sequential page groups avoid restart loops;
+        # every finished page is checkpointed before the next one starts.
+        allow_parallel_page_groups = False
         if allow_parallel_page_groups and len(starts) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -4629,6 +4650,35 @@ def _rotate_pdf_page_b64(page_b64: str, angle=90) -> str:
     import io as _io_rotate
     image = Image.open(_io_rotate.BytesIO(base64.b64decode(page_b64)))
     return _image_to_jpeg_b64(image.rotate(angle, expand=True))
+
+
+def _compact_pdf_page_b64(page_b64: str, max_dim=1500, quality=70) -> str:
+    """Make a lower-memory retry copy of an already rendered PDF page.
+
+    The first attempt keeps the clearer 1900px image.  If the remote reader
+    times out, sending that same payload again only repeats the memory pressure.
+    A compact retry is still readable for document text while being much smaller.
+    """
+    try:
+        from PIL import Image
+        import io as _io_compact
+        with Image.open(_io_compact.BytesIO(base64.b64decode(page_b64))) as source:
+            image = source.convert('RGB')
+        try:
+            if max(image.size) > max_dim:
+                ratio = max_dim / max(image.size)
+                resized = image.resize(
+                    (int(image.size[0] * ratio), int(image.size[1] * ratio)),
+                    Image.LANCZOS,
+                )
+                image.close()
+                image = resized
+            return _image_to_jpeg_b64(image, quality=quality)
+        finally:
+            image.close()
+    except Exception as exc:
+        print(f"  ℹ️ vision_extract: не удалось уменьшить страницу для повтора ({type(exc).__name__})")
+        return page_b64
 
 
 def _is_spk_si_source_path(filename: str) -> bool:

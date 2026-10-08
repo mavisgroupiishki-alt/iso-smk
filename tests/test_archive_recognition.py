@@ -27,10 +27,12 @@ def _zip_with_text_file() -> bytes:
 def test_all_packages_read_complete_personnel_pdf_from_generic_scan_name():
     path = 'лидинг/прораб/Отсканированный документ 8.pdf'
 
-    assert server._archive_pdf_page_limit(path, 'company_att') == 24
-    assert server._archive_pdf_page_limit('лидинг/Счет-заказ.pdf', 'company_att') is None
-    assert server._archive_pdf_page_limit(path, 'spk_bisp') == 24
-    assert server._archive_pdf_page_limit(path, 'iso_suot') == 24
+    assert server._archive_pdf_page_limit(path, 'company_att') == 32
+    # A root-level scanner name can still be a full personnel document. It must
+    # not silently fall back to the short ordinary-PDF limit.
+    assert server._archive_pdf_page_limit('лидинг/Отсканированный документ 11.pdf', 'company_att') == 32
+    assert server._archive_pdf_page_limit(path, 'spk_bisp') == 32
+    assert server._archive_pdf_page_limit(path, 'iso_suot') == 32
 
 
 def test_personnel_pdf_retry_rotates_a_sideways_page():
@@ -79,7 +81,7 @@ def test_company_att_passes_generic_personnel_pdf_as_complete_scan(monkeypatch):
         archive.getvalue(), 'лидинг.zip', 'unused', product='company_att',
     )
 
-    assert calls == [('лидинг/прораб/Отсканированный документ 8.pdf', 24)]
+    assert calls == [('лидинг/прораб/Отсканированный документ 8.pdf', 32)]
     assert 'Трудовая книжка Алексеева' in result['text']
 
 
@@ -103,7 +105,7 @@ def test_spk_keeps_personnel_folder_for_generic_scan(monkeypatch):
         archive.getvalue(), 'белеогрин.zip', 'unused', product='spk_bisp',
     )
 
-    assert calls == [(source_path, 24)]
+    assert calls == [(source_path, 32)]
     assert 'Диплом специалиста' in result['text']
 
 
@@ -985,7 +987,30 @@ def test_generic_pdf_fallback_uses_detailed_page_render(monkeypatch):
 
     server.vision_extract(b'%PDF', 'ТК сотрудника.pdf', 'unused')
 
-    assert rendered == [(0, {'max_dim': 1900})]
+    assert rendered == [(0, {'max_dim': 1900, 'quality': 78})]
+
+
+def test_long_generic_pdf_streams_without_eager_local_ocr(monkeypatch):
+    """A generic scanner name must not build 18 rendered pages before page one."""
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 18)
+    monkeypatch.setattr(
+        server, '_try_tesseract_first',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('eager OCR must be skipped')),
+    )
+    rendered = []
+    monkeypatch.setattr(
+        server, '_pdf_page_to_image',
+        lambda _data, page, **_kwargs: rendered.append(page) or 'aGVsbG8=',
+    )
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: type('Response', (), {
+        'raise_for_status': lambda self: None,
+        'json': lambda self: {'choices': [{'message': {'content': 'Текст страницы'}}]},
+    })())
+
+    text = server.vision_extract(b'%PDF', 'Отсканированный документ.pdf', 'unused', max_pages_override=5)
+
+    assert rendered == [0, 1, 2, 3, 4]
+    assert text.count('Текст страницы') == 5
 
 
 def test_detailed_pdf_fallback_reads_each_page_separately(monkeypatch):
@@ -1035,7 +1060,10 @@ def test_unlabelled_hard_to_read_pdf_uses_detailed_page_reader(monkeypatch):
 
     server.vision_extract(b'%PDF', 'scan-001.pdf', 'unused')
 
-    assert rendered == [(0, {'max_dim': 2400}), (1, {'max_dim': 2400})]
+    assert rendered == [
+        (0, {'max_dim': 1900, 'quality': 78}),
+        (1, {'max_dim': 1900, 'quality': 78}),
+    ]
     assert len(calls) == 2
     assert all(payload['max_tokens'] == 3500 for payload in calls)
 
@@ -1401,7 +1429,7 @@ def test_spk_si_pages_are_requested_independently_and_returned_in_page_order(mon
     assert '--- СТРАНИЦЫ 1-1 ---\ncGFnZTE=' in text
     assert '--- СТРАНИЦЫ 2-2 ---\ncGFnZTI=' in text
     assert text.index('СТРАНИЦЫ 1-1') < text.index('СТРАНИЦЫ 2-2')
-    assert {call['timeout'] for call in calls} == {70}
+    assert {call['timeout'] for call in calls} == {60}
 
 
 def test_large_spk_si_register_uses_streaming_pages_not_full_local_ocr(monkeypatch):
@@ -1430,7 +1458,7 @@ def test_large_spk_si_register_uses_streaming_pages_not_full_local_ocr(monkeypat
     assert text.count('СИ | наименование: Термометр') == 20
 
 
-def test_short_pdf_page_groups_can_run_in_parallel_without_changing_order(monkeypatch):
+def test_short_pdf_page_groups_are_kept_in_order_with_single_memory_lane(monkeypatch):
     monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args: 4)
     monkeypatch.setattr(server, '_pdf_page_to_image', lambda _data, index, **_kwargs: ['a', 'b', 'c', 'd'][index])
@@ -1479,7 +1507,7 @@ def test_handwritten_personnel_pdf_pages_are_read_one_by_one(monkeypatch):
     )
 
     assert text.count('Запись трудовой книжки') == 3
-    assert active['maximum'] == 2
+    assert active['maximum'] == 1
 
 
 def test_spk_si_folder_stays_a_source_block_and_reaches_evidence_parser(monkeypatch):
