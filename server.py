@@ -2016,7 +2016,24 @@ def _vision_result_needs_retry(text):
     value = str(text or '').strip().casefold()
     return ('повторная попытка чтения требуется' in value
             or value.startswith(('[vision:', '[vision ошибка:', '[vision error:'))
+            or 'не удалось прочитать страницы pdf' in value
             or _vision_result_is_phone_preview_chrome(value))
+
+
+def _pdf_page_output_needs_retry(text):
+    """Return True when a saved PDF-page result is an error, not evidence.
+
+    Archive tasks persist completed pages so an instance restart does not repeat
+    successful OCR.  A timeout must never become a completed checkpoint: doing
+    that made the next run silently skip the very page that had failed.
+    """
+    value = str(text or '').casefold()
+    return any(marker in value for marker in (
+        'не удалось прочитать страницы pdf',
+        'распознавание не завершилось вовремя',
+        'распознавание временно недоступно',
+        'распознавание вернуло пустой ответ',
+    ))
 
 
 def _vision_result_is_phone_preview_chrome(value: str) -> bool:
@@ -2084,10 +2101,12 @@ def vision_extract_with_retry(file_bytes, filename, api_key, **kwargs):
     first = vision_extract(file_bytes, filename, api_key, **kwargs)
     if not _vision_result_needs_retry(first):
         return first, False
-    # PDF page batches retry their own failed batch below. Re-running the full
-    # document here would repeat pages that have already been read successfully.
+    # A PDF page batch has already made a compact retry for each page.  One
+    # final document pass retries only the failed pages: successful page results
+    # are carried in completed_page_outputs and are not sent to Vision again.
     if str(filename or '').lower().endswith('.pdf') and '--- СТРАНИЦЫ ' in str(first):
-        return first, False
+        second = vision_extract(file_bytes, filename, api_key, **kwargs)
+        return second, True
 
     retry_bytes = file_bytes
     retry_kwargs = dict(kwargs)
@@ -2128,6 +2147,19 @@ def _is_personnel_archive_path(filename: str) -> bool:
         'бухгалт', 'кадр',
         'сотрудник', 'персонал', 'специалист', 'трудов', 'диплом', 'аттестат',
     ))
+
+
+def _is_company_att_generic_personnel_scan(filename: str, product: str) -> bool:
+    """Recognise unnamed personal scans in a company-attestation archive.
+
+    Clients often place diplomas and labour books in the archive root under the
+    scanner's default name.  For company attestation those files are personnel
+    evidence unless the name identifies a requisites document instead.
+    """
+    if str(product) != 'company_att':
+        return False
+    name = Path(str(filename or '')).name.casefold().replace('ё', 'е')
+    return 'отсканирован' in name and 'документ' in name
 
 
 def _archive_pdf_page_limit(filename: str, product: str) -> int:
@@ -2497,7 +2529,8 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             page_index = int(page)
         except (TypeError, ValueError):
             continue
-        if page_index >= 0 and isinstance(output, str) and output.strip():
+        if (page_index >= 0 and isinstance(output, str) and output.strip()
+                and not _pdf_page_output_needs_retry(output)):
             resumed_page_outputs[page_index] = output
     if ext == 'pdf' and prompt_override == SPK_SI_VISION_PROMPT:
         # A full local OCR pass used to render and retain every page of a 20–32
@@ -2776,13 +2809,19 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 for future in as_completed(futures):
                     start, output = future.result()
                     outputs_by_start[start] = output
-                    if page_checkpoint_cb:
+                    if (isinstance(completed_page_outputs, dict)
+                            and not _pdf_page_output_needs_retry(output)):
+                        completed_page_outputs[start] = output
+                    if page_checkpoint_cb and not _pdf_page_output_needs_retry(output):
                         page_checkpoint_cb(start, output)
             outputs = [outputs_by_start[start] for start in all_starts]
         else:
             for start in starts:
                 outputs_by_start[start] = read_batch(start)[1]
-                if page_checkpoint_cb:
+                if (isinstance(completed_page_outputs, dict)
+                        and not _pdf_page_output_needs_retry(outputs_by_start[start])):
+                    completed_page_outputs[start] = outputs_by_start[start]
+                if page_checkpoint_cb and not _pdf_page_output_needs_retry(outputs_by_start[start]):
                     page_checkpoint_cb(start, outputs_by_start[start])
             outputs = [outputs_by_start[start] for start in all_starts]
 
@@ -4271,7 +4310,8 @@ def _run_archive_task(task_id):
 
         def on_pdf_page_checkpoint(document_name, page_start, output):
             """Persist finished pages before the next page is rendered."""
-            if not isinstance(output, str) or not output.strip():
+            if (not isinstance(output, str) or not output.strip()
+                    or _pdf_page_output_needs_retry(output)):
                 return
             with checkpoint_lock:
                 current = TASKS.get(task_id) or task
@@ -5395,7 +5435,17 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 # such as «Отсканированный документ 8.pdf» may be a labour book
                 # inside a foreman's folder; dropping the folder hid that fact
                 # from the recognition rules.
-                vision_filename = fixed_name if _is_personnel_archive_path(fixed_name) else short
+                is_personnel_scan = (
+                    _is_personnel_archive_path(fixed_name)
+                    or _is_company_att_generic_personnel_scan(fixed_name, product)
+                )
+                # The prefix is only an internal routing hint.  It gives a
+                # root-level scanner name the same careful local OCR and
+                # rotation recovery as a scan in «прораб/» or «сметчик/».
+                vision_filename = (
+                    fixed_name if _is_personnel_archive_path(fixed_name)
+                    else (f'персонал/{fixed_name}' if is_personnel_scan else short)
+                )
                 txt, _retried = vision_extract_with_retry(
                     data, vision_filename, api_key,
                     # The SI register can be a single PDF with one inventory page

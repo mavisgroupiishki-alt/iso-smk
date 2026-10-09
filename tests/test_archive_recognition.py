@@ -85,6 +85,27 @@ def test_company_att_passes_generic_personnel_pdf_as_complete_scan(monkeypatch):
     assert 'Трудовая книжка Алексеева' in result['text']
 
 
+def test_company_att_treats_root_scanner_names_as_personnel_documents(monkeypatch):
+    archive = io.BytesIO()
+    source_path = 'лидинг/Отсканированный документ 11 (2).pdf'
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr(source_path, b'pdf-scan')
+
+    calls = []
+    monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)
+    monkeypatch.setattr(server, 'extract_text_from_file', lambda *_args, **_kwargs: '[PDF_SCAN: файл является сканом]')
+    monkeypatch.setattr(
+        server, 'vision_extract_with_retry',
+        lambda _data, vision_name, *_args, **_kwargs: (calls.append(vision_name) or 'Диплом инженера', False),
+    )
+
+    server.extract_archive_with_vision(archive.getvalue(), 'лидинг.zip', 'unused', product='company_att')
+
+    assert calls == ['персонал/' + source_path]
+    assert server._is_company_att_generic_personnel_scan(source_path, 'company_att')
+    assert not server._is_company_att_generic_personnel_scan(source_path, 'iso_suot')
+
+
 def test_spk_keeps_personnel_folder_for_generic_scan(monkeypatch):
     archive = io.BytesIO()
     source_path = 'белеогрин/зам директора/Отсканированный документ 3.pdf'
@@ -1637,6 +1658,41 @@ def test_pdf_resume_keeps_completed_pages_after_a_service_restart(monkeypatch):
     assert rendered_pages == [1, 2]
     assert 'страница уже прочитана' in text
     assert sorted(page for page, _ in saved_pages) == [1, 2]
+
+
+def test_pdf_resume_retries_a_failed_page_checkpoint(monkeypatch):
+    """A timeout is not a completed page and must be read after a restart."""
+    rendered_pages = []
+    saved_pages = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': 'страница прочитана повторно'}}]}
+
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda _data: 1)
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server, '_pdf_page_to_image',
+        lambda _data, page, **_kwargs: rendered_pages.append(page) or f'page-{page}',
+    )
+    monkeypatch.setattr(server, '_is_personnel_archive_path', lambda _name: False)
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: Response())
+
+    text = server.vision_extract(
+        b'pdf', 'Отсканированный документ.pdf', 'unused',
+        completed_page_outputs={
+            0: '--- СТРАНИЦЫ 1-1 ---\n'
+               '[Не удалось прочитать страницы PDF: распознавание не завершилось вовремя.]'
+        },
+        page_checkpoint_cb=lambda page, output: saved_pages.append((page, output)),
+    )
+
+    assert rendered_pages == [0]
+    assert 'страница прочитана повторно' in text
+    assert [page for page, _ in saved_pages] == [0]
 
 
 def test_personnel_pdf_keeps_a_verified_printed_page_out_of_vision(monkeypatch):

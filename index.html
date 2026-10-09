@@ -2513,6 +2513,17 @@ function aiNormalizeCompanyAttestation() {
   const ca = aiCurrentData.company_attestation;
   if(!ca) return;
 
+  // The archive reader keeps confirmed people in the common staff list.  The
+  // company-attestation form uses its own ITR list, so an otherwise valid
+  // specialist used to disappear from Form №2 and block generation.  Copy
+  // only verified non-worker staff when Form №2 has no separate ITR list;
+  // never invent a person and never overwrite an explicitly supplied form.
+  if(!Array.isArray(ca.itr) || !ca.itr.length) {
+    const officialItr = aiOfficialStaffRows(aiCurrentData.staff)
+      .filter(person => !person.is_worker)
+      .map(person => ({...person, source: person.source || 'staff'}));
+    if(officialItr.length) ca.itr = officialItr;
+  }
   if(Array.isArray(ca.itr)) ca.itr = ca.itr.map(p => aiNormalizeItrStage({...p}));
 
   ca.work_items = [...new Set((ca.work_items || []).filter(Boolean).map(String))];
@@ -2590,11 +2601,15 @@ function aiValidateReadiness(data) {
   if(product === 'company_att') {
     const ca = data.company_attestation || {};
     if(!ca.is_cancellation) {
-      if(!(ca.work_items || []).length) missing.push('виды работ для аттестации');
-      if(!(ca.itr || []).length) missing.push('ИТР для Формы №2');
-      if(!(ca.workers || []).length) missing.push('рабочие для Формы №2');
+      // A Form №2 can be generated as a draft with highlighted unknown rows.
+      // Do not make a client re-upload the whole archive just because a scan
+      // did not yield every work type or worker. Company basics still remain
+      // mandatory and the missing form data is shown as a plain warning.
+      if(!(ca.work_items || []).length) warnings.push('не указаны виды работ для Формы №2');
+      if(!(ca.itr || []).length) warnings.push('не указаны ИТР для Формы №2');
+      if(!(ca.workers || []).length) warnings.push('не указаны рабочие для Формы №2');
       (ca.workers || []).forEach((w,i) => {
-        if(!w.profession || !w.razryad || !Number(w.count)) missing.push(`рабочий №${i+1}: профессия, разряд и количество`);
+        if(!w.profession || !w.razryad || !Number(w.count)) warnings.push(`рабочий №${i+1}: профессия, разряд и количество`);
       });
     } else if(!ca.old_attestat_number) missing.push('номер старого аттестата');
   }
