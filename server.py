@@ -1231,7 +1231,7 @@ GOOGLE_VISION_URL = "https://vision.googleapis.com/v1/images:annotate"
 # task, archive, or log. It is tried only after the primary reader fails.
 GEMINI_OCR_URL = (
     "https://generativelanguage.googleapis.com/v1beta/"
-    "models/gemini-2.5-flash-lite:generateContent"
+    "models/gemini-3.5-flash-lite:generateContent"
 )
 
 SPK_ACTIVITY_PROFILE_LABELS = {
