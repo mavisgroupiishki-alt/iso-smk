@@ -7,6 +7,10 @@ services:
     envVars:
       - key: VIBE_API_KEY
         sync: false
+      # Необязательный резерв для страниц, которые основной распознаватель
+      # не прочитал вовремя. Ключ Google Cloud Vision задаётся только в Render.
+      - key: GOOGLE_VISION_API_KEY
+        sync: false
       # Для постоянного серверного хранения подключите Render Persistent Disk
       # и задайте IGOR_DATA_DIR равным его mount path, например /data.
       - key: IGOR_DATA_DIR

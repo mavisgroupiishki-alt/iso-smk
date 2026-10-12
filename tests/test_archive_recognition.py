@@ -1947,6 +1947,38 @@ def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
     assert any('Страницы 1–1 читаются дольше обычного' in message for message in progress)
 
 
+def test_pdf_uses_reserve_ocr_after_primary_timeout(monkeypatch):
+    monkeypatch.setenv('GOOGLE_VISION_API_KEY', 'test-key')
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda *_args, **_kwargs: 'page-b64')
+    calls = []
+
+    class GoogleResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'responses': [{'fullTextAnnotation': {'text': 'Рукописная запись трудовой книжки'}}]}
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url == server.VIBE_URL:
+            raise server.req_lib.exceptions.Timeout()
+        assert url == server.GOOGLE_VISION_URL
+        assert kwargs['params'] == {'key': 'test-key'}
+        assert kwargs['json']['requests'][0]['features'][0]['type'] == 'DOCUMENT_TEXT_DETECTION'
+        return GoogleResponse()
+
+    monkeypatch.setattr(server.req_lib, 'post', fake_post)
+    progress = []
+    text = server.vision_extract(b'pdf', 'лидинг/прораб/трудовая.pdf', 'unused', progress_cb=progress.append)
+
+    assert 'Рукописная запись трудовой книжки' in text
+    assert [url for url, _kwargs in calls] == [server.VIBE_URL, server.GOOGLE_VISION_URL]
+    assert any('резервное распознавание' in message for message in progress)
+
+
 def test_sideways_personnel_pdf_uses_one_compact_retry(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(server, '_pdf_page_to_image', lambda *_args, **_kwargs: 'page')

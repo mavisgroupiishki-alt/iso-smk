@@ -154,6 +154,32 @@ def test_generator_uses_periodika_mode_from_card_data():
     assert not any('Приказ' in name for name in names)
 
 
+def test_generator_refuses_iso_package_with_missing_critical_card_fields():
+    data = sample_data()
+    data['certification'].pop('scope')
+    data['company'].pop('scope')
+    data['dates'] = {}
+    data['certification'].pop('audit_date')
+    data['staff'] = []
+
+    result = generator.generate_package(data, 'dummy', 'iso')
+
+    assert result['docs'] == []
+    assert 'область применения' in result['error']
+    assert 'дата оформления документов' in result['error']
+    assert 'актуальный штат' in result['error']
+
+
+def test_generator_does_not_treat_template_staff_row_as_a_real_employee():
+    data = sample_data()
+    data['staff'] = [{'fio': 'Не указано Должность', 'position': 'ИТР'}]
+
+    result = generator.generate_package(data, 'dummy', 'iso')
+
+    assert result['docs'] == []
+    assert 'актуальный штат' in result['error']
+
+
 def test_initial_suot_keeps_orders_and_instructions_without_periodika_flag():
     data = sample_data()
     result = generator.generate_package(data, 'dummy', 'suot')
@@ -206,6 +232,20 @@ def test_nonstandard_scope_is_visible_in_smk_orders_but_not_added_to_customer_re
     assert 'ООО «Заказчик 1»' in report_text
     assert 'ОДО «Заказчик 2»' in report_text
     assert 'Устройство системы адресной пожарной сигнализации' not in report_text
+
+
+def test_iso_scope_from_current_card_never_turns_into_a_placeholder():
+    data = sample_data()
+    scope = 'Производство строительно-монтажных работ'
+    data['company']['scope'] = 'Устаревшая область'
+    data['certification']['scope'] = scope
+
+    result = generator.generate_package(data, 'dummy', 'iso_suot')
+
+    assert result['docs']
+    combined = '\n'.join(xml_text(doc['bytes']) for doc in result['docs'])
+    assert scope in combined
+    assert 'ТРЕБУЕТ УТОЧНЕНИЯ' not in combined
 
 
 def test_iso_uses_explicit_development_date_and_preserves_approved_forms():

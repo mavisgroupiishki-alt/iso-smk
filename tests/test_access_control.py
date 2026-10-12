@@ -83,6 +83,27 @@ def test_dedicated_service_accepts_only_its_configured_login():
         _restore_auth_storage(temp, previous)
 
 
+def test_dedicated_service_resyncs_password_after_workspace_secret_changes():
+    """A recreated dedicated service must not keep an obsolete local hash."""
+    temp, previous = _use_temp_auth_storage()
+    try:
+        os.environ['IGOR_WORKSPACE_USERNAME'] = 'kristina'
+        os.environ['IGOR_WORKSPACE_PASSWORD'] = 'first-secret-password-456'
+        os.environ['IGOR_WORKSPACE_ROLE'] = 'owner'
+        server.auth_bootstrap_owner()
+        assert server.auth_login('kristina', 'first-secret-password-456')
+
+        os.environ['IGOR_WORKSPACE_PASSWORD'] = 'current-secret-password-789'
+
+        assert server.auth_login('kristina', 'first-secret-password-456') is None
+        current = server.auth_login('kristina', 'current-secret-password-789')
+        assert current and current['user'] == {
+            'username': 'kristina', 'role': 'owner', 'active': True,
+        }
+    finally:
+        _restore_auth_storage(temp, previous)
+
+
 def test_operator_policy_allows_only_new_package_flow():
     assert server.auth_route_allowed('operator', 'POST', '/api/ai/chat')
     assert server.auth_route_allowed('operator', 'POST', '/api/generate')

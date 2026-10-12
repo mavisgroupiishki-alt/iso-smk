@@ -2689,6 +2689,14 @@ function aiValidateReadiness(data) {
   if(!company.unp) warnings.push('не указан УНП');
   if(!company.director_fio) missing.push('ФИО директора');
   if(!product) missing.push('выбранный продукт');
+  if(['iso','suot','iso_suot'].includes(product)) {
+    const scope = String(data.certification?.scope || company.scope || '').trim();
+    const auditDate = String(data.certification?.audit_date || data.dates?.audit_date || '').trim();
+    const confirmedStaff = aiOfficialStaffRows(data.staff);
+    if(!scope) missing.push('область применения');
+    if(!auditDate) missing.push('дата оформления документов');
+    if(!confirmedStaff.length) missing.push('актуальный штат с ФИО и должностями');
+  }
   if(product === 'company_att') {
     const ca = data.company_attestation || {};
     if(!ca.is_cancellation) {
@@ -2748,11 +2756,21 @@ function aiDeleteCompanyWorker(index) {
 
 function aiDeepMergeDefined(base, patch) {
   if(patch === undefined) return base;
-  if(Array.isArray(patch)) return patch.map(item => (item && typeof item === 'object') ? aiCloneForStorage(item) : item);
-  if(!patch || typeof patch !== 'object') return patch;
+  // A chat reply is usually a partial patch. Empty schema fields from that
+  // reply must not wipe confirmed company facts (especially the chosen scope)
+  // before the generator receives them. Explicit removal is handled by the
+  // dedicated edit controls, not by an incidental blank model field.
+  if(patch === null || patch === '') return aiHasMeaningfulValue(base) ? base : patch;
+  if(Array.isArray(patch)) {
+    if(!patch.length && aiHasMeaningfulValue(base)) return base;
+    return patch.map(item => (item && typeof item === 'object') ? aiCloneForStorage(item) : item);
+  }
+  if(typeof patch !== 'object') return patch;
   const out = (base && typeof base === 'object' && !Array.isArray(base)) ? {...base} : {};
   Object.entries(patch).forEach(([key, value]) => {
     if(value === undefined) return;
+    if((value === null || value === '' || (Array.isArray(value) && !value.length))
+        && aiHasMeaningfulValue(out[key])) return;
     out[key] = (value && typeof value === 'object' && !Array.isArray(value))
       ? aiDeepMergeDefined(out[key], value)
       : (Array.isArray(value) ? value.map(item => (item && typeof item === 'object') ? aiCloneForStorage(item) : item) : value);
@@ -3909,27 +3927,68 @@ async function aiReadJsonResponse(response, purpose = 'file') {
   return data;
 }
 
-async function aiStartArchiveUpload(formData) {
-  // A proxy can leave a multipart request pending without ever returning a
-  // response.  Do not let the document specialist wait indefinitely or mistake
-  // that transport problem for slow OCR.
-  const controller = new AbortController();
-  // Large RAR/PDF archives can take several minutes to reach Render on a
-  // residential connection.  The server processes the archive asynchronously,
-  // so the browser must not cancel a still-uploading file after two minutes.
-  const uploadTimeout = setTimeout(() => controller.abort(), 10 * 60 * 1000);
-  try {
-    return await fetch('/api/extract-archive-async', {
-      method: 'POST', body: formData, signal: controller.signal
-    }).then(response => aiReadJsonResponse(response, 'file'));
-  } catch(err) {
-    if(err && err.name === 'AbortError') {
-      throw new Error('Файл не был передан на обработку за 10 минут. Разделите архив на части или повторите загрузку.');
+async function aiStartArchiveUpload(formData, onProgress) {
+  // fetch does not expose upload progress. With a large RAR the interface
+  // therefore stayed at 0% until every byte had reached Render, making an
+  // ordinary upload indistinguishable from a stalled OCR job. XHR is used only
+  // for this multipart transfer; the rest of the API remains fetch-based.
+  if(typeof XMLHttpRequest !== 'function') {
+    const controller = new AbortController();
+    const uploadTimeout = setTimeout(() => controller.abort(), 10 * 60 * 1000);
+    try {
+      return await fetch('/api/extract-archive-async', {
+        method: 'POST', body: formData, signal: controller.signal
+      }).then(response => aiReadJsonResponse(response, 'file'));
+    } catch(err) {
+      if(err && err.name === 'AbortError') {
+        throw new Error('Файл не был передан на обработку за 10 минут. Разделите архив на части или повторите загрузку.');
+      }
+      throw err;
+    } finally {
+      clearTimeout(uploadTimeout);
     }
-    throw err;
-  } finally {
-    clearTimeout(uploadTimeout);
   }
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let timedOut = false;
+    const uploadTimeout = setTimeout(() => {
+      timedOut = true;
+      xhr.abort();
+    }, 10 * 60 * 1000);
+    const finish = callback => value => {
+      clearTimeout(uploadTimeout);
+      callback(value);
+    };
+    xhr.open('POST', '/api/extract-archive-async');
+    xhr.upload.onprogress = event => {
+      if(!event.lengthComputable || typeof onProgress !== 'function') return;
+      onProgress(Math.min(100, Math.max(0, Math.round(event.loaded * 100 / event.total))));
+    };
+    xhr.onload = () => {
+      const response = {
+        status: xhr.status,
+        ok: xhr.status >= 200 && xhr.status < 300,
+        text: async () => xhr.responseText || '',
+      };
+      aiReadJsonResponse(response, 'file').then(
+        finish(resolve), finish(reject),
+      );
+    };
+    xhr.onerror = finish(() => reject(new Error('Failed to fetch')));
+    xhr.onabort = finish(() => {
+      const error = new Error(timedOut
+        ? 'Файл не был передан на обработку за 10 минут. Разделите архив на части или повторите загрузку.'
+        : 'Failed to fetch');
+      error.name = timedOut ? 'UploadTimeoutError' : 'AbortError';
+      reject(error);
+    });
+    try {
+      xhr.send(formData);
+    } catch(error) {
+      clearTimeout(uploadTimeout);
+      reject(error);
+    }
+  });
 }
 
 function aiFileReadError(value) {
@@ -4085,7 +4144,9 @@ function aiArchiveProgressHtml(filename, message, step, total, minimumPercent = 
     ? ` · страница ${pageMatch[2] || pageMatch[1]} из ${pageMatch[3]}`
     : '';
   const pct = Math.max(Number(minimumPercent) || 0, aiArchiveProgressPercent(message, done, count));
-  const details = count
+  const details = meta.uploading
+    ? `Передано ${pct}%`
+    : count
     ? `Обработано ${Math.min(done, count)} из ${count} документов${pageNote} · ${pct}%`
     : 'Подготавливаю обработку';
   const deadline = aiArchiveRemainingTime(meta.deadlineRemainingSeconds);
@@ -4219,7 +4280,11 @@ async function aiReadArchiveAsync(file, productHint = '') {
     const MAX_QUEUE_POLLS = 600; // never wait in this interface longer than 30 minutes
     while(queuePolls < MAX_QUEUE_POLLS) {
       try {
-        startResp = await aiStartArchiveUpload(formData);
+        startResp = await aiStartArchiveUpload(formData, percent => {
+          aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(
+            file.name, `Передаю файл: ${percent}%`, 0, 0, percent, {uploading: true},
+          ));
+        });
       } catch(err) {
         if(transportRetries < 3 && aiArchiveUploadIsRetryable(err.message)) {
           transportRetries++;

@@ -254,6 +254,16 @@ def auth_bootstrap_owner():
         if existing:
             if not existing.get('active'):
                 raise RuntimeError('Учётная запись выделенного рабочего пространства отключена.')
+            # The account itself lives on the persistent disk, while the current
+            # password belongs to the Render service configuration.  A service
+            # recreation or a password rotation must not leave the disk with an
+            # old hash that can no longer be used to enter this dedicated app.
+            if len(workspace['password']) >= 12 and not _auth_password_matches(
+                workspace['password'], existing.get('password_hash', '')
+            ):
+                existing['password_hash'] = _auth_password_hash(workspace['password'])
+                existing['role'] = workspace['role']
+                _auth_write(USERS_FILE, data)
             return _auth_public_user(existing)
         if len(workspace['password']) < 12:
             raise RuntimeError('Не задан пароль выделенного рабочего пространства.')
@@ -1203,6 +1213,11 @@ def find_archive_task_by_upload_id(owner_user_id, client_upload_id):
 VIBE_URL   = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
 VIBE_MODEL = "bitrix/bitrixgpt-5.5"
 VIBE_MODEL_VISION = "bitrix/bitrixgpt-5.5-thinking"  # vision + reasoning для анализа документов
+# Google Cloud Vision is an opt-in recovery path for pages on which the primary
+# provider times out or returns no text.  The key intentionally stays only in a
+# Render environment variable; it is never persisted with a task or written to
+# logs.  Until the variable is configured, behaviour remains exactly as before.
+GOOGLE_VISION_URL = "https://vision.googleapis.com/v1/images:annotate"
 
 SPK_ACTIVITY_PROFILE_LABELS = {
     'construction': 'строительно-монтажные работы',
@@ -1728,6 +1743,48 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
     if payload is None:
         return _humanize_user_visible_text(raw_text)
 
+    # The model occasionally returns an abbreviated top-level ``scope`` or
+    # repeats the JSON schema with empty strings.  Neither case may erase a
+    # scope that the user selected in the interface: ISO/SUOT templates use
+    # certification.scope, while legacy card readers sometimes supplied
+    # company.scope.  Canonicalise only values that are actually present.
+    data = payload.get('data')
+    if isinstance(data, dict):
+        certification = data.get('certification')
+        if not isinstance(certification, dict):
+            certification = {}
+            data['certification'] = certification
+        company = data.get('company')
+        if not isinstance(company, dict):
+            company = {}
+            data['company'] = company
+        scope_candidates = (
+            certification.get('scope'),
+            company.get('scope'),
+            data.get('certification_scope'),
+            data.get('scope'),
+        )
+        scope = next((str(value).strip() for value in scope_candidates
+                      if isinstance(value, str) and value.strip()), '')
+        if scope:
+            certification['scope'] = scope
+            # Keep the card self-consistent for older template readers. The
+            # generator still treats certification.scope as the source of truth.
+            if not str(company.get('scope') or '').strip():
+                company['scope'] = scope
+        audit_date = next((str(value).strip() for value in (
+            certification.get('audit_date'),
+            (data.get('dates') or {}).get('audit_date') if isinstance(data.get('dates'), dict) else '',
+            data.get('audit_date'),
+        ) if isinstance(value, str) and value.strip()), '')
+        if audit_date:
+            certification['audit_date'] = audit_date
+            dates = data.get('dates') if isinstance(data.get('dates'), dict) else {}
+            dates['audit_date'] = audit_date
+            data['dates'] = dates
+        if product in ('iso', 'suot', 'iso_suot') and not certification.get('standard'):
+            certification['standard'] = product
+
     # ISO/SUOT instructions are OUTPUTS of the generator, not required source files.
     # The model occasionally asks the user to upload profession-specific instructions
     # despite having a complete staffing schedule. Remove those false questions here
@@ -2184,6 +2241,49 @@ def _crop_phone_preview_bars(file_bytes: bytes) -> bytes:
         return output.getvalue()
     except Exception:
         return file_bytes
+
+
+def _google_document_ocr(page_b64: str, timeout: int = 35) -> str:
+    """Read one rendered page with the optional handwriting-capable fallback.
+
+    A caller receives an empty string when the fallback is not configured or
+    cannot answer.  That lets the primary reader retain its existing recovery
+    behaviour without pretending that a second provider returned data.
+    """
+    api_key = str(os.environ.get('GOOGLE_VISION_API_KEY') or '').strip()
+    if not api_key or not page_b64:
+        return ''
+    payload = {
+        'requests': [{
+            'image': {'content': page_b64},
+            'features': [{'type': 'DOCUMENT_TEXT_DETECTION'}],
+            'imageContext': {'languageHints': ['ru', 'be']},
+        }],
+    }
+    try:
+        response = req_lib.post(
+            GOOGLE_VISION_URL,
+            params={'key': api_key},
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        responses = response.json().get('responses') or []
+        first = responses[0] if responses and isinstance(responses[0], dict) else {}
+        if first.get('error'):
+            print('  ⚠️ Резервное распознавание страницы вернуло ошибку.')
+            return ''
+        text = str((first.get('fullTextAnnotation') or {}).get('text') or '').strip()
+        if not text:
+            annotations = first.get('textAnnotations') or []
+            if annotations and isinstance(annotations[0], dict):
+                text = str(annotations[0].get('description') or '').strip()
+        return text
+    except req_lib.exceptions.RequestException as exc:
+        print(f'  ⚠️ Резервное распознавание страницы не ответило ({type(exc).__name__}).')
+    except (TypeError, ValueError, KeyError) as exc:
+        print(f'  ⚠️ Резервное распознавание вернуло неполный ответ ({type(exc).__name__}).')
+    return ''
 
 
 def vision_extract_with_retry(file_bytes, filename, api_key, **kwargs):
@@ -2797,6 +2897,32 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             # rotations on every handwritten page made a single archive run for
             # hours; modern Vision handles ordinary rotation on the first pass.
             retry_angles = (None, 'compact')
+            fallback_attempted = False
+
+            def try_fallback(page_b64):
+                """Use the separate OCR provider once, only after primary failure."""
+                nonlocal fallback_attempted
+                if fallback_attempted or len(batch) != 1:
+                    return ''
+                fallback_attempted = True
+                if not os.environ.get('GOOGLE_VISION_API_KEY'):
+                    return ''
+                if progress_cb:
+                    progress_cb(
+                        f"Страница {first_page} из {page_count}: пробую резервное распознавание"
+                    )
+                text = _google_document_ocr(page_b64, timeout=request_timeout(35))
+                if text:
+                    print(
+                        f"  ✅ vision_extract({filename}): резервное чтение стр. {first_page} "
+                        f"вернуло {len(text)} символов"
+                    )
+                    if progress_cb:
+                        progress_cb(
+                            f"Страница {first_page} из {page_count} прочитана резервным распознаванием"
+                        )
+                return text
+
             for attempt, angle in enumerate(retry_angles):
                 check_deadline()
                 request_batch = batch
@@ -2858,6 +2984,9 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                         if progress_cb:
                             progress_cb(f"Прочитаны страницы {first_page}–{last_page} из {page_count}")
                         return batch_start, f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + text
+                    fallback_text = try_fallback(request_batch[0])
+                    if fallback_text:
+                        return batch_start, f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + fallback_text
                     if attempt < len(retry_angles) - 1:
                         print(f"  ⚠️ vision_extract({filename}): пустой ответ, повторяю только стр. {first_page}-{last_page}")
                         continue
@@ -2867,6 +2996,9 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     )
                 except req_lib.exceptions.Timeout:
                     elapsed = _time.time() - t0
+                    fallback_text = try_fallback(request_batch[0])
+                    if fallback_text:
+                        return batch_start, f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + fallback_text
                     if attempt < len(retry_angles) - 1:
                         print(f"  ⏱️ vision_extract({filename}): таймаут стр. {first_page}-{last_page} через {elapsed:.1f} сек, повторяю только эти страницы")
                         if progress_cb:
@@ -2885,6 +3017,9 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                     )
                 except Exception as e:
                     elapsed = _time.time() - t0
+                    fallback_text = try_fallback(request_batch[0])
+                    if fallback_text:
+                        return batch_start, f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + fallback_text
                     if attempt < len(retry_angles) - 1:
                         print(f"  ❌ vision_extract({filename}): ошибка стр. {first_page}-{last_page} через {elapsed:.1f} сек — {type(e).__name__}: {e}; повторяю только эти страницы")
                         if progress_cb:

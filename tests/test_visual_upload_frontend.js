@@ -47,6 +47,30 @@ class FakeAbortController {
   }
 }
 
+class FakeXMLHttpRequest {
+  constructor() {
+    this.upload = {};
+    this.status = 0;
+    this.responseText = '';
+    context.lastXhr = this;
+  }
+  open(method, url) { this.method = method; this.url = url; }
+  send(body) {
+    this.body = body;
+    if (this.upload.onprogress) {
+      this.upload.onprogress({lengthComputable: true, loaded: 3, total: 4});
+    }
+    Promise.resolve(context.fetch(this.url, {method: this.method, body})).then(async response => {
+      this.status = response.status || (response.ok === false ? 500 : 200);
+      this.responseText = await response.text();
+      if (this.onload) this.onload();
+    }).catch(() => {
+      if (this.onerror) this.onerror();
+    });
+  }
+  abort() { if (this.onabort) this.onabort(); }
+}
+
 const context = {
   console,
   aiAddMsg: () => 'progress-id',
@@ -58,6 +82,7 @@ const context = {
   window: {crypto: {randomUUID: () => 'upload-test-id'}},
   FormData: FakeFormData,
   AbortController: FakeAbortController,
+  XMLHttpRequest: FakeXMLHttpRequest,
   setTimeout: (callback, ms) => {
     if (ms >= 120000) {
       context.uploadTimeout = callback;
@@ -71,6 +96,9 @@ const context = {
 vm.createContext(context);
 vm.runInContext([
   extractFunction('aiNormIdentity'),
+  extractFunction('aiCloneForStorage'),
+  extractFunction('aiHasMeaningfulValue'),
+  extractFunction('aiDeepMergeDefined'),
   extractFunction('aiIsOfficialStaffRow'),
   extractFunction('aiOfficialStaffRows'),
   extractFunction('aiReadFile'),
@@ -92,6 +120,20 @@ vm.runInContext([
 ].join('\n\n'), context);
 
 (async () => {
+  const uploadPercentages = [];
+  context.fetch = async () => ({
+    status: 200,
+    ok: true,
+    text: async () => JSON.stringify({success: true, task_id: 'upload-task'}),
+  });
+  const uploadStarted = await context.aiStartArchiveUpload(
+    new FakeFormData(),
+    percent => uploadPercentages.push(percent),
+  );
+  if (uploadStarted.task_id !== 'upload-task' || uploadPercentages.join(',') !== '75') {
+    throw new Error('archive upload does not expose browser upload progress');
+  }
+
   const officialStaff = context.aiOfficialStaffRows([
     {fio: 'Не указано Должность', position: 'инженер'},
     {fio: 'Рудницкий [Имя Отчество]', position: '[Должность]'},
@@ -105,6 +147,14 @@ vm.runInContext([
     {fio: 'Козлов Владислав Евгеньевич', position: 'производитель работ', needs_review: true},
   ]).length !== 0) {
     throw new Error('a staff row marked for review can still enter official forms');
+  }
+
+  const keptScope = context.aiDeepMergeDefined(
+    {scope: 'Производство строительно-монтажных работ'},
+    {scope: ''},
+  );
+  if (keptScope.scope !== 'Производство строительно-монтажных работ') {
+    throw new Error('an empty AI schema field can erase the confirmed package scope');
   }
 
   let visualStarts = 0;
@@ -189,6 +239,12 @@ vm.runInContext([
   }
   if (!context.aiArchiveProgressHtml('архив.rar', 'чтение', 2, 11, 30).includes('width:30%')) {
     throw new Error('archive progress can move backwards after a service restart');
+  }
+  const uploadProgress = context.aiArchiveProgressHtml(
+    'архив.rar', 'Передаю файл: 75%', 0, 0, 75, {uploading: true},
+  );
+  if (!uploadProgress.includes('Передано 75%') || !uploadProgress.includes('width:75%')) {
+    throw new Error('archive upload progress is not shown separately from OCR progress');
   }
   const detailedProgress = context.aiArchiveProgressHtml('архив.rar', 'чтение', 2, 11, 30, {
     deadlineRemainingSeconds: 9 * 60,

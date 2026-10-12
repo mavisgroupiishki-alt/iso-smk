@@ -826,6 +826,47 @@ def _finalize_package_result(result: dict, company_data: dict, product: str) -> 
         )
     return result
 
+
+def _iso_suot_generation_missing_fields(company_data: dict, product: str) -> list[str]:
+    """Return facts that make an ISO/SUOT package materially unreliable.
+
+    This is deliberately a server-side gate as well as a browser validation:
+    opening an old tab or calling the endpoint directly must not produce a ZIP
+    in which a known field is silently replaced with ``ТРЕБУЕТ УТОЧНЕНИЯ``.
+    """
+    if product not in ('iso', 'suot', 'iso_suot'):
+        return []
+    data = company_data if isinstance(company_data, dict) else {}
+    company = data.get('company') if isinstance(data.get('company'), dict) else {}
+    certification = data.get('certification') if isinstance(data.get('certification'), dict) else {}
+    dates = data.get('dates') if isinstance(data.get('dates'), dict) else {}
+    staff = data.get('staff') if isinstance(data.get('staff'), list) else []
+    missing = []
+    if not str(company.get('name') or '').strip():
+        missing.append('название компании')
+    if not str(company.get('director_fio') or '').strip():
+        missing.append('ФИО директора')
+    if not str(certification.get('scope') or company.get('scope') or '').strip():
+        missing.append('область применения')
+    if not str(certification.get('audit_date') or dates.get('audit_date') or '').strip():
+        missing.append('дата оформления документов')
+    def is_usable_staff_member(person):
+        if not isinstance(person, dict):
+            return False
+        fio = re.sub(r'\s+', ' ', str(person.get('fio') or '')).strip()
+        position = re.sub(r'\s+', ' ', str(person.get('position') or '')).strip()
+        if not re.fullmatch(r'[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2}', fio):
+            return False
+        if not position or not re.search(r'[А-ЯЁа-яё]', position):
+            return False
+        placeholder = r'\[|\]|<|>|\?|не\s*(?:указан|найден)|неизвест|должност|имя|отчество|фамил'
+        return not (re.search(placeholder, fio, re.I) or re.search(placeholder, position, re.I))
+
+    has_staff = any(is_usable_staff_member(person) for person in staff)
+    if not has_staff:
+        missing.append('актуальный штат с ФИО и должностями')
+    return missing
+
 def _merge_company_att_itr_from_staff(att_data: dict, staff: list) -> dict:
     """Enrich Form No.2 ITR records with facts already stored in the common staff card.
 
@@ -909,6 +950,13 @@ def _merge_company_att_itr_from_staff(att_data: dict, staff: list) -> dict:
 
 def generate_package(company_data: dict, api_key: str, product: str, progress_cb=None) -> dict:
     global _GENERATION_KNOWLEDGE_CONTEXT
+    missing_core_fields = _iso_suot_generation_missing_fields(company_data, product)
+    if missing_core_fields:
+        return {
+            'docs': [], 'dates': {}, 'responsible': {}, 'itr_count': 0,
+            'workers_count': 0, 'professions': [],
+            'error': 'Нельзя сформировать пакет: не заполнено ' + ', '.join(missing_core_fields) + '.',
+        }
     _GENERATION_KNOWLEDGE_CONTEXT = str((company_data or {}).get('_knowledge_context') or '')[:32000]
     generation_knowledge_rules = [r for r in ((company_data or {}).get('_knowledge_rules') or []) if isinstance(r, dict)]
     company  = dict(company_data.get('company', {}) or {})
