@@ -243,9 +243,14 @@ def test_iso_scope_from_current_card_never_turns_into_a_placeholder():
     result = generator.generate_package(data, 'dummy', 'iso_suot')
 
     assert result['docs']
-    combined = '\n'.join(xml_text(doc['bytes']) for doc in result['docs'])
-    assert scope in combined
-    assert 'ТРЕБУЕТ УТОЧНЕНИЯ' not in combined
+    order = next(doc for doc in result['docs'] if 'Приказ 3-СМК' in doc['name'])
+    order_document = Document(io.BytesIO(order['bytes']))
+    order_text = '\n'.join(
+        [paragraph.text for paragraph in order_document.paragraphs]
+        + [cell.text for table in order_document.tables for row in table.rows for cell in row.cells]
+    )
+    assert f'В ОБЛАСТИ: {scope}' in order_text
+    assert 'В ОБЛАСТИ: ТРЕБУЕТ УТОЧНЕНИЯ' not in order_text
 
 
 def test_iso_uses_explicit_development_date_and_preserves_approved_forms():
@@ -293,6 +298,24 @@ def test_iso_uses_explicit_development_date_and_preserves_approved_forms():
     process = text(next(value for name, value in docs.items() if 'Отчет по процессу строительства' in name))
     assert '0/6' not in process
     assert '0/2' in process
+
+
+def test_iso_audit_journal_date_column_fits_full_date():
+    data = sample_data()
+    company = dict(data['company'])
+    company['scope'] = data['certification']['scope']
+    itr = [person for person in data['staff'] if not person['is_worker']]
+    workers = [person for person in data['staff'] if person['is_worker']]
+
+    result = generate_iso_suot_package_v2(
+        company, itr, generator.calculate_dates('20.08.2026'), generator.select_responsible(itr),
+        product='iso', workers=workers, suppliers=data['suppliers'], objects=data['objects'],
+    )
+    audit = next(doc for doc in result['docs'] if 'Программа внутренних аудитов СМК' in doc['name'])
+    document = Document(io.BytesIO(audit['bytes']))
+
+    # 2.1 cm leaves enough room for DD.MM.YYYY plus Word cell margins.
+    assert document.tables[1].columns[0].width.twips >= 1190
 
 
 def test_company_att_itr_is_enriched_from_staff():

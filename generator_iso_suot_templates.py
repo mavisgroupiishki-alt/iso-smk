@@ -23,7 +23,7 @@ from typing import Iterable
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Pt
+from docx.shared import Cm, Pt
 
 BASE_DIR = Path(__file__).parent.resolve()
 TPL_DIR = BASE_DIR / 'iso_suot_templates'
@@ -538,6 +538,14 @@ def _clear_table_rows(table, start: int) -> None:
         row._tr.getparent().remove(row._tr)
 
 
+def _set_journal_date_column_width(table) -> None:
+    """Keep DD.MM.YYYY on one line in the ISO audit journal."""
+    width = Cm(2.1)
+    table.columns[0].width = width
+    for row in table.rows:
+        row.cells[0].width = width
+
+
 def _set_text(paragraph, text: str) -> None:
     """Set visible paragraph text without throwing away its first-run formatting."""
     if paragraph.runs:
@@ -773,6 +781,7 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
             schedule, journal = doc.tables[0], doc.tables[1]
             _clear_table_rows(schedule, 3)
             _clear_table_rows(journal, 3)
+            _set_journal_date_column_width(journal)
             auditors = [p for p in itr if p.get('ot_certificate')] or list(itr or [])[:1]
             for index, person in enumerate(itr or [], 1):
                 row = schedule.add_row().cells
