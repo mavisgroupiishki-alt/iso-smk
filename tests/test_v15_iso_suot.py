@@ -75,6 +75,11 @@ def test_fast_deterministic_iso_suot_package():
     assert 'Волков Василий Анатольевич' in combined
     assert any('ИОТ Штукатур' in d['name'] for d in result['docs'])
     assert any('Карточка оценки поставщика' in d['name'] for d in result['docs'])
+    org_structure = next(d for d in result['docs'] if d['name'] == 'ОмиТрейд - Приложение 1 организационная структура.docx')
+    document_list = next(d for d in result['docs'] if d['name'] == 'ОмиТрейд - Приложение 2 Перечень документов СМК.docx')
+    assert 'Лукашик Сергей Васильевич' in xml_text(org_structure['bytes'])
+    assert 'Грук Сергей Борисович' in xml_text(org_structure['bytes'])
+    assert 'СТП СМК Управление рисками' in xml_text(document_list['bytes'])
     assert not any('валидац' in d['name'].lower() for d in result['docs'])
 
 
@@ -113,6 +118,8 @@ def test_periodika_iso_contains_only_annual_documents_and_current_objects():
     assert not any('РК СМК' in name or 'СТП СМК' in name for name in names)
     assert not any('Приказ' in name or 'ДИ ' in name for name in names)
     assert not any('Журнал' in name for name in names)
+    assert not any('Приложение 1 организационная структура' in name for name in names)
+    assert not any('Приложение 2 Перечень документов СМК' in name for name in names)
     report = next(doc for doc in result['docs'] if 'оценке удовлетворенности заказчиков' in doc['name'].lower())
     assert 'Текущий ремонт поликлиники' in xml_text(report['bytes'])
 

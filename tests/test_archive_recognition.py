@@ -13,6 +13,7 @@ from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 import socketserver
+import pytest
 
 import server
 
@@ -83,6 +84,8 @@ def test_company_att_passes_generic_personnel_pdf_as_complete_scan(monkeypatch):
 
     assert calls == [('лидинг/прораб/Отсканированный документ 8.pdf', 32)]
     assert 'Трудовая книжка Алексеева' in result['text']
+    assert result['source_status']['лидинг/прораб/Отсканированный документ 8.pdf']['state'] == 'read_external'
+    assert result['source_status']['лидинг/прораб/Отсканированный документ 8.pdf']['pages']['1']['state'] == 'read_external'
 
 
 def test_company_att_treats_root_scanner_names_as_personnel_documents(monkeypatch):
@@ -177,13 +180,102 @@ def _docx_with_ordered_images(names) -> bytes:
 
 def test_archive_processing_slot_serializes_worker_execution():
     server.release_archive_processing()
-
     assert server.reserve_archive_processing() is True
     assert server.reserve_archive_processing() is False
 
     server.release_archive_processing()
     assert server.reserve_archive_processing() is True
     server.release_archive_processing()
+
+
+def test_archive_profile_accepts_only_explicit_product_and_mode():
+    assert server._normalise_archive_profile('spk_bisp', 'periodika') == ('spk_bisp', 'periodika')
+    assert server._normalise_archive_profile('', 'initial') == ('all', 'initial')
+    with pytest.raises(ValueError, match='тип пакета'):
+        server._normalise_archive_profile('iso_from_file_name', 'initial')
+    with pytest.raises(ValueError, match='Первичный пакет'):
+        server._normalise_archive_profile('iso', 'unknown')
+
+
+def test_archive_progress_percent_accounts_for_current_pdf_page():
+    assert server._archive_progress_percent('Распознаю страницы 3–3 из 18', 2, 11) == 20
+    assert server._archive_progress_percent('Читаю 1/11: документ.docx', 1, 11) == 9
+
+
+def test_initial_archive_does_not_reuse_its_previous_iigor_output():
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        zipped.writestr('ЛиссНБК/Реквизиты.txt', 'ООО «ЛиссНБК»')
+        zipped.writestr('ЛиссНБК/ЛиссНБК ИИгорь/Старый пакет.txt', 'СТАРЫЙ ДИРЕКТОР')
+
+    result = server.extract_archive_with_vision(
+        archive.getvalue(), 'ЛиссНБК.zip', 'unused', product='iso', package_mode='initial',
+    )
+
+    assert 'ООО «ЛиссНБК»' in result['text']
+    assert 'СТАРЫЙ ДИРЕКТОР' not in result['text']
+    assert result['source_status']['ЛиссНБК/ЛиссНБК ИИгорь/Старый пакет.txt']['state'] == 'not_read'
+
+
+def test_periodika_can_use_a_previous_iigor_package():
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        zipped.writestr('ЛиссНБК/ЛиссНБК ИИгорь/Предыдущий пакет.txt', 'ПРЕДЫДУЩИЙ ПАКЕТ')
+
+    result = server.extract_archive_with_vision(
+        archive.getvalue(), 'ЛиссНБК.zip', 'unused', product='iso', package_mode='periodika',
+    )
+
+    assert 'ПРЕДЫДУЩИЙ ПАКЕТ' in result['text']
+
+
+def test_archive_reads_direct_current_files_before_many_old_templates():
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        for index in range(60):
+            zipped.writestr(f'Компания/Старые доки/шаблон-{index:02d}.txt', 'старый шаблон')
+        # This file is deliberately placed last in the physical ZIP order.
+        zipped.writestr('Компания/Список сотрудников.txt', 'АКТУАЛЬНЫЙ ШТАТ')
+
+    result = server.extract_archive_with_vision(archive.getvalue(), 'Компания.zip', 'unused')
+
+    assert '--- Компания/Список сотрудников.txt ---\nАКТУАЛЬНЫЙ ШТАТ' in result['text']
+
+
+def test_archive_resume_reuses_finished_scan_without_calling_vision(monkeypatch):
+    """A restart must not send a fully read scan to OCR a second time."""
+    archive = io.BytesIO()
+    source_path = 'Люди/диплом.pdf'
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr(source_path, b'pdf-scan')
+
+    monkeypatch.setattr(server, '_reconcile_all_people', lambda texts, *_args, **_kwargs: texts)
+    monkeypatch.setattr(server, 'extract_text_from_file', lambda *_args, **_kwargs: '[PDF_SCAN: файл является сканом]')
+    monkeypatch.setattr(server, 'vision_extract_with_retry', lambda *_args, **_kwargs: ('Диплом инженера', False))
+    checkpoints = {}
+    statuses = {}
+
+    first = server.extract_archive_with_vision(
+        archive.getvalue(), 'люди.zip', 'unused', product='spk_bisp',
+        file_checkpoint_cb=lambda name, output, status: (
+            checkpoints.__setitem__(name, output), statuses.__setitem__(name, status),
+        ),
+    )
+    assert 'Диплом инженера' in first['text']
+    assert source_path in checkpoints
+    assert statuses[source_path]['state'] == 'read_external'
+
+    def must_not_read_again(*_args, **_kwargs):
+        raise AssertionError('готовый скан нельзя повторно отправлять в OCR')
+
+    monkeypatch.setattr(server, 'vision_extract_with_retry', must_not_read_again)
+    resumed = server.extract_archive_with_vision(
+        archive.getvalue(), 'люди.zip', 'unused', product='spk_bisp',
+        completed_file_outputs=checkpoints, initial_source_status=statuses,
+    )
+
+    assert 'Диплом инженера' in resumed['text']
+    assert resumed['source_status'][source_path]['state'] == 'read_external'
 
 
 def test_archive_queue_accepts_second_user_and_reports_position(monkeypatch, tmp_path):
@@ -384,6 +476,8 @@ def test_streamed_archive_upload_saves_docx_without_copying_multipart_to_memory(
     docx_bytes = _docx_with_embedded_scan()
     body = (
         f'--{boundary}\r\nContent-Disposition: form-data; name="product"\r\n\r\nspk_bisp\r\n'.encode()
+        + f'--{boundary}\r\nContent-Disposition: form-data; name="package_mode"\r\n\r\nperiodika\r\n'.encode()
+        + f'--{boundary}\r\nContent-Disposition: form-data; name="scope"\r\n\r\nМонтаж металлоконструкций\r\n'.encode()
         + f'--{boundary}\r\nContent-Disposition: form-data; name="upload_id"\r\n\r\nupload-test\r\n'.encode()
         + f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="Тагиев ТК.docx"\r\n'
           f'Content-Type: application/octet-stream\r\n\r\n'.encode()
@@ -422,6 +516,9 @@ def test_streamed_archive_upload_saves_docx_without_copying_multipart_to_memory(
         assert payload['success'] is True
         assert started
         task = next(iter(server.TASKS.values()))
+        assert task['product'] == 'spk_bisp'
+        assert task['package_mode'] == 'periodika'
+        assert task['scope'] == 'Монтаж металлоконструкций'
         second_handler = FakeHandler()
         second_handler.rfile = io.BytesIO(body.replace(b'upload-test', b'upload-next'))
         second_handler.headers = headers
@@ -1093,7 +1190,7 @@ def test_pdf_page_rendering_releases_native_pdf_resources(monkeypatch):
     """A many-page scan must not retain every PDFium page bitmap in memory."""
     from PIL import Image
 
-    state = {'document_closed': False, 'page_closed': False, 'bitmap_closed': False}
+    state = {'document_closed': False, 'page_closed': False, 'bitmap_closed': False, 'memory_released': 0}
 
     class FakeBitmap:
         def to_pil(self):
@@ -1124,11 +1221,18 @@ def test_pdf_page_rendering_releases_native_pdf_resources(monkeypatch):
 
     fake_document = FakeDocument()
     monkeypatch.setitem(sys.modules, 'pypdfium2', SimpleNamespace(PdfDocument=lambda _data: fake_document))
+    monkeypatch.setattr(
+        server, '_release_large_ocr_memory',
+        lambda: state.__setitem__('memory_released', state['memory_released'] + 1),
+    )
 
     images = server._pdf_pages_to_images(b'%PDF-test', max_pages=1)
 
     assert len(images) == 1
-    assert state == {'document_closed': True, 'page_closed': True, 'bitmap_closed': True}
+    assert state == {
+        'document_closed': True, 'page_closed': True, 'bitmap_closed': True,
+        'memory_released': 1,
+    }
 
 
 def test_spk_si_prompt_sends_ambiguous_local_ocr_to_vision(monkeypatch):
@@ -1344,6 +1448,19 @@ def test_spk_staff_merge_rejects_placeholder_and_incomplete_rows():
         'fio': 'Козлов Владислав Евгеньевич',
         'position': 'производитель работ',
     }]
+
+
+def test_spk_staff_merge_marks_conflicting_positions_for_review():
+    staff = server._merge_spk_staff_rows(
+        [{'fio': 'Козлов Владислав Евгеньевич', 'position': 'производитель работ'}],
+        [{'fio': 'Козлов Владислав Евгеньевич', 'position': 'главный инженер'}],
+    )
+
+    assert len(staff) == 1
+    assert staff[0]['position'] == 'производитель работ'
+    assert staff[0]['needs_review'] is True
+    assert staff[0]['position_conflict'] is True
+    assert staff[0]['position_alternatives'] == ['производитель работ', 'главный инженер']
 
 
 def test_phone_gallery_overlay_retries_with_document_only_prompt(monkeypatch):
@@ -1616,6 +1733,50 @@ def test_durable_archive_task_can_finish_after_process_restart(monkeypatch, tmp_
     assert not (uploads / f'{task_id}.upload').exists()
 
 
+def test_expired_archive_task_stops_without_sending_more_pages(monkeypatch, tmp_path):
+    uploads = tmp_path / 'uploads'
+    tasks_dir = tmp_path / 'tasks'
+    uploads.mkdir()
+    tasks_dir.mkdir()
+    task_id = 'expired01'
+    (uploads / f'{task_id}.upload').write_bytes(b'archive')
+    task = {
+        'status': 'running', 'kind': 'archive', 'owner_user_id': 'owner',
+        'filename': 'long.rar', 'product': 'company_att',
+        'archive_upload': f'{task_id}.upload', 'progress': [],
+        'deadline_at': time.time() - 1,
+    }
+    monkeypatch.setattr(server, 'ARCHIVE_UPLOAD_DIR', uploads)
+    monkeypatch.setattr(server, 'TASKS_DIR', tasks_dir)
+    monkeypatch.setattr(server, 'TASKS', {task_id: task})
+    monkeypatch.setenv('VIBE_API_KEY', 'test-key')
+    monkeypatch.setattr(
+        server, 'extract_archive_with_vision',
+        lambda *_args, **_kwargs: pytest.fail('expired task must not start OCR'),
+    )
+
+    server._run_archive_task(task_id)
+
+    assert task['status'] == 'error'
+    assert '30 минут' in task['error']
+    assert not (uploads / f'{task_id}.upload').exists()
+
+
+def test_pdf_ocr_checks_the_deadline_before_starting_a_page(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda _data: 1)
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda *_args, **_kwargs: 'page')
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: calls.append(True))
+
+    with pytest.raises(server.ArchiveTaskDeadlineExceeded):
+        server.vision_extract(
+            b'pdf', 'трудовая.pdf', 'unused',
+            deadline_at=time.time() - 1,
+        )
+
+    assert calls == []
+
+
 def test_visual_ocr_does_not_repeat_a_successful_read(monkeypatch):
     """A normal passport/certificate upload must make one recognition call."""
     calls = []
@@ -1786,13 +1947,10 @@ def test_pdf_retries_only_the_failed_page_batch(monkeypatch):
     assert any('Страницы 1–1 читаются дольше обычного' in message for message in progress)
 
 
-def test_sideways_personnel_pdf_retries_both_orientations(monkeypatch):
+def test_sideways_personnel_pdf_uses_one_compact_retry(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(server, '_pdf_page_to_image', lambda *_args, **_kwargs: 'page')
-    monkeypatch.setattr(
-        server, '_rotate_pdf_page_b64',
-        lambda page, angle=90: f'{page}-rotated-{angle}',
-    )
+    monkeypatch.setattr(server, '_compact_pdf_page_b64', lambda page: f'{page}-compact')
     calls = []
 
     class Response:
@@ -1809,7 +1967,7 @@ def test_sideways_personnel_pdf_retries_both_orientations(monkeypatch):
             if block['type'] == 'image_url'
         )
         calls.append(page)
-        if page != 'page-rotated-270':
+        if page != 'page-compact':
             raise server.req_lib.exceptions.Timeout()
         return Response()
 
@@ -1820,7 +1978,7 @@ def test_sideways_personnel_pdf_retries_both_orientations(monkeypatch):
     )
 
     assert 'Запись трудовой книжки' in text
-    assert calls == ['page', 'page-rotated-90', 'page-rotated-270']
+    assert calls == ['page', 'page-compact']
 
 
 def test_pdf_reports_progress_for_each_recognition_batch(monkeypatch):
@@ -1953,6 +2111,10 @@ def test_archive_task_returns_structured_data_to_the_browser():
             'summary': 'archive summary', 'structured_data': {
                 'spk': {'measurement_tools': [{'name': 'Нивелир', 'quantity': 1}]}
             },
+            'deadline_at': time.time() + 600,
+            'source_status': {
+                'Перечень СИ.pdf': {'state': 'read_external', 'pages': {'1': {'state': 'read_external'}}},
+            },
         }
         conn = http.client.HTTPConnection('127.0.0.1', httpd.server_address[1], timeout=5)
         conn.request('POST', '/api/auth/login', body=json.dumps({
@@ -1971,6 +2133,9 @@ def test_archive_task_returns_structured_data_to_the_browser():
         assert payload['analysis_text'] == 'focused archive text'
         assert payload['summary'] == 'archive summary'
         assert payload['structured_data']['spk']['measurement_tools'][0]['name'] == 'Нивелир'
+        assert payload['deadlineRemainingSeconds'] > 0
+        assert payload['progressPercentFloor'] == 0
+        assert payload['sourceStatus']['Перечень СИ.pdf']['pages']['1']['state'] == 'read_external'
     finally:
         httpd.shutdown()
         httpd.server_close()

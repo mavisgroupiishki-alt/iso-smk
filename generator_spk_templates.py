@@ -1230,14 +1230,27 @@ def _dedupe_spk_people(people: list[dict]) -> tuple[list[dict], list[str]]:
             canonical.append(person)
 
     warnings = []
+    confirmed = []
+    for person in canonical:
+        if person.get('needs_review') or person.get('identity_conflict') or person.get('position_conflict'):
+            fio = str(person.get('fio') or '').strip()
+            alternatives = person.get('position_alternatives') or []
+            detail = (f" Разные должности в источниках: {', '.join(alternatives)}."
+                      if alternatives else '')
+            warnings.append(
+                f'Сотрудник «{fio}» не включён в официальные формы: '
+                f'данные требуют проверки.{detail}'
+            )
+            continue
+        confirmed.append(person)
     for person in incomplete:
-        matches = [item for item in canonical if _spk_person_records_match(item, person)]
+        matches = [item for item in confirmed if _spk_person_records_match(item, person)]
         if len(matches) == 1:
             _merge_spk_person_data(matches[0], person)
         else:
             fio = str(person.get('fio')).strip()
             warnings.append(f'Сотрудник «{fio}» не включён в официальные формы: неполное ФИО.')
-    return canonical, list(dict.fromkeys(warnings))
+    return confirmed, list(dict.fromkeys(warnings))
 
 
 def generate_spk_package_v2(company: dict, itr: list, workers: list, dates: dict, resp: dict,

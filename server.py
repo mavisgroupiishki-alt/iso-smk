@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ИСО/СМК Генератор с ИИ-оформителем. Запуск: python server.py → http://localhost:8766"""
-import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,hmac,hashlib,secrets,time,struct,requests as req_lib
+import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,hmac,hashlib,secrets,time,struct,copy,requests as req_lib
 import http.server,socketserver
 from pathlib import Path
 from datetime import datetime,timedelta,timezone
@@ -640,6 +640,27 @@ VISION_SEMAPHORE = threading.Semaphore(1)
 # the subsequent Vision request.  Limit that native bitmap work separately so
 # two worker threads cannot expand two large scans at once.
 PDF_RENDER_SEMAPHORE = threading.Semaphore(1)
+
+
+def _release_large_ocr_memory():
+    """Return freed PDF/OCR buffers to the small Render instance promptly.
+
+    Pillow and PDFium release their own objects when a page is closed, but the
+    Python allocator can keep that released native memory reserved.  A long
+    scanned PDF then gradually reaches Render's 512 MiB cgroup limit even
+    though only one page is read at a time.  Collect after a page/file boundary
+    and ask glibc to return spare heap pages when available.  This is best
+    effort and is a no-op on non-Linux local development machines.
+    """
+    try:
+        import gc
+        gc.collect()
+        if sys.platform.startswith('linux'):
+            import ctypes
+            ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except Exception:
+        # Memory release must never turn a successfully read page into an error.
+        pass
 # Один большой архив держит в памяти исходный контейнер, распакованный ZIP и
 # результаты vision. Два таких задания одновременно на Render Free могут
 # перезапустить процесс. Поэтому исполнение однозадачное, но сами загрузки
@@ -659,11 +680,69 @@ HEAVY_WORK_LOCK = threading.Lock()
 # 512 MB service.  Rejecting it visibly is safer than an endless restart loop.
 MAX_ARCHIVE_WORKER_BYTES = 180 * 1024 * 1024
 ARCHIVE_DISK_HEADROOM_BYTES = 32 * 1024 * 1024
+# A result after hours of retries is not useful to an operator. The deadline
+# covers both waiting in this service's queue and OCR itself.
+ARCHIVE_TASK_MAX_SECONDS = 30 * 60
 TASKS = {}  # task_id -> {status, progress, result, error}
+
+# Product and mode are chosen by the operator before a file reaches the queue.
+# Keep this boundary on the server too: a stale browser, a file name or a chat
+# response must never be able to turn an СПК upload into an ISO/SUOT package.
+ARCHIVE_PRODUCTS = frozenset({
+    'iso', 'suot', 'iso_suot', 'spk_bisp', 'spk_stroy', 'company_att', 'att',
+})
+ARCHIVE_PACKAGE_MODES = frozenset({'initial', 'periodika'})
+
+
+def _normalise_archive_profile(product, package_mode):
+    """Validate the explicit request profile received with an archive upload.
+
+    ``all`` is retained only for an older browser that did not have product
+    buttons. New clients always send one of ``ARCHIVE_PRODUCTS``. Filename
+    inference is therefore an opt-in compatibility path, never a way to
+    overwrite a selected product.
+    """
+    selected = str(product or '').strip().lower()
+    mode = str(package_mode or 'initial').strip().lower()
+    if selected and selected != 'all' and selected not in ARCHIVE_PRODUCTS:
+        raise ValueError('Выберите тип пакета кнопкой перед загрузкой файла.')
+    if mode not in ARCHIVE_PACKAGE_MODES:
+        raise ValueError('Выберите «Первичный пакет» или «Периодика» перед загрузкой файла.')
+    return selected or 'all', mode
 
 
 class ArchiveTaskCancelled(Exception):
     """Stop a background archive only at a safe progress boundary."""
+
+
+class ArchiveTaskDeadlineExceeded(Exception):
+    """Stop an archive that exceeded the operator-visible 30 minute limit."""
+
+
+def _archive_task_deadline_reached(task):
+    try:
+        return time.time() >= float(task.get('deadline_at'))
+    except (TypeError, ValueError):
+        return False
+
+
+def _set_archive_task_deadline(task):
+    if not task.get('deadline_at'):
+        task['deadline_at'] = time.time() + ARCHIVE_TASK_MAX_SECONDS
+    return task
+
+
+def _archive_progress_percent(message, step, total) -> int:
+    """Return a monotonic-friendly archive progress estimate for the UI."""
+    done = max(0, int(step or 0))
+    count = max(0, int(total or 0))
+    if not count:
+        return 0
+    match = re.search(r'страниц[аы]\s+(\d+)(?:[–-](\d+))?\s+из\s+(\d+)', str(message or ''), re.I)
+    current_page = int(match.group(2) or match.group(1)) if match else 0
+    page_total = int(match.group(3)) if match else 0
+    current_document_part = current_page / page_total if page_total else 0
+    return min(99, round(((min(done, count) + current_document_part) / count) * 100))
 
 
 def reserve_archive_processing():
@@ -880,6 +959,21 @@ def start_next_archive_task():
             task_id, task = picked
             candidates = [pair for pair in candidates if pair[0] != task_id]
             upload = ARCHIVE_UPLOAD_DIR / str(task.get('archive_upload') or f'{task_id}.upload')
+            if _archive_task_deadline_reached(task):
+                task.update({
+                    'status': 'error', 'kind': 'archive',
+                    'error': 'Время ожидания и чтения архива превысило 30 минут. Данные в карточку не внесены.',
+                })
+                task['progress'] = (task.get('progress') or [])[-29:] + [
+                    'Лимит 30 минут истёк до начала чтения. Файл не внесён в карточку.'
+                ]
+                save_task(task_id, task)
+                TASKS[task_id] = task
+                try:
+                    upload.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
             if not upload.is_file():
                 task.update({
                     'status': 'error', 'kind': 'archive',
@@ -905,8 +999,8 @@ def start_next_archive_task():
                 continue
             was_running = task.get('status') == 'running'
             task['status'] = 'running'
-            if was_running and task.get('pdf_page_checkpoints'):
-                resume_note = 'Сервис перезапустился. Продолжаю с уже прочитанных страниц PDF.'
+            if was_running and (task.get('pdf_page_checkpoints') or task.get('archive_file_checkpoints')):
+                resume_note = 'Сервис перезапустился. Продолжаю с уже завершённых файлов и страниц PDF.'
             elif was_running:
                 resume_note = 'Сервис перезапустился. Начинаю чтение заново; загруженный файл сохранён.'
             else:
@@ -929,6 +1023,7 @@ def queue_archive_task(task_id, task):
         'status': 'queued', 'kind': 'archive',
         'queued_at': task.get('queued_at') or datetime.now(timezone.utc).isoformat(timespec='microseconds'),
     })
+    _set_archive_task_deadline(task)
     task['progress'] = (task.get('progress') or [])[-29:] + ['Файл принят. Ожидаю свободное место в очереди обработки.']
     TASKS[task_id] = task
     save_task(task_id, task)
@@ -2101,12 +2196,11 @@ def vision_extract_with_retry(file_bytes, filename, api_key, **kwargs):
     first = vision_extract(file_bytes, filename, api_key, **kwargs)
     if not _vision_result_needs_retry(first):
         return first, False
-    # A PDF page batch has already made a compact retry for each page.  One
-    # final document pass retries only the failed pages: successful page results
-    # are carried in completed_page_outputs and are not sent to Vision again.
+    # A PDF page batch already made its one bounded retry. Repeating the whole
+    # PDF here was the hidden source of multi-hour archives: a timed-out page
+    # was retried again after every other page had finished.
     if str(filename or '').lower().endswith('.pdf') and '--- СТРАНИЦЫ ' in str(first):
-        second = vision_extract(file_bytes, filename, api_key, **kwargs)
-        return second, True
+        return first, False
 
     retry_bytes = file_bytes
     retry_kwargs = dict(kwargs)
@@ -2253,6 +2347,7 @@ def _pdf_pages_to_images(file_bytes, max_pages=6, max_dim=1900, quality=82):
                     bitmap.close()
                 if page is not None:
                     page.close()
+                _release_large_ocr_memory()
     finally:
         doc.close()
     return images_b64
@@ -2306,6 +2401,7 @@ def _pdf_page_to_image(file_bytes, page_index, max_dim=1900, quality=82):
             if page is not None:
                 page.close()
             doc.close()
+            _release_large_ocr_memory()
     finally:
         PDF_RENDER_SEMAPHORE.release()
 
@@ -2510,7 +2606,7 @@ def _try_tesseract_first(file_bytes, filename, max_pages_override=None):
 def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_override=None,
                    max_pages_override=None, progress_cb=None, single_page_batches=False,
                    parallel_page_batches=False, completed_page_outputs=None,
-                   page_checkpoint_cb=None):
+                   page_checkpoint_cb=None, deadline_cb=None, deadline_at=None):
     """Синхронный вызов vision для одного файла (фото/скан). Сначала пробует локальный
     Tesseract OCR (бесплатно, быстро, не зависит от внешнего API) — если он недоступен
     на сервере или не справился (плохой скан/рукопись), падает на внешний vision API
@@ -2518,6 +2614,16 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     VISION_SEMAPHORE (не более 2 разом на весь сервер — иначе Render Free падает по памяти)."""
     import base64 as _b64, time as _time
     active_prompt = prompt_override or VISION_PROMPT
+
+    def check_deadline():
+        if ((deadline_at is not None and time.time() >= float(deadline_at))
+                or (deadline_cb and deadline_cb())):
+            raise ArchiveTaskDeadlineExceeded()
+
+    def request_timeout(default):
+        if deadline_at is None:
+            return default
+        return max(1, min(default, int(float(deadline_at) - time.time())))
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     local_spk_si_pages = None
     local_page_outputs = {}
@@ -2650,6 +2756,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # and more useful than repeating the identical request.
         vision_timeout = 60 if (single_page_batches or retry_sideways_personnel_page) else 70
         def read_batch(batch_start):
+            check_deadline()
             if pages_b64 is None:
                 page_indexes = range(batch_start, min(batch_start + batch_size, page_count))
                 batch = [
@@ -2686,8 +2793,12 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             # labour-book pages unreadable. Pages are now processed two at a
             # time, so retaining this correctness fallback no longer turns a
             # long scan into an hours-long serial wait.
-            retry_angles = (None, 90, 270) if retry_sideways_personnel_page else (None, 'compact')
+            # One recovery pass is the practical ceiling.  Three sixty-second
+            # rotations on every handwritten page made a single archive run for
+            # hours; modern Vision handles ordinary rotation on the first pass.
+            retry_angles = (None, 'compact')
             for attempt, angle in enumerate(retry_angles):
+                check_deadline()
                 request_batch = batch
                 if angle in (90, 270):
                     try:
@@ -2725,11 +2836,12 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 VISION_SEMAPHORE.acquire()
                 t0 = _time.time()
                 try:
+                    check_deadline()
                     resp = req_lib.post(
                         VIBE_URL,
                         headers={"Content-Type": "application/json", "X-Api-Key": api_key},
                         json=vibe_payload,
-                        timeout=vision_timeout,
+                        timeout=request_timeout(vision_timeout),
                     )
                     elapsed = _time.time() - t0
                     resp.raise_for_status()
@@ -2817,12 +2929,19 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
             outputs = [outputs_by_start[start] for start in all_starts]
         else:
             for start in starts:
-                outputs_by_start[start] = read_batch(start)[1]
-                if (isinstance(completed_page_outputs, dict)
-                        and not _pdf_page_output_needs_retry(outputs_by_start[start])):
-                    completed_page_outputs[start] = outputs_by_start[start]
-                if page_checkpoint_cb and not _pdf_page_output_needs_retry(outputs_by_start[start]):
-                    page_checkpoint_cb(start, outputs_by_start[start])
+                try:
+                    outputs_by_start[start] = read_batch(start)[1]
+                    if (isinstance(completed_page_outputs, dict)
+                            and not _pdf_page_output_needs_retry(outputs_by_start[start])):
+                        completed_page_outputs[start] = outputs_by_start[start]
+                    if page_checkpoint_cb and not _pdf_page_output_needs_retry(outputs_by_start[start]):
+                        page_checkpoint_cb(start, outputs_by_start[start])
+                finally:
+                    # ``read_batch`` is deliberately one page at a time.  Trim
+                    # released page buffers before the next page is rendered;
+                    # otherwise a long scan can still accumulate allocator
+                    # memory until Render kills the complete service.
+                    _release_large_ocr_memory()
             outputs = [outputs_by_start[start] for start in all_starts]
 
         if total_pages > page_count:
@@ -3833,13 +3952,39 @@ def _spk_staff_has_position(row: dict) -> bool:
     return position.casefold() not in {'итр', 'специалист', 'сотрудник', 'работник'}
 
 
+def _spk_staff_position_key(value: str) -> str:
+    """Normalise a job title only for comparing two independent sources."""
+    return re.sub(r'[^а-яa-z0-9]+', ' ', str(value or '').casefold().replace('ё', 'е')).strip()
+
+
 def _merge_spk_staff_evidence(current: dict, row: dict, *, take_position: bool) -> None:
+    # Never silently replace one real position with another.  That was the
+    # source of duplicated/misplaced people in SPK forms: a later, noisier OCR
+    # result won simply because it was processed last.
     if take_position and row.get('position') not in ('', None, False):
-        current['position'] = row['position']
+        existing_position = current.get('position') or ''
+        proposed_position = row['position']
+        if (_spk_staff_has_position(current)
+                and _spk_staff_position_key(existing_position)
+                != _spk_staff_position_key(proposed_position)):
+            current['needs_review'] = True
+            current['position_conflict'] = True
+            alternatives = list(current.get('position_alternatives') or [])
+            for position in (existing_position, proposed_position):
+                if position not in alternatives:
+                    alternatives.append(position)
+            current['position_alternatives'] = alternatives
+        elif not _spk_staff_has_position(current):
+            current['position'] = proposed_position
     for field in ('is_worker', 'employment_type'):
         if row.get(field) not in ('', None, False):
             current[field] = row[field]
-    current['needs_review'] = bool(current.get('needs_review')) and bool(row.get('needs_review'))
+    # An incomplete personal folder is resolved by a matching hiring order,
+    # but an explicit conflict must survive every later merge.
+    current['needs_review'] = (
+        bool(current.get('position_conflict') or current.get('identity_conflict'))
+        or (bool(current.get('needs_review')) and bool(row.get('needs_review')))
+    )
     for field in ('diplomas', 'trudovye_numbers'):
         values = list(current.get(field) or [])
         for value in row.get(field) or []:
@@ -3926,6 +4071,20 @@ def _is_extraction_error_text(text):
         '[файл поврежден', '[Vision', '[таймаут', '[Timeout',
     )
     return value.startswith(error_prefixes)
+
+
+def _archive_file_output_needs_retry(text):
+    """Reject an incomplete file block as a restart checkpoint.
+
+    A completed-file checkpoint is only safe when it contains usable evidence.
+    Keeping an OCR error here would turn a temporary failure into a permanent
+    omission after the process resumes.
+    """
+    value = str(text or '')
+    return (not value.strip()
+            or _is_extraction_error_text(value)
+            or '⚠️ ОШИБКА' in value
+            or '⚠️ ПУСТОЙ РЕЗУЛЬТАТ' in value)
 
 
 def _archive_document_blocks(result_text):
@@ -4276,6 +4435,40 @@ def _archive_vision_batches(entries):
     return [(serial_pdfs, 1), (small_pdfs, 2), (image_entries, 2)]
 
 
+def _is_generated_archive_output_path(path: str) -> bool:
+    """Recognise a package already generated by this application.
+
+    Source archives often include an ``ИИгорь`` folder alongside current files.
+    Feeding that old output back into a new initial package reuses stale people,
+    dates and documents as if they were current evidence.  A periodika package
+    is the deliberate exception: its previous package may be the baseline.
+    """
+    folders = [part.casefold().replace('ё', 'е')
+               for part in str(path or '').replace('\\', '/').split('/')[:-1]]
+    return any('иигор' in folder for folder in folders)
+
+
+def _archive_entry_priority(entry) -> tuple[int, int]:
+    """Read current, directly supplied source files before old package copies.
+
+    ZIP/RAR order is not semantic. A client archive can list sixty historical
+    templates before the actual top-level staffing, supplier and object files;
+    taking the first sixty then produces a plausible but stale package. Keep
+    fast text before scans, while moving direct root files ahead and pushing an
+    explicitly named ``Старые доки`` folder to the end.
+    """
+    _raw_name, fixed_name, _size, kind = entry
+    path = str(fixed_name or '').replace('\\', '/')
+    folders = [item.casefold().replace('ё', 'е') for item in path.split('/')[:-1]]
+    kind_priority = 0 if kind in ('text', 'nested_archive') else 1
+    source_priority = 0
+    if len(folders) <= 1:
+        source_priority -= 20
+    if any('старые док' in folder or folder in {'архив', 'archive'} for folder in folders):
+        source_priority += 30
+    return kind_priority, source_priority
+
+
 def _run_archive_task(task_id):
     """Run one archive job using only its durable task metadata and upload file.
 
@@ -4297,8 +4490,12 @@ def _run_archive_task(task_id):
     archive_path = ARCHIVE_UPLOAD_DIR / upload_name
     filename = str(task.get('filename') or '')
     product = str(task.get('product') or 'all')
+    package_mode = str(task.get('package_mode') or 'initial')
     api_key = os.environ.get('VIBE_API_KEY', '')
     try:
+        _set_archive_task_deadline(task)
+        if _archive_task_deadline_reached(task):
+            raise ArchiveTaskDeadlineExceeded()
         if not filename or not archive_path.is_file() or not api_key:
             raise RuntimeError('Не удалось восстановить данные загруженного архива. Прикрепите архив ещё раз.')
         if archive_path.stat().st_size > MAX_ARCHIVE_WORKER_BYTES:
@@ -4318,6 +4515,30 @@ def _run_archive_task(task_id):
                 checkpoints = current.setdefault('pdf_page_checkpoints', {})
                 document = checkpoints.setdefault(str(document_name), {})
                 document[str(page_start)] = output
+                # Keep a compact, user-visible receipt of progress.  The OCR
+                # text itself remains only in the checkpoint, never in the
+                # status payload sent to the browser.
+                source_status = current.setdefault('source_status', {})
+                source = source_status.setdefault(str(document_name), {
+                    'state': 'reading', 'pages': {},
+                })
+                source['state'] = 'reading'
+                source.setdefault('pages', {})[str(page_start)] = {
+                    'state': 'read_external',
+                }
+                TASKS[task_id] = current
+                save_task(task_id, current)
+
+        def on_file_checkpoint(document_name, output, status):
+            """Persist a completed scan as one durable unit before the next file."""
+            if not isinstance(output, str) or not output.strip():
+                return
+            with checkpoint_lock:
+                current = TASKS.get(task_id) or task
+                completed = current.setdefault('archive_file_checkpoints', {})
+                completed[str(document_name)] = output
+                if isinstance(status, dict):
+                    current.setdefault('source_status', {})[str(document_name)] = copy.deepcopy(status)
                 TASKS[task_id] = current
                 save_task(task_id, current)
 
@@ -4325,6 +4546,8 @@ def _run_archive_task(task_id):
             current = TASKS.get(task_id) or task
             if current.get('status') == 'cancelled':
                 raise ArchiveTaskCancelled()
+            if _archive_task_deadline_reached(current):
+                raise ArchiveTaskDeadlineExceeded()
             # Archive readers report completed documents as ``2/11``.  Store
             # that separately from the text so the browser can draw a genuine
             # progress bar instead of a spinner that says ``1 of 1`` for the
@@ -4333,6 +4556,10 @@ def _run_archive_task(task_id):
             if match:
                 current['step'] = int(match.group(1))
                 current['total'] = max(1, int(match.group(2)))
+            current['progress_percent_floor'] = max(
+                int(current.get('progress_percent_floor') or 0),
+                _archive_progress_percent(message, current.get('step'), current.get('total')),
+            )
             current['progress'] = (current.get('progress') or [])[-30:] + [message]
             TASKS[task_id] = current
             save_task(task_id, current)
@@ -4343,9 +4570,15 @@ def _run_archive_task(task_id):
         with HEAVY_WORK_LOCK:
             result_bundle = extract_archive_with_vision(
                 None, filename, api_key, progress_cb=on_prog, product=product,
+                package_mode=package_mode,
                 archive_path=archive_path,
                 pdf_page_checkpoints=task.get('pdf_page_checkpoints') or {},
                 pdf_page_checkpoint_cb=on_pdf_page_checkpoint,
+                completed_file_outputs=task.get('archive_file_checkpoints') or {},
+                file_checkpoint_cb=on_file_checkpoint,
+                initial_source_status=task.get('source_status') or {},
+                deadline_cb=lambda: _archive_task_deadline_reached(TASKS.get(task_id) or task),
+                deadline_at=task.get('deadline_at'),
             )
         if isinstance(result_bundle, dict):
             result_text = result_bundle.get('text', '')
@@ -4353,24 +4586,39 @@ def _run_archive_task(task_id):
             result_summary = result_bundle.get('summary') or _compact_archive_summary(result_text)
             structured_data = result_bundle.get('structured_data') or {}
             read_warnings = _archive_read_warnings(result_text)
+            source_status = result_bundle.get('source_status') or task.get('source_status') or {}
         else:
             result_text = str(result_bundle or '')
             result_analysis = result_text
             result_summary = _compact_archive_summary(result_text)
             structured_data = {}
             read_warnings = _archive_read_warnings(result_text)
+            source_status = task.get('source_status') or {}
         if (TASKS.get(task_id) or task).get('status') == 'cancelled':
             raise ArchiveTaskCancelled()
         task.update({'status': 'done', 'kind': 'archive', 'text': result_text,
                      'summary': result_summary, 'analysis_text': result_analysis,
                      'structured_data': structured_data, 'warnings': read_warnings,
-                     'filename': filename, 'product': product})
+                     'filename': filename, 'product': product, 'package_mode': package_mode,
+                     'source_status': source_status})
         task.pop('pdf_page_checkpoints', None)
+        task.pop('archive_file_checkpoints', None)
         save_task(task_id, task)
         _prune_tasks()
     except ArchiveTaskCancelled:
         task = TASKS.get(task_id) or task
         task['status'] = 'cancelled'
+        save_task(task_id, task)
+    except ArchiveTaskDeadlineExceeded:
+        task = TASKS.get(task_id) or task
+        task.update({
+            'status': 'error', 'kind': 'archive',
+            'error': 'Чтение архива остановлено через 30 минут. Данные в карточку не внесены — файл нужно разделить или проверить отдельно.',
+        })
+        task['progress'] = (task.get('progress') or [])[-29:] + [
+            'Лимит 30 минут истёк. Файл не внесён в карточку автоматически.'
+        ]
+        task.pop('pdf_page_checkpoints', None)
         save_task(task_id, task)
     except Exception as exc:
         import traceback; traceback.print_exc()
@@ -5185,8 +5433,12 @@ def _embedded_docx_image_count(file_bytes, filename: str) -> int:
 
 
 def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None, product="all",
+                                package_mode="initial",
                                 _archive_depth=0, archive_path=None,
-                                pdf_page_checkpoints=None, pdf_page_checkpoint_cb=None):
+                                pdf_page_checkpoints=None, pdf_page_checkpoint_cb=None,
+                                completed_file_outputs=None, file_checkpoint_cb=None,
+                                initial_source_status=None,
+                                deadline_cb=None, deadline_at=None):
     """
     Полный разбор архива для фонового режима (не ограничен HTTP-таймаутом):
     - текстовые файлы (docx/pdf/txt/csv/xlsx) читаются как раньше, быстро
@@ -5235,9 +5487,21 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     MAX_ITEMS = 60  # защита от архивов с сотнями фото — вышло бы на часы обработки
 
     def p(msg):
+        if ((deadline_at is not None and time.time() >= float(deadline_at))
+                or (deadline_cb and deadline_cb())):
+            raise ArchiveTaskDeadlineExceeded()
         if progress_cb: progress_cb(msg)
 
     saved_pdf_pages = pdf_page_checkpoints if isinstance(pdf_page_checkpoints, dict) else {}
+    # Page checkpoints save work within a long PDF. A file checkpoint saves a
+    # whole finished scan, photo or rendered PDF so a process restart does not
+    # submit the same source to OCR all over again.
+    saved_file_outputs = {
+        str(name): output
+        for name, output in (completed_file_outputs or {}).items()
+        if isinstance(name, str) and isinstance(output, str) and output.strip()
+        and not _archive_file_output_needs_retry(output)
+    }
 
     def open_archive():
         return zipfile.ZipFile(zip_source if zip_source is not None else io.BytesIO(file_bytes))
@@ -5255,7 +5519,10 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     fixed = name
                 if '__MACOSX' in fixed or fixed.endswith('.DS_Store'): continue
                 ext = fixed.rsplit('.', 1)[-1].lower() if '.' in fixed else ''
-                if ext == 'pdf' and info.file_size <= PDF_INNER_LIMIT:
+                if (str(package_mode).casefold() != 'periodika'
+                        and _is_generated_archive_output_path(fixed)):
+                    entries.append((name, fixed, info.file_size, 'generated_output'))
+                elif ext == 'pdf' and info.file_size <= PDF_INNER_LIMIT:
                     entries.append((name, fixed, info.file_size, 'pdf'))
                 elif (ext in TEXT_EXTS
                       and info.file_size <= (WORD_SCAN_INNER_LIMIT if ext in ('docx', 'doc') else TEXT_INNER_LIMIT)):
@@ -5282,7 +5549,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
 
     # Сначала текстовые (быстро), потом PDF и фото (медленно, vision) — чтобы данные из
     # docx были в карточке даже если распознавание сканов ещё не закончилось
-    entries.sort(key=lambda e: 0 if e[3] == 'text' else (1 if e[3] in ('image', 'pdf') else 2))
+    entries.sort(key=_archive_entry_priority)
 
     readable_entries = [e for e in entries if e[3] in ('text', 'image', 'pdf', 'nested_archive')]
     to_process = readable_entries[:MAX_ITEMS]
@@ -5291,17 +5558,66 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     not_processed_limit = readable_entries[MAX_ITEMS:]
     total = len(to_process)
 
-    texts = []
+    resumed_scan_names = {
+        entry[1] for entry in to_process
+        if entry[3] in ('image', 'pdf') and entry[1] in saved_file_outputs
+    }
+    texts = [
+        saved_file_outputs[entry[1]] for entry in to_process
+        if entry[1] in resumed_scan_names
+    ]
     structured_fragments = []
+    # A compact receipt for the interface.  Keep names, state and page number
+    # only; recognized document contents stay in ``text``/checkpoints and are
+    # never duplicated into an API status response.
+    source_status = copy.deepcopy(initial_source_status) if isinstance(initial_source_status, dict) else {}
+    source_status_lock = threading.Lock()
+
+    def set_source_status(name, state, *, pages=None, note=''):
+        with source_status_lock:
+            current = source_status.setdefault(str(name), {})
+            current['state'] = state
+            if pages is not None:
+                current['pages'] = pages
+            if note:
+                current['note'] = note
+
     skipped_notes = [f"{fn.split('/')[-1]} ({sz//1024//1024} МБ)" for _, fn, sz, _ in skipped]
 
+    for _, fixed_name, _size, kind in entries:
+        if kind == 'skip_size':
+            set_source_status(fixed_name, 'not_read', note='файл превышает безопасный лимит размера')
+        elif kind == 'unsupported':
+            set_source_status(fixed_name, 'not_read', note='формат пока не читается автоматически')
+        elif kind == 'generated_output':
+            set_source_status(
+                fixed_name, 'not_read',
+                note='готовый пакет приложения не используется как источник для первичного пакета',
+            )
+        elif fixed_name in resumed_scan_names and fixed_name not in source_status:
+            set_source_status(fixed_name, 'read_external')
+        elif kind in ('text', 'image', 'pdf', 'nested_archive') and fixed_name not in saved_file_outputs:
+            set_source_status(fixed_name, 'queued')
+
+    # Do not leave files beyond the bounded processing limit looking as though
+    # they are still waiting forever.  The card must distinguish a real queue
+    # from a file deliberately left outside this run.
+    for _raw_name, fixed_name, _size, _kind in not_processed_limit:
+        set_source_status(
+            fixed_name, 'not_read',
+            note='не обработан из-за лимита количества файлов в одном архиве',
+        )
+
     text_entries = [e for e in to_process if e[3] in ('text', 'nested_archive')]
-    image_entries = [e for e in to_process if e[3] in ('image', 'pdf')]
-    done_count = [0]
+    image_entries = [e for e in to_process if e[3] in ('image', 'pdf') and e[1] not in resumed_scan_names]
+    done_count = [len(resumed_scan_names)]
 
     with open_archive() as z:
         # Текстовые файлы — быстро, по очереди
         for raw_name, fixed_name, size, kind in text_entries:
+            if ((deadline_at is not None and time.time() >= float(deadline_at))
+                    or (deadline_cb and deadline_cb())):
+                raise ArchiveTaskDeadlineExceeded()
             short = fixed_name.split('/')[-1]
             folder = '/'.join(fixed_name.split('/')[:-1])
             done_count[0] += 1
@@ -5310,12 +5626,14 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 data = z.read(raw_name)
                 if kind == 'nested_archive':
                     nested = extract_archive_with_vision(
-                        data, fixed_name, api_key, product=product,
+                        data, fixed_name, api_key, product=product, package_mode=package_mode,
                         _archive_depth=_archive_depth + 1,
+                        deadline_cb=deadline_cb, deadline_at=deadline_at,
                     )
                     nested_text = str(nested.get('text') or '')
                     prefix = f"--- {folder + '/' if folder else ''}{short} (вложенный архив) ---"
                     texts.append(prefix + "\n" + (nested_text or '[Вложенный архив не дал читаемого текста]'))
+                    set_source_status(fixed_name, 'read_local')
                     continue
                 if parse_company_attestation_docx and short.lower().endswith('.docx'):
                     try:
@@ -5338,6 +5656,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                         texts.append(prefix + " ⚠️ ОШИБКА ЧТЕНИЯ\n" + txt)
                     else:
                         texts.append(prefix + "\n" + txt)
+                    set_source_status(fixed_name, 'read_local')
                 else:
                     embedded = _embedded_docx_images(data, short)
                     if not embedded:
@@ -5345,6 +5664,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                             f"--- {folder + '/' if folder else ''}{short} --- "
                             "⚠️ ПУСТОЙ РЕЗУЛЬТАТ"
                         )
+                        set_source_status(fixed_name, 'not_read', note='в документе не найдено читаемого текста или изображений')
                         continue
                     def read_embedded_image(image_index, image_name, image_bytes):
                         embedded_name = f"{Path(short).stem}_страница_{image_index}{Path(image_name).suffix}"
@@ -5356,6 +5676,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                         visual_text, _retried = vision_extract_with_retry(
                             image_bytes, visual_name, api_key,
                             progress_cb=lambda message: p(f"{short}: {message}"),
+                            deadline_cb=deadline_cb, deadline_at=deadline_at,
                         )
                         if visual_text and len(visual_text) > 10:
                             return image_index, f"[Вложенное изображение {image_index}]\n{visual_text}"
@@ -5378,6 +5699,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                                 image_index, image_text = future.result()
                                 if image_text:
                                     image_text_by_index[image_index] = image_text
+                            except ArchiveTaskDeadlineExceeded:
+                                raise
                             except Exception:
                                 # One damaged page must not discard OCR already
                                 # obtained from the rest of a scanned Word file.
@@ -5392,10 +5715,21 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                         if image_read_errors:
                             block += "\n\n[⚠️ Не удалось прочитать одну или несколько страниц внутри документа.]"
                         texts.append(block)
+                        pages = {
+                            str(index): {'state': 'read_external'}
+                            for index in sorted(image_text_by_index)
+                        }
+                        for _ in image_read_errors:
+                            pages[str(len(pages) + 1)] = {'state': 'not_read'}
+                        set_source_status(fixed_name, 'read_external', pages=pages)
                     else:
                         texts.append(prefix + " ⚠️ ОШИБКА ЧТЕНИЯ\n[Не удалось прочитать изображения внутри документа.]")
+                        set_source_status(fixed_name, 'not_read', note='не удалось прочитать изображения внутри документа')
+            except ArchiveTaskDeadlineExceeded:
+                raise
             except Exception as e:
                 texts.append(f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n[{type(e).__name__}: {e}]")
+                set_source_status(fixed_name, 'not_read', note='не удалось прочитать файл')
 
         # PDF рендерятся строго по одному: даже небольшой PDF может развернуться в
         # десятки мегабайт страниц в памяти. Фото идут по два, как и раньше.
@@ -5405,6 +5739,9 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def process_image(entry):
+            if ((deadline_at is not None and time.time() >= float(deadline_at))
+                    or (deadline_cb and deadline_cb())):
+                raise ArchiveTaskDeadlineExceeded()
             raw_name, fixed_name, size, kind = entry
             short = fixed_name.split('/')[-1]
             folder = '/'.join(fixed_name.split('/')[:-1])
@@ -5412,6 +5749,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 with open_archive() as z2:
                     data = z2.read(raw_name)
             except Exception:
+                set_source_status(fixed_name, 'not_read', note='не удалось открыть файл в архиве')
                 return None
 
             if kind == 'pdf':
@@ -5419,6 +5757,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 # Если это скан (нет текстового слоя) — падаем в vision, как с фото.
                 fast_txt = extract_text_from_file(data, short)
                 if fast_txt and len(fast_txt) > 10 and not _is_extraction_error_text(fast_txt):
+                    set_source_status(fixed_name, 'read_local', pages={'1': {'state': 'read_local'}})
                     return f"--- {folder + '/' if folder else ''}{short} ---\n" + fast_txt
                 # PDF конвертируется в изображения с динамическим лимитом:
                 # до 24 страниц для трудовых книжек и до 6 для прочих документов.
@@ -5426,6 +5765,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 # которое затем переводит связанные поля в жёлтую ручную проверку.
                 PDF_VISION_LIMIT = 80 * 1024 * 1024
                 if len(data) > PDF_VISION_LIMIT:
+                    set_source_status(fixed_name, 'not_read', note='скан превышает безопасный лимит размера')
                     return (f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n"
                             f"[Скан слишком большой ({len(data)//1024//1024} МБ) для распознавания — "
                             f"пришлите этот документ отдельными фото по 1-2 страницы вместо одного большого PDF]")
@@ -5465,6 +5805,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     # to protect the 512 MB service from image expansion.
                     parallel_page_batches=(not is_spk_si_source and len(data) <= 8 * 1024 * 1024),
                     progress_cb=lambda message: p(f"{short}: {message}"),
+                    deadline_cb=deadline_cb, deadline_at=deadline_at,
                     completed_page_outputs=saved_pdf_pages.get(fixed_name) or {},
                     page_checkpoint_cb=(
                         (lambda page, output: pdf_page_checkpoint_cb(fixed_name, page, output))
@@ -5473,7 +5814,10 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                 )
             else:
                 vision_filename = fixed_name if _is_personnel_archive_path(fixed_name) else short
-                txt, _retried = vision_extract_with_retry(data, vision_filename, api_key)
+                txt, _retried = vision_extract_with_retry(
+                    data, vision_filename, api_key,
+                    deadline_cb=deadline_cb, deadline_at=deadline_at,
+                )
 
             # КРИТИЧНО: раньше здесь было "if txt and len > 10 and not startswith('[')"
             # — а мои же сообщения об ОШИБКАХ специально начинаются с '[' (чтобы легко
@@ -5484,9 +5828,31 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             # показываются — с пометкой, чтобы сразу было видно что это сбой, а не
             # то что файл прочитан пустым.
             if txt and len(txt) > 10:
-                if _is_extraction_error_text(txt):
+                has_error = _is_extraction_error_text(txt)
+                if kind == 'pdf':
+                    page_numbers = [int(value) for value in re.findall(
+                        r'^--- СТРАНИЦА\s+(\d+)\s+---', txt, flags=re.MULTILINE,
+                    )]
+                    page_state = ('not_read' if has_error else
+                                  ('requires_review' if _pdf_page_output_needs_retry(txt) else 'read_external'))
+                    pages = {
+                        str(page): {'state': page_state}
+                        for page in page_numbers
+                    }
+                    if not pages:
+                        pages = {'1': {'state': page_state}}
+                    set_source_status(
+                        fixed_name,
+                        page_state,
+                        pages=pages,
+                    )
+                else:
+                    set_source_status(fixed_name, 'not_read' if has_error else 'read_external')
+                if has_error:
+                    set_source_status(fixed_name, 'not_read', note='распознавание не вернуло читаемых данных')
                     return f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ОШИБКА\n" + txt
                 return f"--- {folder + '/' if folder else ''}{short} ---\n" + txt
+            set_source_status(fixed_name, 'not_read', note='распознавание вернуло пустой результат')
             return f"--- {folder + '/' if folder else ''}{short} --- ⚠️ ПУСТОЙ РЕЗУЛЬТАТ (короче 10 символов)"
 
         for batch, workers in _archive_vision_batches(image_entries):
@@ -5501,9 +5867,17 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     p(f"Распознано {done_count[0]}/{total}: {short}")
                     try:
                         r = fut.result()
-                        if r: texts.append(r)
+                        if r:
+                            texts.append(r)
+                            if (file_checkpoint_cb and not _archive_file_output_needs_retry(r)):
+                                with source_status_lock:
+                                    receipt = copy.deepcopy(source_status.get(e[1]) or {})
+                                file_checkpoint_cb(e[1], r, receipt)
+                    except ArchiveTaskDeadlineExceeded:
+                        raise
                     except Exception as ex2:
                         print(f"  ⚠️ Не удалось прочитать {short}: {type(ex2).__name__}: {ex2}")
+                        set_source_status(e[1], 'not_read', note='не удалось прочитать файл')
                         texts.append(f"--- {short} --- ⚠️ ОШИБКА\n[Не удалось прочитать файл.]")
 
     # ── Сверка по человеку: убираем дубли и явно помечаем расхождения ──────
@@ -5534,6 +5908,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
             status = 'найден, но превышает лимит размера'
         elif kind == 'unsupported':
             status = 'найден, формат пока не читается автоматически'
+        elif kind == 'generated_output':
+            status = 'готовый пакет приложения, исключён из источников первичного пакета'
         else:
             status = 'найден, не обработан из-за лимита количества файлов'
         inventory_lines.append(f"- {fixed_name} ({size // 1024} КБ) — {status}")
@@ -5640,6 +6016,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         'analysis_text': _compact_product_analysis_text(final_text, product),
         'summary': _compact_archive_summary(final_text),
         'structured_data': structured_data,
+        'source_status': source_status,
     }
 
 
@@ -5950,6 +6327,21 @@ class H(http.server.BaseHTTPRequestHandler):
                     'structured_data': task.get('structured_data') or {},
                     'filename':  task.get('filename',''),
                     'warnings': task.get('warnings', []),
+                    # The browser needs a real remaining-time value, rather than
+                    # guessing from a progress percentage which can move when a
+                    # PDF reveals its page count.
+                    'deadlineAt': task.get('deadline_at'),
+                    'deadlineRemainingSeconds': max(
+                        0, int(float(task.get('deadline_at')) - time.time())
+                    ) if task.get('deadline_at') else None,
+                    # Page discovery can increase the denominator after a
+                    # restart; retain the visible lower bound instead of
+                    # making the progress bar jump backwards.
+                    'progressPercentFloor': int(task.get('progress_percent_floor') or 0),
+                    # Per-file/page state is evidence for the operator; it is
+                    # deliberately separate from the chat text so it cannot be
+                    # mistaken for extracted company data.
+                    'sourceStatus': task.get('source_status') or {},
                     'queuePosition': (
                         archive_queue_position(task_id, self._request_user.get('id'))
                         if task.get('kind') == 'archive' and task.get('status') in ('queued', 'running')
@@ -6075,8 +6467,14 @@ class H(http.server.BaseHTTPRequestHandler):
                     fields[field_name] = value.decode('utf-8', 'replace').strip()
             if staged_file is None or not filename:
                 raise ValueError('file field is missing')
-            archive_product = str(fields.get('product', 'all') or 'all')
+            archive_product, package_mode = _normalise_archive_profile(
+                fields.get('product', 'all'), fields.get('package_mode', 'initial'),
+            )
+            request_scope = str(fields.get('scope', '') or '').strip()[:2000]
             client_upload_id = str(fields.get('upload_id', '') or '').strip()[:96]
+        except ValueError as exc:
+            self._json({'success': False, 'error': str(exc)}, 400)
+            return
         except Exception:
             self._json({'success': False, 'error': 'Файл не удалось принять. Повторите загрузку.'}, 400)
             return
@@ -6134,6 +6532,7 @@ class H(http.server.BaseHTTPRequestHandler):
         task = {
             'status': 'queued', 'kind': 'archive', 'progress': [], 'step': 0, 'total': 100,
             'owner_user_id': user['id'], 'filename': filename, 'product': archive_product,
+            'package_mode': package_mode, 'scope': request_scope,
             'archive_upload': archive_path.name, 'client_upload_id': client_upload_id,
         }
         queue_archive_task(task_id, task)
@@ -6401,6 +6800,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 filename = None
                 file_bytes = None
                 archive_product = 'all'
+                package_mode = 'initial'
+                request_scope = ''
                 client_upload_id = ''
                 for part in parts:
                     if b'Content-Disposition' not in part: continue
@@ -6418,6 +6819,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     if field_name == 'product' and b'filename=' not in part:
                         archive_product = body_value.decode('utf-8','replace').strip() or 'all'
                         continue
+                    if field_name == 'package_mode' and b'filename=' not in part:
+                        package_mode = body_value.decode('utf-8','replace').strip() or 'initial'
+                        continue
+                    if field_name == 'scope' and b'filename=' not in part:
+                        request_scope = body_value.decode('utf-8','replace').strip()[:2000]
+                        continue
                     if field_name == 'upload_id' and b'filename=' not in part:
                         client_upload_id = body_value.decode('ascii', 'ignore').strip()[:96]
                         continue
@@ -6428,6 +6835,13 @@ class H(http.server.BaseHTTPRequestHandler):
                     file_bytes = body_value
                 if not filename or file_bytes is None:
                     self._json({'success':False,'error':'Файл не найден в запросе'},400); return
+                try:
+                    archive_product, package_mode = _normalise_archive_profile(
+                        archive_product, package_mode,
+                    )
+                except ValueError as exc:
+                    self._json({'success': False, 'error': str(exc)}, 400)
+                    return
                 if archive_product == 'all':
                     low_name = str(filename).lower().replace('ё','е')
                     if 'исо' in low_name and 'суот' in low_name:
@@ -6486,6 +6900,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     'owner_user_id': user['id'],
                     'filename': filename,
                     'product': archive_product,
+                    'package_mode': package_mode,
+                    'scope': request_scope,
                     'archive_upload': archive_path.name,
                     'client_upload_id': client_upload_id,
                 }

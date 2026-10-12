@@ -26,12 +26,28 @@ function extractFunction(name) {
   throw new Error(`Unclosed function: ${name}`);
 }
 
-const context = {};
+const context = {
+  AI_PRODUCT_LABELS: {
+    iso: 'ИК ИСО', suot: 'ИК СУОТ', iso_suot: 'ИК ИСО + СУОТ',
+    spk_bisp: 'СПК БИСП', spk_stroy: 'СПК Стройкомплекс',
+    company_att: 'Аттестация компании', att: 'Аттестация специалиста',
+  },
+  aiCurrentData: {},
+  aiSelectedProduct: 'iso',
+  aiSelectedPackageMode: 'periodika',
+  document: {
+    getElementById: () => null,
+    querySelectorAll: () => [],
+    activeElement: null,
+  },
+};
 vm.createContext(context);
 vm.runInContext([
   extractFunction('aiIsPeriodikaRequest'),
   extractFunction('aiRequestedIsoSuotProduct'),
   extractFunction('aiRequestedPackageMode'),
+  extractFunction('aiGetSelectedProduct'),
+  extractFunction('aiApplySelectedRequestProfile'),
   extractFunction('aiApplyRequestedPackageMode'),
   extractFunction('aiBuildArchivePeriodikaContext'),
   extractFunction('aiArchiveProductForRequest'),
@@ -46,44 +62,44 @@ if (context.aiRequestedPackageMode('сделай периодику ИСО') !==
 if (context.aiRequestedPackageMode('сформируй новый пакет ISO') !== 'initial') {
   throw new Error('new package command did not reset the annual-update mode');
 }
-const card = {certification: {standard: 'iso'}};
-context.aiApplyRequestedPackageMode(card, 'сделай периодику');
+const card = {certification: {standard: 'spk_bisp'}};
+context.aiApplyRequestedPackageMode(card, 'сделай периодику ИСО');
 if (card.certification.package_mode !== 'periodika' || card.certification.standard !== 'iso') {
-  throw new Error('periodika mode was not stored without changing ISO selection');
+  throw new Error('explicitly selected ISO product was not locked into the card');
 }
-const suotCard = {certification: {}};
-context.aiApplyRequestedPackageMode(suotCard, 'сделай периодику СУОТ');
-if (suotCard.certification.standard !== 'suot') {
-  throw new Error('SUOT periodika was changed into a combined ISO/SUOT package');
+context.aiSelectedProduct = 'spk_bisp';
+const spkCard = {certification: {standard: 'iso'}};
+context.aiApplyRequestedPackageMode(spkCard, 'сделай периодику ИСО');
+if (spkCard.certification.standard !== 'spk_bisp') {
+  throw new Error('chat text overrode an explicitly selected SPK product');
 }
-const unknownCard = {certification: {}};
-context.aiApplyRequestedPackageMode(unknownCard, 'сделай периодику');
-if (unknownCard.certification.standard) {
-  throw new Error('an unspecified periodika was incorrectly changed into a combined package');
+context.aiSelectedProduct = 'suot';
+if (context.aiArchiveProductForRequest('сделай периодику ИСО', 'spk_bisp') !== 'suot') {
+  throw new Error('archive recognition was not locked to the selected product');
 }
 if (context.aiIsPeriodikaRequest('сформируй новый пакет ISO')) {
   throw new Error('ordinary package was mistaken for periodika');
 }
 
+context.aiSelectedProduct = 'iso';
 const base = context.aiBuildArchivePeriodikaContext(
-  'сделай периодику',
+  'любой текст',
   '===== ФАЙЛ: прошлый ИСО+СУОТ.zip =====\nООО «Тест», штат и объекты'
 );
-if (!base.includes('НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ') ||
+if (!base.includes('ЭТО ПЕРИОДИКА: ИК ИСО') ||
+    !base.includes('НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ') ||
     !base.includes('Не создавай пустую новую компанию')) {
   throw new Error('previous package is not passed to periodika as the base');
 }
-if (context.aiBuildArchivePeriodikaContext('сделай новый пакет', 'архив')) {
-  throw new Error('ordinary archive was mistakenly marked as periodika');
+context.aiSelectedPackageMode = 'initial';
+if (context.aiBuildArchivePeriodikaContext('сделай периодику', 'архив')) {
+  throw new Error('initial mode was mistakenly marked as periodika');
 }
-if (context.aiArchiveProductForRequest('сделай периодику', 'all') !== 'iso_suot') {
-  throw new Error('periodika archive did not use ISO/SUOT recognition');
-}
-if (context.aiArchiveProductForRequest('сделай периодику', 'iso') !== 'iso') {
-  throw new Error('selected ISO product was overwritten');
-}
-if (context.aiArchiveProductForRequest('сделай периодику СУОТ', 'all') !== 'suot') {
-  throw new Error('SUOT periodika archive was routed through the combined product');
+context.aiSelectedProduct = 'spk_bisp';
+context.aiSelectedPackageMode = 'periodika';
+const spkBase = context.aiBuildArchivePeriodikaContext('текст не должен менять продукт', 'прошлый пакет');
+if (!spkBase.includes('ЭТО ПЕРИОДИКА: СПК БИСП') || spkBase.includes('ИСО/СУОТ')) {
+  throw new Error('SPK periodika was incorrectly described as an ISO/SUOT package');
 }
 
 console.log('periodika archive frontend: PASS');

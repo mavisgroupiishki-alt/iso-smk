@@ -480,6 +480,26 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
         <span style="font-size:11px;color:#7D8F6E">✅ ИИгорь · BitrixGPT 5.5 Thinking · Vision · Бесплатно</span>
       </div>
 
+      <section class="ai-request-setup" aria-label="Параметры нового пакета">
+        <div class="ai-request-title">1. Выберите пакет — выбор не изменится от текста чата или названия файла</div>
+        <div id="ai-product-picker" class="ai-product-grid">
+          <button type="button" class="ai-product-choice" data-product="iso" onclick="aiSelectProduct('iso')">ИК ИСО</button>
+          <button type="button" class="ai-product-choice" data-product="suot" onclick="aiSelectProduct('suot')">ИК СУОТ</button>
+          <button type="button" class="ai-product-choice" data-product="iso_suot" onclick="aiSelectProduct('iso_suot')">ИК ИСО + СУОТ</button>
+          <button type="button" class="ai-product-choice" data-product="spk_bisp" onclick="aiSelectProduct('spk_bisp')">СПК БИСП</button>
+          <button type="button" class="ai-product-choice" data-product="spk_stroy" onclick="aiSelectProduct('spk_stroy')">СПК Стройкомплекс</button>
+          <button type="button" class="ai-product-choice" data-product="company_att" onclick="aiSelectProduct('company_att')">Аттестация компании</button>
+          <button type="button" class="ai-product-choice" data-product="att" onclick="aiSelectProduct('att')">Аттестация специалиста</button>
+        </div>
+        <div class="ai-request-fields">
+          <input id="ai-request-scope" type="text" placeholder="2. Область работ, например: только СМР" oninput="aiSetRequestScope(this.value)">
+          <div aria-label="Режим пакета" class="ai-product-grid">
+            <button type="button" class="ai-mode-choice active" data-package-mode="initial" onclick="aiSelectPackageMode('initial')">Первичный</button>
+            <button type="button" class="ai-mode-choice" data-package-mode="periodika" onclick="aiSelectPackageMode('periodika')">Периодика</button>
+          </div>
+        </div>
+      </section>
+
       <!-- CHAT + CARD LAYOUT -->
       <div style="flex:1;display:flex;overflow:hidden;min-height:0">
 
@@ -1330,6 +1350,15 @@ document.addEventListener('DOMContentLoaded', () => {
 .prod-btn{font-size:11px;padding:4px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);cursor:pointer;font-family:inherit;transition:all .12s}
 .prod-btn:hover{background:rgba(255,255,255,.18);color:#fff}
 .active-prod{background:var(--accent)!important;border-color:var(--accent)!important;color:#fff!important;font-weight:700}
+.ai-request-setup{padding:9px 14px 8px;background:#FFFDF9;border-bottom:1px solid #EDE1D6;display:grid;gap:7px}
+.ai-request-title{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#A8938A}
+.ai-product-grid{display:flex;gap:5px;flex-wrap:wrap}
+.ai-product-choice,.ai-mode-choice{border:1px solid #DCC9BC;background:#fff;color:#5C4545;border-radius:999px;padding:5px 9px;font:600 10.5px/1.2 inherit;cursor:pointer}
+.ai-product-choice:hover,.ai-mode-choice:hover{border-color:#9B5B69;background:#F9EEF0}
+.ai-product-choice.active,.ai-mode-choice.active{background:#8B4A5C;border-color:#8B4A5C;color:#fff}
+.ai-request-fields{display:grid;grid-template-columns:minmax(160px,1fr) auto;gap:6px;align-items:center}
+.ai-request-fields input{height:29px;padding:5px 8px;font-size:11px}
+@media(max-width:720px){.ai-request-fields{grid-template-columns:1fr}.ai-product-choice,.ai-mode-choice{font-size:10px}}
 .ai-qr{font-size:11px;padding:4px 10px;border-radius:16px;border:1px solid #D4C4B8;background:#fff;color:#4A3639;cursor:pointer;font-family:inherit;transition:all .12s}
 .ai-qr:hover{border-color:#7A4552;color:#8B4A5C;background:#F3E4E8}
 .ai-msg-ai{display:flex;gap:8px;align-items:flex-start;max-width:680px;align-self:flex-start}
@@ -1374,6 +1403,64 @@ let aiKey = 'server'; // ключ хранится на сервере
 let aiHistory = [];
 let aiCurrentData = {};
 let aiPhotoThumbnails = {}; // filename -> base64 миниатюра, для проверки распознанных данных глазами
+const AI_PRODUCT_LABELS = {
+  iso: 'ИК ИСО', suot: 'ИК СУОТ', iso_suot: 'ИК ИСО + СУОТ',
+  spk_bisp: 'СПК БИСП', spk_stroy: 'СПК Стройкомплекс',
+  company_att: 'Аттестация компании', att: 'Аттестация специалиста'
+};
+let aiSelectedProduct = '';
+let aiSelectedPackageMode = 'initial';
+
+function aiGetSelectedProduct() {
+  return aiSelectedProduct || String(aiCurrentData?.certification?.standard || '');
+}
+
+function aiSetRequestScope(value) {
+  aiCurrentData.certification = aiCurrentData.certification || {};
+  aiCurrentData.certification.scope = String(value || '').trim();
+}
+
+function aiApplySelectedRequestProfile(data = aiCurrentData) {
+  if(!data) return data;
+  const product = aiGetSelectedProduct();
+  data.certification = data.certification || {};
+  if(product) data.certification.standard = product;
+  data.certification.package_mode = aiSelectedPackageMode || data.certification.package_mode || 'initial';
+  const scope = document.getElementById('ai-request-scope')?.value?.trim();
+  if(scope) data.certification.scope = scope;
+  return data;
+}
+
+function aiSyncRequestProfileControls() {
+  const cert = aiCurrentData?.certification || {};
+  const product = String(cert.standard || aiSelectedProduct || '');
+  const mode = String(cert.package_mode || aiSelectedPackageMode || 'initial');
+  if(product && AI_PRODUCT_LABELS[product]) aiSelectedProduct = product;
+  aiSelectedPackageMode = mode === 'periodika' ? 'periodika' : 'initial';
+  document.querySelectorAll('[data-product]').forEach(button => {
+    button.classList.toggle('active', button.dataset.product === aiSelectedProduct);
+  });
+  document.querySelectorAll('[data-package-mode]').forEach(button => {
+    button.classList.toggle('active', button.dataset.packageMode === aiSelectedPackageMode);
+  });
+  const scope = document.getElementById('ai-request-scope');
+  if(scope && document.activeElement !== scope) scope.value = cert.scope || '';
+}
+
+function aiSelectProduct(product) {
+  if(!AI_PRODUCT_LABELS[product]) return;
+  aiSelectedProduct = product;
+  aiApplySelectedRequestProfile();
+  aiSyncRequestProfileControls();
+  aiRenderCardFromCurrent();
+}
+
+function aiSelectPackageMode(mode) {
+  aiSelectedPackageMode = mode === 'periodika' ? 'periodika' : 'initial';
+  aiApplySelectedRequestProfile();
+  aiSyncRequestProfileControls();
+  aiRenderCardFromCurrent();
+}
 
 function aiShowPhotoFull(filename) {
   const b64 = aiPhotoThumbnails[filename];
@@ -1600,6 +1687,7 @@ async function aiLoadCompany(key) {
     aiCurrentData = payload.data || {};
     aiHistory = Array.isArray(payload.history) ? payload.history : [];
     aiCurrentCompanyKey = key;
+    aiSyncRequestProfileControls();
     aiLocalSetCompany(key, payload);
     return true;
   } catch (e) {
@@ -1716,9 +1804,12 @@ async function aiStartNewCompany() {
   }
   aiCurrentData = {};
   aiHistory = [];
+  aiSelectedProduct = '';
+  aiSelectedPackageMode = 'initial';
   aiCurrentCompanyKey = aiMakeStableCompanyKey();
   try { localStorage.setItem(aiWorkspaceLastCompanyKey(), aiCurrentCompanyKey); } catch (_) {}
   aiRenderCard(null);
+  aiSyncRequestProfileControls();
   document.getElementById('ai-messages').innerHTML = '';
   aiAddMsg('ai', 'Здравствуйте! Меня зовут ИИгорь, я ваш оформитель документов. Вставьте текст от эксперта — комментарий из Bitrix, штатное расписание, данные компании. Я сам разберу кто куда идёт в документах и скажу что нужно уточнить.<br><br>Можно написать правку в любой момент: <em>«исправь директора на Иванов И.И.»</em>, <em>«добавь объект»</em>, <em>«поменяй дату выезда»</em>.<br><br>💡 Если людей больше 3-4 или архив большой (много фото) — присылайте по одному человеку за раз (2-3 фото), так меньше риск ошибок при распознавании.');
 }
@@ -2675,6 +2766,7 @@ function aiNormIdentity(value) {
 
 function aiIsOfficialStaffRow(row) {
   if(!row || typeof row !== 'object' || Array.isArray(row)) return false;
+  if(row.needs_review || row.identity_conflict || row.position_conflict) return false;
   const fio = String(row.fio || row.name || row.full_name || '').replace(/\s+/g, ' ').trim();
   const position = String(row.position || '').replace(/\s+/g, ' ').trim();
   if(!/^[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2}$/u.test(fio)) return false;
@@ -2740,6 +2832,7 @@ function aiRenderCard(data) {
     if(st0) st0.textContent = 'Данных нет';
     const genBtn0 = document.getElementById('ai-gen-btn');
     if(genBtn0) { genBtn0.disabled = true; genBtn0.style.background = '#C299A8'; genBtn0.style.cursor = 'not-allowed'; }
+    aiSyncRequestProfileControls();
     return;
   }
   if(!data) return;
@@ -2862,6 +2955,8 @@ function aiRenderCard(data) {
     });
   }
   aiNormalizeCompanyAttestation();
+  aiApplySelectedRequestProfile();
+  aiSyncRequestProfileControls();
 
   // Автосохранение в постоянное хранилище — не блокируем рендер, ошибки молча логируем
   aiSaveCurrentCompany().catch(e => console.warn('autosave failed:', e));
@@ -3273,36 +3368,23 @@ function aiIsGenerateCommand(text) {
 }
 
 function aiApplyRequestedPackageMode(data, text) {
-  const mode = aiRequestedPackageMode(text);
-  if (!mode || !data) return data;
-  data.certification = data.certification || {};
-  data.certification.package_mode = mode;
-  // The requested type wins.  A generic "periodika" intentionally leaves an
-  // unknown type blank: it must come from the uploaded package or a question,
-  // never from a combined ISO+SUOT guess.
-  const requestedProduct = aiRequestedIsoSuotProduct(text);
-  if (mode === 'periodika' && requestedProduct) {
-    data.certification.standard = requestedProduct;
-  }
-  return data;
+  // Product and package mode are an explicit choice in the interface. A chat
+  // phrase or filename must never turn СПК into ИСО/СУОТ (or vice versa).
+  return aiApplySelectedRequestProfile(data);
 }
 
 // Периодика может начинаться не только из сохранённой карточки, но и с ZIP
 // прошлого пакета. Для такой загрузки сразу выбираем быстрый разбор ИСО/СУОТ.
 function aiArchiveProductForRequest(text, currentProduct) {
-  const product = String(currentProduct || 'all').toLowerCase();
-  if (aiIsPeriodikaRequest(text)) {
-    const requestedProduct = aiRequestedIsoSuotProduct(text);
-    if (requestedProduct) return requestedProduct;
-    if (!['iso', 'suot', 'iso_suot'].includes(product)) return 'iso_suot';
-  }
-  return product || 'all';
+  return String(aiGetSelectedProduct() || currentProduct || 'all').toLowerCase();
 }
 
 function aiBuildArchivePeriodikaContext(text, filesContent) {
-  if (!aiIsPeriodikaRequest(text) || !String(filesContent || '').trim()) return '';
-  return 'ЭТО ПЕРИОДИКА ИСО/СУОТ. НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ ИЗ ЗАГРУЖЕННОГО ПРЕДЫДУЩЕГО ПАКЕТА. '
-    + 'Это периодика ИСО/СУОТ: используй загруженный пакет как базу карточки, извлеки из него реквизиты, '
+  if (aiSelectedPackageMode !== 'periodika' || !String(filesContent || '').trim()) return '';
+  const product = aiGetSelectedProduct();
+  const label = AI_PRODUCT_LABELS[product] || 'выбранного пакета';
+  return `ЭТО ПЕРИОДИКА: ${label}. НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ ИЗ ЗАГРУЖЕННОГО ПРЕДЫДУЩЕГО ПАКЕТА. `
+    + `Это периодика ${label}: используй загруженный пакет как базу карточки, извлеки из него реквизиты, `
     + 'область, штат, рабочие профессии, объекты, поставщиков и сведения по охране труда. '
     + 'Не создавай пустую новую компанию и не теряй сведения из пакета. '
     + 'Дату выезда и данные, которые могли измениться за период, уточни только если пользователь их не указал.\n\n';
@@ -3526,7 +3608,13 @@ async function aiSend() {
   const ta = document.getElementById('ai-input');
   const text = ta.value.trim();
   if(!text && aiAttachedFiles.length === 0) return;
-  const requestedPackageMode = aiRequestedPackageMode(text);
+  const selectedProduct = aiGetSelectedProduct();
+  if(!selectedProduct) {
+    aiAddMsg('ai', 'Сначала выберите тип пакета кнопкой выше. Тогда я не буду угадывать его по сообщению или названию файла.');
+    return;
+  }
+  aiApplySelectedRequestProfile();
+  const requestedPackageMode = aiSelectedPackageMode;
   const archiveProductHint = aiArchiveProductForRequest(
     text, aiCurrentData?.certification?.standard || 'all'
   );
@@ -3687,7 +3775,7 @@ async function aiSend() {
     // A short command may legitimately produce no structured delta from the AI.
     // The explicit user command still has to reach the generator.
     if(requestedPackageMode && !parsed.data && !Object.keys(authoritativeSourceData).length) {
-      aiApplyRequestedPackageMode(aiCurrentData, text);
+      aiApplySelectedRequestProfile(aiCurrentData);
       aiRenderCardFromCurrent();
     }
     if(correctionRequested) {
@@ -3952,7 +4040,42 @@ function aiArchiveProgressPercent(message, step, total) {
   return Math.min(99, Math.round(((Math.min(done, count) + currentDocumentPart) / count) * 100));
 }
 
-function aiArchiveProgressHtml(filename, message, step, total, minimumPercent = 0) {
+function aiArchiveRemainingTime(seconds) {
+  const value = Number(seconds);
+  if(!Number.isFinite(value)) return '';
+  if(value <= 0) return 'Время обработки истекло.';
+  const minutes = Math.ceil(value / 60);
+  return `Лимит чтения: ещё до ${minutes} мин.`;
+}
+
+function aiArchiveSourceStatusHtml(sourceStatus) {
+  if(!sourceStatus || typeof sourceStatus !== 'object') return '';
+  const labels = {
+    queued: 'ожидает', reading: 'читается', read_local: 'прочитан',
+    read_external: 'распознан', requires_review: 'требует проверки', not_read: 'не прочитан',
+  };
+  const entries = Object.entries(sourceStatus);
+  if(!entries.length) return '';
+  const totals = {};
+  for(const [, item] of entries) {
+    const state = String(item?.state || 'queued');
+    totals[state] = (totals[state] || 0) + 1;
+  }
+  const summary = Object.entries(totals)
+    .map(([state, count]) => `${labels[state] || state}: ${count}`)
+    .join(' · ');
+  const active = entries.find(([, item]) => item?.state === 'reading');
+  const pageCount = active && active[1]?.pages && typeof active[1].pages === 'object'
+    ? Object.keys(active[1].pages).length : 0;
+  const activePageNote = pageCount ? ', готово страниц: ' + pageCount : '';
+  const activeNote = active
+    ? ' Сейчас: ' + aiEscapeHtml(String(active[0]).split('/').pop()) + activePageNote + '.'
+    : '';
+  return `<div style="font-size:12px;color:#856F68;margin-top:5px">Файлы: ${aiEscapeHtml(summary)}.${activeNote}</div>`;
+}
+
+function aiArchiveProgressHtml(filename, message, step, total, minimumPercent = 0, meta) {
+  meta = meta || {};
   const safeName = aiEscapeHtml(filename);
   const safeMessage = aiEscapeHtml(message).replace(/\n/g, '<br>');
   const done = Math.max(0, Number(step) || 0);
@@ -3965,11 +4088,15 @@ function aiArchiveProgressHtml(filename, message, step, total, minimumPercent = 
   const details = count
     ? `Обработано ${Math.min(done, count)} из ${count} документов${pageNote} · ${pct}%`
     : 'Подготавливаю обработку';
+  const deadline = aiArchiveRemainingTime(meta.deadlineRemainingSeconds);
+  const sourceStatus = aiArchiveSourceStatusHtml(meta.sourceStatus);
+  const deadlineText = deadline ? ' · ' + aiEscapeHtml(deadline) : '';
   return `<div style="font-weight:600">⏳ «${safeName}»</div>`
     + `<div style="margin-top:6px">${safeMessage}</div>`
     + `<div style="margin-top:10px;background:#EDE1D6;border-radius:6px;height:8px;overflow:hidden">`
     + `<div style="height:100%;width:${pct}%;background:#A56B75;transition:width .35s ease"></div></div>`
-    + `<div style="font-size:12px;color:#856F68;margin-top:5px">${details}</div>`;
+    + `<div style="font-size:12px;color:#856F68;margin-top:5px">${details}${deadlineText}</div>`
+    + sourceStatus;
 }
 
 function aiArchiveQueueHtml(filename, queueAhead, taskId, messageId, queuePosition = 0) {
@@ -4079,6 +4206,8 @@ async function aiReadArchiveAsync(file, productHint = '') {
     const formData = new FormData();
     formData.append('file', uploadFile);
     formData.append('product', productHint || aiCurrentData?.certification?.standard || 'all');
+    formData.append('package_mode', aiSelectedPackageMode || aiCurrentData?.certification?.package_mode || 'initial');
+    formData.append('scope', document.getElementById('ai-request-scope')?.value?.trim() || aiCurrentData?.certification?.scope || '');
     // The same id is sent on a transport retry. The server uses it to return
     // an already-created task if its JSON response was lost during a restart.
     formData.append('upload_id', aiArchiveUploadId());
@@ -4087,7 +4216,7 @@ async function aiReadArchiveAsync(file, productHint = '') {
     let startResp;
     let queuePolls = 0;
     let transportRetries = 0;
-    const MAX_QUEUE_POLLS = 400; // the same 20-minute ceiling as task polling below
+    const MAX_QUEUE_POLLS = 600; // never wait in this interface longer than 30 minutes
     while(queuePolls < MAX_QUEUE_POLLS) {
       try {
         startResp = await aiStartArchiveUpload(formData);
@@ -4114,10 +4243,9 @@ async function aiReadArchiveAsync(file, productHint = '') {
     }
     const taskId = startResp.task_id;
     let displayedProgress = 0;
-    // Архив уже обрабатывается на сервере в фоне.  20 минут недостаточно для
-    // RAR с десятками сканов, а прекращение ожидания в браузере не должно
-    // превращать ещё выполняющуюся задачу в ложную ошибку загрузки.
-    const MAX_POLLS = 2400; // 2400 * 3 секунды = 2 часа
+    // The server uses the same 30-minute hard deadline. Do not leave a browser
+    // waiting for a task that can no longer produce a useful result.
+    const MAX_POLLS = 600; // 600 * 3 seconds = 30 minutes
     let pollCount = 0;
 
     while(pollCount < MAX_POLLS) {
@@ -4133,10 +4261,14 @@ async function aiReadArchiveAsync(file, productHint = '') {
         const lastMsg = tr.progress && tr.progress.length ? tr.progress[tr.progress.length-1] : 'обрабатываю...';
         displayedProgress = Math.max(
           displayedProgress,
+          Number(tr.progressPercentFloor) || 0,
           aiArchiveProgressPercent(lastMsg, tr.step, tr.total),
         );
         aiUpdateMsg(progressMsgId, aiArchiveProgressHtml(
-          file.name, lastMsg, tr.step, tr.total, displayedProgress,
+          file.name, lastMsg, tr.step, tr.total, displayedProgress, {
+            deadlineRemainingSeconds: tr.deadlineRemainingSeconds,
+            sourceStatus: tr.sourceStatus,
+          },
         ));
       } else if(tr.status === 'queued') {
         const queueAhead = Array.isArray(tr.queueAhead) ? tr.queueAhead : [];
@@ -4166,8 +4298,13 @@ async function aiReadArchiveAsync(file, productHint = '') {
         return {name: file.name, content: '[Обработка файла прервалась до завершения.]', read_failed: true};
       }
     }
-    aiUpdateMsg(progressMsgId, `⚠️ «${aiEscapeHtml(file.name)}»: обработка ещё не завершилась. Файл продолжает обрабатываться на сервере; не загружайте его повторно, пока не появится результат.`);
-    return {name: file.name, content: '[Обработка архива ещё не завершилась.]'};
+    await fetch('/api/task/cancel', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({task_id: taskId}),
+    }).catch(() => null);
+    const limitMessage = 'Чтение остановлено: за 30 минут архив не был разобран. Данные в карточку не внесены.';
+    aiUpdateMsg(progressMsgId, `⚠️ «${aiEscapeHtml(file.name)}»: ${limitMessage}`);
+    return {name: file.name, content: `[${limitMessage}]`, read_failed: true};
   } catch(err) {
     const reason = aiFileReadError(err.message);
     aiUpdateMsg(progressMsgId, `❌ «${aiEscapeHtml(file.name)}»: ${aiEscapeHtml(reason)}`);
@@ -4216,14 +4353,6 @@ function aiResize(ta) {
 function aiQuick(t) {
   document.getElementById('ai-input').value = t;
   document.getElementById('ai-input').focus();
-}
-
-function selectProduct(key, label, short) {
-  SELECTED_PRODUCT.key = key;
-  SELECTED_PRODUCT.label = label;
-  document.querySelectorAll('.prod-btn').forEach(b => b.classList.remove('active-prod'));
-  document.getElementById('pb-' + key)?.classList.add('active-prod');
-  aiAddMsg('ai', `Переключаю на продукт: <strong>${label}</strong>. Передавайте данные — я адаптирую требования.`);
 }
 
 async function aiGenerate() {

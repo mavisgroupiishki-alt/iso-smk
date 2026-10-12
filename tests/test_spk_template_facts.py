@@ -323,6 +323,32 @@ def test_spk_bisp_merges_person_name_variants_and_excludes_incomplete_fio():
     assert any('Уваров' in warning and 'неполное ФИО' in warning for warning in result['warnings'])
 
 
+def test_spk_excludes_person_with_conflicting_role_from_all_official_forms():
+    dates = generator.calculate_dates('17.09.2026')
+    company = {
+        'name': 'Тестовая организация', 'form': 'ООО', 'city': 'Минск',
+        'address': 'г. Минск', 'director_fio': 'Иванов Иван Иванович',
+        'director_position': 'Директор',
+    }
+    itr = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        {
+            'fio': 'Козлов Владислав Евгеньевич', 'position': 'Производитель работ',
+            'needs_review': True, 'position_conflict': True,
+            'position_alternatives': ['Производитель работ', 'Главный инженер'],
+        },
+    ]
+
+    result = generate_spk_package_v2(
+        company, itr, [], dates, generator.select_responsible(itr), variant='spk_bisp',
+    )
+    text = '\n'.join(_xml_text(document['bytes']) for document in result['docs'])
+
+    assert 'Козлов Владислав Евгеньевич' not in text
+    assert any('Козлов Владислав Евгеньевич' in warning and 'требуют проверки' in warning
+               for warning in result['warnings'])
+
+
 def test_spk_bisp_names_the_required_production_control_policy_explicitly():
     dates = generator.calculate_dates('17.09.2026')
     company = {

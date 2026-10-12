@@ -653,6 +653,76 @@ def _iso_awareness_doc(template_data: bytes, people: list, dates: dict) -> bytes
     return _doc_bytes(doc)
 
 
+def _iso_org_structure_doc(company: dict, itr: list, workers: list, dates: dict) -> bytes:
+    """Build the missing ISO Appendix 1 from the current staff card only.
+
+    The approved manual ISO packages contain an organisation-structure
+    appendix.  It was absent from the template library, so earlier generated
+    packages had no equivalent at all.  A list is safer than drawing a fake
+    hierarchy: every shown person and position comes from the current card.
+    """
+    doc = _new_doc(company, 'ПРИЛОЖЕНИЕ 1 ОРГАНИЗАЦИОННАЯ СТРУКТУРА', dates, 'document')
+    doc.add_paragraph(f'Организационная структура {_full_org(company)}')
+    table = doc.add_table(rows=1, cols=4)
+    table.style = 'Table Grid'
+    for cell, label in zip(table.rows[0].cells, ('№', 'Структурное подразделение', 'Должность', 'ФИО')):
+        cell.text = label
+
+    rows, seen = [], set()
+    director_fio = str(company.get('director_fio') or '').strip()
+    director_position = str(company.get('director_position') or 'Директор').strip()
+    if director_fio:
+        rows.append(('Руководство', director_position, director_fio))
+        seen.add((_norm(director_position), _norm(director_fio)))
+    for person in list(itr or []) + list(workers or []):
+        fio = str(person.get('fio') or '').strip()
+        position = str(person.get('position') or '').strip()
+        if not fio or not position:
+            continue
+        key = (_norm(position), _norm(fio))
+        if key in seen:
+            continue
+        seen.add(key)
+        division = 'ИТР' if person in (itr or []) else 'Рабочие'
+        rows.append((division, position, fio))
+    if not rows:
+        rows.append(('Руководство', 'ТРЕБУЕТ УТОЧНЕНИЯ', 'ТРЕБУЕТ УТОЧНЕНИЯ'))
+    for index, (division, position, fio) in enumerate(rows, 1):
+        cells = table.add_row().cells
+        for cell, value in zip(cells, (str(index), division, position, fio)):
+            cell.text = value
+    return _doc_bytes(doc)
+
+
+def _iso_document_list_doc(company: dict, dates: dict) -> bytes:
+    """Build ISO Appendix 2 without retaining an old company's document list."""
+    doc = _new_doc(company, 'ПРИЛОЖЕНИЕ 2 ПЕРЕЧЕНЬ ДОКУМЕНТОВ СМК', dates, 'document')
+    org = _full_org(company)
+    year = str(dates.get('reporting_year') or dates.get('year') or '').strip()
+    doc.add_paragraph(f'Перечень действующих документов СМК {org}')
+    documents = [
+        'РК СМК Руководство по качеству',
+        'СТП СМК Управление рисками',
+        'СТП СМК Управление документированной информацией',
+        'СТП СМК Процесс выполнения строительно-монтажных работ',
+        'Политика в области качества',
+        'Цели в области качества',
+        'Программа проведения внутренних аудитов' + (f' на {year} год' if year else ''),
+        'Журнал регистрации внутренних аудитов',
+        'Реестр рисков',
+        'План-отчёт мероприятий по управлению рисками',
+    ]
+    table = doc.add_table(rows=1, cols=2)
+    table.style = 'Table Grid'
+    table.rows[0].cells[0].text = '№'
+    table.rows[0].cells[1].text = 'Наименование документа'
+    for index, title in enumerate(documents, 1):
+        cells = table.add_row().cells
+        cells[0].text = str(index)
+        cells[1].text = title
+    return _doc_bytes(doc)
+
+
 def _awareness_doc(company: dict, title: str, people: list, dates: dict, date_key='goals') -> bytes:
     doc = _new_doc(company, title, dates, date_key)
     _add_staff_table(doc, people, str(dates.get(date_key) or dates.get('goals') or 'ТРЕБУЕТ УТОЧНЕНИЯ'))
@@ -1615,6 +1685,21 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         )
         docs.append({'name': f'{org} - 1 Политика в области качества.docx',
                      'bytes': _iso_policy_doc(policy_template, itr, dates)})
+        if not periodika:
+            # These two ISO appendices are present in the approved manual
+            # package (for example, «ЛиссНБК») but had no source templates in
+            # this library.  Generate them from the current card instead of
+            # silently omitting them or copying an old organisation.
+            prog('Приложение 1 Организационная структура СМК')
+            docs.append({
+                'name': f'{org} - Приложение 1 организационная структура.docx',
+                'bytes': _iso_org_structure_doc(company, itr, workers_rows, dates),
+            })
+            prog('Приложение 2 Перечень документов СМК')
+            docs.append({
+                'name': f'{org} - Приложение 2 Перечень документов СМК.docx',
+                'bytes': _iso_document_list_doc(company, dates),
+            })
         prog('Лист ознакомления с целями СМК')
         awareness_template = render_generic(
             'smk_doc_6.docx', _OLD_COMPANY, company_new, people_map, extra,

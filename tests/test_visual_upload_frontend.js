@@ -29,7 +29,8 @@ function extractFunction(name) {
 
 const progress = [];
 class FakeFormData {
-  append() {}
+  constructor() { this.fields = {}; context.lastFormData = this; }
+  append(name, value) { this.fields[name] = value; }
 }
 
 class FakeAbortController {
@@ -52,6 +53,8 @@ const context = {
   aiUpdateMsg: (_id, message) => progress.push(message),
   aiEscapeHtml: value => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),
   aiCurrentData: {},
+  aiSelectedPackageMode: 'initial',
+  document: {getElementById: (id) => id === 'ai-request-scope' ? {value: 'Монтаж металлоконструкций'} : null},
   window: {crypto: {randomUUID: () => 'upload-test-id'}},
   FormData: FakeFormData,
   AbortController: FakeAbortController,
@@ -80,6 +83,8 @@ vm.runInContext([
   extractFunction('aiArchiveUploadId'),
   extractFunction('aiArchiveUploadIsRetryable'),
   extractFunction('aiArchiveProgressPercent'),
+  extractFunction('aiArchiveRemainingTime'),
+  extractFunction('aiArchiveSourceStatusHtml'),
   extractFunction('aiArchiveProgressHtml'),
   extractFunction('aiArchiveQueueHtml'),
   extractFunction('aiShowArchiveQueue'),
@@ -96,8 +101,14 @@ vm.runInContext([
   if (officialStaff.length !== 1 || officialStaff[0].fio !== 'Козлов Владислав Евгеньевич') {
     throw new Error('template or incomplete staff rows can still enter the company card');
   }
+  if (context.aiOfficialStaffRows([
+    {fio: 'Козлов Владислав Евгеньевич', position: 'производитель работ', needs_review: true},
+  ]).length !== 0) {
+    throw new Error('a staff row marked for review can still enter official forms');
+  }
 
   let visualStarts = 0;
+  context.aiSelectedPackageMode = 'periodika';
   context.fetch = async (url) => {
     if (url === '/api/extract-archive-async') {
       visualStarts += 1;
@@ -108,12 +119,17 @@ vm.runInContext([
     }
     throw new Error(`unexpected URL ${url}`);
   };
-  const result = await context.aiReadFile({name: 'паспорт.jpg', size: 512});
+  const result = await context.aiReadFile({name: 'паспорт.jpg', size: 512}, 'spk_bisp');
   if (visualStarts !== 1) {
     throw new Error('visual file did not enter the background archive pipeline');
   }
   if (result.name !== 'паспорт.jpg' || result.content !== 'прочитано') {
     throw new Error('background result was not returned under the original filename');
+  }
+  if (context.lastFormData.fields.product !== 'spk_bisp' ||
+      context.lastFormData.fields.package_mode !== 'periodika' ||
+      context.lastFormData.fields.scope !== 'Монтаж металлоконструкций') {
+    throw new Error('archive request did not carry the selected product profile');
   }
 
   let directWordReads = 0;
@@ -173,6 +189,18 @@ vm.runInContext([
   }
   if (!context.aiArchiveProgressHtml('архив.rar', 'чтение', 2, 11, 30).includes('width:30%')) {
     throw new Error('archive progress can move backwards after a service restart');
+  }
+  const detailedProgress = context.aiArchiveProgressHtml('архив.rar', 'чтение', 2, 11, 30, {
+    deadlineRemainingSeconds: 9 * 60,
+    sourceStatus: {
+      'папка/трудовая.pdf': {state: 'reading', pages: {'1': {state: 'read_external'}}},
+      'папка/диплом.pdf': {state: 'requires_review'},
+    },
+  });
+  if (!detailedProgress.includes('Лимит чтения: ещё до 9 мин.') ||
+      !detailedProgress.includes('готово страниц: 1') ||
+      !detailedProgress.includes('требует проверки: 1')) {
+    throw new Error('archive progress omits the deadline or source status');
   }
   const queueDetails = context.aiArchiveQueueHtml('текущий.rar', [
     {taskId: 'previous', filename: 'предыдущий.rar', status: 'running'},
