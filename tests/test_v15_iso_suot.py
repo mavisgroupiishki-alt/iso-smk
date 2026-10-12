@@ -318,6 +318,24 @@ def test_iso_audit_journal_date_column_fits_full_date():
     assert document.tables[1].columns[0].width.twips >= 1190
 
 
+def test_iso_manual_uses_single_supplied_legal_address():
+    data = sample_data()
+    data['certification']['scope'] = 'Производство строительно-монтажных работ'
+
+    result = generator.generate_package(data, 'dummy', 'iso')
+    manual = next(doc for doc in result['docs'] if 'РК СМК' in doc['name'])
+    document = Document(io.BytesIO(manual['bytes']))
+    visible_text = '\n'.join(
+        [paragraph.text for paragraph in document.paragraphs]
+        + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+    )
+
+    legal_address_line = next(
+        line for line in visible_text.splitlines() if line.startswith('Юридический адрес:')
+    )
+    assert legal_address_line == f"Юридический адрес: {data['company']['address']}"
+
+
 def test_company_att_itr_is_enriched_from_staff():
     att = {'itr': [{'fio':'Иванов Иван Иванович','position':'Главный инженер'}]}
     staff = [{

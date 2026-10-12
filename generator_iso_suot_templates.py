@@ -282,6 +282,17 @@ def _date_map(dates: dict) -> dict:
 
 def _rewrite_paragraph_text(text: str, company: dict, scope_text: str, dates: dict) -> str:
     current = text
+    legal_address = str(company.get('address') or '').strip()
+    if legal_address and re.search(r'юридическ(?:ий|ого)\s+адрес\s*:', current, re.I):
+        # The legacy manual stores postal code, region, city and street in
+        # separate Word runs.  Replacing those fragments independently can
+        # leave false gaps even when the user supplied one complete address.
+        current = re.sub(
+            r'(юридическ(?:ий|ого)\s+адрес\s*:)\s*.*',
+            lambda match: f'{match.group(1)} {legal_address}',
+            current,
+            flags=re.I,
+        )
     # Replace complete company expression so non-ООО forms do not inherit the sample form.
     current = re.sub(r'Общество\s+с\s+ограниченной\s+ответственностью\s*[«"]\s*Варта\s*[»"]',
                      _full_legal_org(company), current, flags=re.I)
