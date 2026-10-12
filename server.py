@@ -1942,6 +1942,15 @@ def call_ai(messages, api_key, knowledge_text="", product="all"):
             + knowledge_text
             + "\n=== КОНЕЦ ПРАВИЛ ==="
         )
+    recent_messages = messages[-8 if fast_iso else -10:]
+    # A dedicated workspace can deliberately have no legacy Bitrix key.  OCR
+    # already uses Gemini there; without this branch the next chat request
+    # failed before it could turn a successfully read archive into a card.
+    if not api_key:
+        text = _gemini_text_call(system_base, recent_messages, max_tokens=3000, timeout=90)
+        if text:
+            return _sanitize_ai_visible_response(text, product)
+        raise RuntimeError('Резервная модель не ответила. Повторите отправку через минуту.')
     # A chat reply is not allowed to hold a browser request for several
     # successive minutes.  Large source archives are compacted below before
     # they get here; two bounded attempts are enough to recover a short
@@ -1956,7 +1965,7 @@ def call_ai(messages, api_key, knowledge_text="", product="all"):
                 headers={"Content-Type":"application/json","X-Api-Key":api_key},
                 json={"model":VIBE_MODEL,"max_tokens":3000,"messages":[
                     {"role":"system","content":system_base},
-                    *messages[-8 if fast_iso else -10:]
+                    *recent_messages
                 ]},
                 timeout=timeout
             )
@@ -1977,6 +1986,9 @@ def call_ai(messages, api_key, knowledge_text="", product="all"):
             last_err = str(e)
             print(f"  ⚠️  Ошибка запроса: {e}, повтор...")
             time.sleep(2 * (attempt + 1))
+    text = _gemini_text_call(system_base, recent_messages, max_tokens=3000, timeout=90)
+    if text:
+        return _sanitize_ai_visible_response(text, product)
     raise RuntimeError(f"BitrixGPT не ответил после {attempts} попыток: {last_err}.")
 
 
@@ -2345,6 +2357,60 @@ def _gemini_document_ocr(page_b64: str, prompt: str, timeout: int = 35) -> str:
         print(f'  ⚠️ Резервное распознавание Gemini не ответило ({type(exc).__name__}).')
     except (TypeError, ValueError, KeyError) as exc:
         print(f'  ⚠️ Резервное распознавание Gemini вернуло неполный ответ ({type(exc).__name__}).')
+    return ''
+
+
+def _gemini_text_call(system_text: str, messages: list, max_tokens: int = 3000,
+                      timeout: int = 90) -> str:
+    """Run the text workflow through Gemini when the legacy model is unavailable.
+
+    The same free Gemini key is used for the reserve OCR.  Keep the system
+    rules separate from user-provided archive contents and preserve message
+    roles so a dedicated service remains able to create a card and package
+    after successfully reading an archive.
+    """
+    api_key = str(os.environ.get('GEMINI_API_KEY') or '').strip()
+    if not api_key:
+        return ''
+    contents = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        content = str(message.get('content') or '').strip()
+        if not content:
+            continue
+        role = 'model' if str(message.get('role') or '').lower() == 'assistant' else 'user'
+        contents.append({'role': role, 'parts': [{'text': content}]})
+    if not contents:
+        return ''
+    payload = {
+        'contents': contents,
+        'generationConfig': {'temperature': 0, 'maxOutputTokens': max_tokens},
+    }
+    if str(system_text or '').strip():
+        payload['systemInstruction'] = {'parts': [{'text': str(system_text)}]}
+    try:
+        response = req_lib.post(
+            GEMINI_OCR_URL,
+            headers={'Content-Type': 'application/json', 'x-goog-api-key': api_key},
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        candidates = response.json().get('candidates') or []
+        first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+        parts = ((first.get('content') or {}).get('parts') or [])
+        text = '\n'.join(
+            str(part.get('text') or '').strip()
+            for part in parts if isinstance(part, dict) and part.get('text')
+        ).strip()
+        if not text:
+            print('  ⚠️ Резервная текстовая модель Gemini вернула пустой ответ.')
+        return text
+    except req_lib.exceptions.RequestException as exc:
+        print(f'  ⚠️ Резервная текстовая модель Gemini не ответила ({type(exc).__name__}).')
+    except (TypeError, ValueError, KeyError) as exc:
+        print(f'  ⚠️ Резервная текстовая модель Gemini вернула неполный ответ ({type(exc).__name__}).')
     return ''
 
 
@@ -3513,19 +3579,26 @@ def _simple_ai_call(prompt, api_key, max_tokens=1500):
     требует отвечать строго JSON — для задач вроде сведения карточки человека это
     не подходит и всё сломает). Отдельная функция специально для таких служебных
     задач — не путать с call_ai (это для основного чата с Игорем)."""
-    resp = req_lib.post(
-        VIBE_URL,
-        headers={"Content-Type": "application/json", "X-Api-Key": api_key},
-        json={"model": VIBE_MODEL, "max_tokens": max_tokens,
-              "messages": [{"role": "user", "content": prompt}]},
-        timeout=90
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
-    if not text:
-        raise RuntimeError(f"Пустой ответ от модели при сведении данных (сырой ответ: {json.dumps(data)[:300]})")
-    return text
+    if api_key:
+        try:
+            resp = req_lib.post(
+                VIBE_URL,
+                headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+                json={"model": VIBE_MODEL, "max_tokens": max_tokens,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=90
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
+            if text:
+                return text
+        except req_lib.exceptions.RequestException as exc:
+            print(f'  ⚠️ Основная текстовая модель не ответила ({type(exc).__name__}); пробую резервную.')
+    text = _gemini_text_call('', [{"role": "user", "content": prompt}], max_tokens=max_tokens, timeout=90)
+    if text:
+        return text
+    raise RuntimeError('Модель не вернула ответ при сведении данных.')
 
 
 def _group_blocks_by_person(texts):
@@ -7182,7 +7255,7 @@ class H(http.server.BaseHTTPRequestHandler):
             elif p=='/api/ai/chat':
                 req=json.loads(body)
                 api_key=os.environ.get('VIBE_API_KEY','')
-                if not api_key:
+                if not api_key and not str(os.environ.get('GEMINI_API_KEY') or '').strip():
                     self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
                 messages=req.get('messages',[])
                 product_scope = str(req.get('product') or 'all')

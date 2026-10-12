@@ -1785,6 +1785,53 @@ def test_durable_archive_task_can_run_with_gemini_without_vibe(monkeypatch, tmp_
     assert not (uploads / f'{task_id}.upload').exists()
 
 
+def test_chat_uses_gemini_when_legacy_key_is_unavailable(monkeypatch):
+    monkeypatch.delenv('VIBE_API_KEY', raising=False)
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-gemini-key')
+    observed = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'candidates': [{'content': {'parts': [
+                {'text': '{"message":"Карточка заполнена","data":{}}'},
+            ]}}]}
+
+    def fake_post(url, **kwargs):
+        observed['url'] = url
+        observed.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(server.req_lib, 'post', fake_post)
+
+    result = server.call_ai(
+        [{'role': 'user', 'content': 'Заполни карточку компании.'}],
+        '', product='iso', knowledge_text='Не выдумывай данные.',
+    )
+
+    assert 'Карточка заполнена' in result
+    assert observed['headers']['x-goog-api-key'] == 'test-gemini-key'
+    assert observed['json']['systemInstruction']['parts'][0]['text'].startswith('Ты — ИИгорь')
+
+
+def test_person_reconciliation_uses_gemini_when_legacy_key_is_unavailable(monkeypatch):
+    monkeypatch.delenv('VIBE_API_KEY', raising=False)
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-gemini-key')
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'candidates': [{'content': {'parts': [{'text': 'Сводка сотрудника'}]}}]}
+
+    monkeypatch.setattr(server.req_lib, 'post', lambda *_args, **_kwargs: Response())
+
+    assert server._simple_ai_call('Сведи документы сотрудника.', '', max_tokens=321) == 'Сводка сотрудника'
+
+
 def test_expired_archive_task_stops_without_sending_more_pages(monkeypatch, tmp_path):
     uploads = tmp_path / 'uploads'
     tasks_dir = tmp_path / 'tasks'
