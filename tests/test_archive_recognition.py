@@ -1979,6 +1979,73 @@ def test_pdf_uses_reserve_ocr_after_primary_timeout(monkeypatch):
     assert any('резервное распознавание' in message for message in progress)
 
 
+def test_pdf_uses_gemini_reserve_after_primary_timeout(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-gemini-key')
+    monkeypatch.delenv('GOOGLE_VISION_API_KEY', raising=False)
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda *_args, **_kwargs: 'page-b64')
+    calls = []
+
+    class GeminiResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                'candidates': [{
+                    'content': {'parts': [{'text': 'Рукописная запись из трудовой книжки'}]},
+                }],
+            }
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url == server.VIBE_URL:
+            raise server.req_lib.exceptions.Timeout()
+        assert url == server.GEMINI_OCR_URL
+        assert kwargs['headers']['x-goog-api-key'] == 'test-gemini-key'
+        assert kwargs['json']['contents'][0]['parts'][0]['inline_data']['data'] == 'page-b64'
+        return GeminiResponse()
+
+    monkeypatch.setattr(server.req_lib, 'post', fake_post)
+
+    text = server.vision_extract(b'pdf', 'лидинг/прораб/трудовая.pdf', 'unused')
+
+    assert 'Рукописная запись из трудовой книжки' in text
+    assert [url for url, _kwargs in calls] == [server.VIBE_URL, server.GEMINI_OCR_URL]
+    assert calls[0][1]['timeout'] == 25
+
+
+def test_image_uses_gemini_reserve_after_primary_timeout(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-gemini-key')
+    monkeypatch.delenv('GOOGLE_VISION_API_KEY', raising=False)
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_downscale_image', lambda *_args, **_kwargs: (b'image', 'image/jpeg'))
+    calls = []
+
+    class GeminiResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'candidates': [{'content': {'parts': [{'text': 'Диплом инженера'}]}}]}
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url == server.VIBE_URL:
+            raise server.req_lib.exceptions.Timeout()
+        assert url == server.GEMINI_OCR_URL
+        return GeminiResponse()
+
+    monkeypatch.setattr(server.req_lib, 'post', fake_post)
+
+    text = server.vision_extract(b'image', 'диплом.jpg', 'unused')
+
+    assert text == 'Диплом инженера'
+    assert [url for url, _kwargs in calls] == [server.VIBE_URL, server.GEMINI_OCR_URL]
+    assert calls[0][1]['timeout'] == 25
+
+
 def test_sideways_personnel_pdf_uses_one_compact_retry(monkeypatch):
     monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(server, '_pdf_page_to_image', lambda *_args, **_kwargs: 'page')

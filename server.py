@@ -1226,6 +1226,13 @@ VIBE_MODEL_VISION = "bitrix/bitrixgpt-5.5-thinking"  # vision + reasoning для
 # Render environment variable; it is never persisted with a task or written to
 # logs.  Until the variable is configured, behaviour remains exactly as before.
 GOOGLE_VISION_URL = "https://vision.googleapis.com/v1/images:annotate"
+# Gemini is an opt-in, no-billing reserve for the slowest handwritten scans.
+# The key is injected only through Render and is deliberately never saved in a
+# task, archive, or log. It is tried only after the primary reader fails.
+GEMINI_OCR_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/"
+    "models/gemini-2.5-flash-lite:generateContent"
+)
 
 SPK_ACTIVITY_PROFILE_LABELS = {
     'construction': 'строительно-монтажные работы',
@@ -2294,6 +2301,68 @@ def _google_document_ocr(page_b64: str, timeout: int = 35) -> str:
     return ''
 
 
+def _gemini_document_ocr(page_b64: str, prompt: str, timeout: int = 35) -> str:
+    """Read one rendered page through the optional Gemini reserve.
+
+    Gemini is kept behind an environment key so a deployment without the key
+    has exactly the same behaviour as before. It receives a single prepared
+    JPEG page, never the whole archive or any task history.
+    """
+    api_key = str(os.environ.get('GEMINI_API_KEY') or '').strip()
+    if not api_key or not page_b64:
+        return ''
+    payload = {
+        'contents': [{
+            'parts': [
+                {'inline_data': {'mime_type': 'image/jpeg', 'data': page_b64}},
+                {'text': prompt},
+            ],
+        }],
+        'generationConfig': {
+            'temperature': 0,
+            'maxOutputTokens': 3500,
+        },
+    }
+    try:
+        response = req_lib.post(
+            GEMINI_OCR_URL,
+            headers={'Content-Type': 'application/json', 'x-goog-api-key': api_key},
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        candidates = response.json().get('candidates') or []
+        first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+        parts = ((first.get('content') or {}).get('parts') or [])
+        text = '\n'.join(
+            str(part.get('text') or '').strip()
+            for part in parts if isinstance(part, dict) and part.get('text')
+        ).strip()
+        if not text:
+            print('  ⚠️ Резервное распознавание Gemini вернуло пустой ответ.')
+        return text
+    except req_lib.exceptions.RequestException as exc:
+        print(f'  ⚠️ Резервное распознавание Gemini не ответило ({type(exc).__name__}).')
+    except (TypeError, ValueError, KeyError) as exc:
+        print(f'  ⚠️ Резервное распознавание Gemini вернуло неполный ответ ({type(exc).__name__}).')
+    return ''
+
+
+def _reserve_document_ocr(page_b64: str, prompt: str, timeout: int = 35) -> str:
+    """Use the configured reserve reader without exposing credentials in logs."""
+    text = _google_document_ocr(page_b64, timeout=timeout)
+    if text:
+        return text
+    return _gemini_document_ocr(page_b64, prompt=prompt, timeout=timeout)
+
+
+def _has_reserve_document_ocr() -> bool:
+    return bool(
+        str(os.environ.get('GOOGLE_VISION_API_KEY') or '').strip()
+        or str(os.environ.get('GEMINI_API_KEY') or '').strip()
+    )
+
+
 def vision_extract_with_retry(file_bytes, filename, api_key, **kwargs):
     """Read a visual document once; retry exactly once only after a failed read.
 
@@ -2862,7 +2931,13 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         # A slow external response must not retain a page for two minutes.  The
         # retry below uses a smaller copy of the same page, so it is both faster
         # and more useful than repeating the identical request.
-        vision_timeout = 60 if (single_page_batches or retry_sideways_personnel_page) else 70
+        # With a reserve reader configured, a stuck Vibe request gets a short
+        # primary attempt, then the independent provider can finish the page.
+        # Without a reserve, retain the existing more patient limits.
+        vision_timeout = (
+            25 if _has_reserve_document_ocr()
+            else (60 if (single_page_batches or retry_sideways_personnel_page) else 70)
+        )
         def read_batch(batch_start):
             check_deadline()
             if pages_b64 is None:
@@ -2913,13 +2988,15 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 if fallback_attempted or len(batch) != 1:
                     return ''
                 fallback_attempted = True
-                if not os.environ.get('GOOGLE_VISION_API_KEY'):
-                    return ''
                 if progress_cb:
                     progress_cb(
                         f"Страница {first_page} из {page_count}: пробую резервное распознавание"
                     )
-                text = _google_document_ocr(page_b64, timeout=request_timeout(35))
+                text = _reserve_document_ocr(
+                    page_b64,
+                    prompt=(active_prompt + '\n\n' + page_note),
+                    timeout=request_timeout(35),
+                )
                 if text:
                     print(
                         f"  ✅ vision_extract({filename}): резервное чтение стр. {first_page} "
@@ -3117,10 +3194,11 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
     print(f"  🔎 vision_extract({filename}): отправляю {payload_mb:.2f} МБ (base64), жду семафор...")
     VISION_SEMAPHORE.acquire()
     t0 = _time.time()
+    primary_timeout = 25 if _has_reserve_document_ocr() else 90
     try:
         resp = req_lib.post(
             VIBE_URL, headers={"Content-Type": "application/json", "X-Api-Key": api_key},
-            json=vibe_payload, timeout=90
+            json=vibe_payload, timeout=primary_timeout
         )
         elapsed = _time.time() - t0
         resp.raise_for_status()
@@ -3132,10 +3210,22 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         return text or '[vision: пустой ответ]'
     except req_lib.exceptions.Timeout:
         elapsed = _time.time() - t0
-        print(f"  ⏱️ vision_extract({filename}): ТАЙМАУТ через {elapsed:.1f} сек (лимит 90с) — файл {payload_mb:.2f} МБ")
+        reserve_text = _reserve_document_ocr(
+            b64_data, prompt=active_prompt, timeout=request_timeout(35)
+        )
+        if reserve_text:
+            print(f"  ✅ vision_extract({filename}): резервное чтение вернуло {len(reserve_text)} символов")
+            return reserve_text
+        print(f"  ⏱️ vision_extract({filename}): ТАЙМАУТ через {elapsed:.1f} сек (лимит {primary_timeout}с) — файл {payload_mb:.2f} МБ")
         return '[Повторная попытка чтения требуется: распознавание не завершилось вовремя.]'
     except Exception as e:
         elapsed = _time.time() - t0
+        reserve_text = _reserve_document_ocr(
+            b64_data, prompt=active_prompt, timeout=request_timeout(35)
+        )
+        if reserve_text:
+            print(f"  ✅ vision_extract({filename}): резервное чтение вернуло {len(reserve_text)} символов")
+            return reserve_text
         print(f"  ❌ vision_extract({filename}): ОШИБКА через {elapsed:.1f} сек — {type(e).__name__}: {e}")
         return '[Повторная попытка чтения требуется: распознавание временно недоступно.]'
     finally:
