@@ -1733,6 +1733,39 @@ def test_durable_archive_task_can_finish_after_process_restart(monkeypatch, tmp_
     assert not (uploads / f'{task_id}.upload').exists()
 
 
+def test_durable_archive_task_can_run_with_gemini_without_vibe(monkeypatch, tmp_path):
+    uploads = tmp_path / 'uploads'
+    tasks_dir = tmp_path / 'tasks'
+    uploads.mkdir()
+    tasks_dir.mkdir()
+    task_id = 'gemini01'
+    (uploads / f'{task_id}.upload').write_bytes(b'archive')
+    task = {
+        'status': 'running', 'kind': 'archive', 'owner_user_id': 'owner',
+        'filename': 'ЛиссНБК.rar', 'product': 'iso',
+        'archive_upload': f'{task_id}.upload', 'progress': [],
+    }
+    monkeypatch.setattr(server, 'ARCHIVE_UPLOAD_DIR', uploads)
+    monkeypatch.setattr(server, 'TASKS_DIR', tasks_dir)
+    monkeypatch.setattr(server, 'TASKS', {task_id: task})
+    monkeypatch.delenv('VIBE_API_KEY', raising=False)
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-gemini-key')
+    observed_keys = []
+
+    def fake_extract(_data, _filename, api_key, **_kwargs):
+        observed_keys.append(api_key)
+        return {'text': 'архив прочитан Gemini', 'analysis_text': 'анализ',
+                'summary': 'сводка', 'structured_data': {'staff': []}}
+
+    monkeypatch.setattr(server, 'extract_archive_with_vision', fake_extract)
+
+    server._run_archive_task(task_id)
+
+    assert server.TASKS[task_id]['status'] == 'done'
+    assert observed_keys == ['']
+    assert not (uploads / f'{task_id}.upload').exists()
+
+
 def test_expired_archive_task_stops_without_sending_more_pages(monkeypatch, tmp_path):
     uploads = tmp_path / 'uploads'
     tasks_dir = tmp_path / 'tasks'
@@ -2014,6 +2047,34 @@ def test_pdf_uses_gemini_reserve_after_primary_timeout(monkeypatch):
     assert 'Рукописная запись из трудовой книжки' in text
     assert [url for url, _kwargs in calls] == [server.VIBE_URL, server.GEMINI_OCR_URL]
     assert calls[0][1]['timeout'] == 25
+
+
+def test_pdf_uses_gemini_directly_without_vibe_key(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-gemini-key')
+    monkeypatch.delenv('GOOGLE_VISION_API_KEY', raising=False)
+    monkeypatch.setattr(server, '_try_tesseract_first', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, '_pdf_total_pages', lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(server, '_pdf_page_to_image', lambda *_args, **_kwargs: 'page-b64')
+    calls = []
+
+    class GeminiResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'candidates': [{'content': {'parts': [{'text': 'Текст с Gemini'}]}}]}
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        assert url == server.GEMINI_OCR_URL
+        return GeminiResponse()
+
+    monkeypatch.setattr(server.req_lib, 'post', fake_post)
+
+    text = server.vision_extract(b'pdf', 'скан.pdf', '')
+
+    assert 'Текст с Gemini' in text
+    assert [url for url, _kwargs in calls] == [server.GEMINI_OCR_URL]
 
 
 def test_image_uses_gemini_reserve_after_primary_timeout(monkeypatch):

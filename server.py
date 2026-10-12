@@ -3008,6 +3008,17 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                         )
                 return text
 
+            # A Gemini-only workspace must not wait for requests to a primary
+            # provider that is not configured.
+            if not api_key:
+                fallback_text = try_fallback(batch[0])
+                if fallback_text:
+                    return batch_start, f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + fallback_text
+                return batch_start, (
+                    f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n"
+                    "[Не удалось прочитать страницы PDF: резервное распознавание временно недоступно.]"
+                )
+
             for attempt, angle in enumerate(retry_angles):
                 check_deadline()
                 request_batch = batch
@@ -3180,6 +3191,14 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
 
     b64_data = _b64.b64encode(file_bytes).decode('utf-8')
     payload_mb = len(b64_data) / 1024 / 1024
+    if not api_key:
+        reserve_text = _reserve_document_ocr(
+            b64_data, prompt=active_prompt, timeout=request_timeout(35)
+        )
+        if reserve_text:
+            print(f"  ✅ vision_extract({filename}): резервное чтение вернуло {len(reserve_text)} символов")
+            return reserve_text
+        return '[Повторная попытка чтения требуется: резервное распознавание временно недоступно.]'
     vibe_payload = {
         "model": VIBE_MODEL_VISION,
         "max_tokens": 8000,
@@ -4729,7 +4748,9 @@ def _run_archive_task(task_id):
         _set_archive_task_deadline(task)
         if _archive_task_deadline_reached(task):
             raise ArchiveTaskDeadlineExceeded()
-        if not filename or not archive_path.is_file() or not api_key:
+        # Gemini is a fully supported reserve reader. A dedicated workspace
+        # may intentionally have no legacy Vision key.
+        if not filename or not archive_path.is_file() or not (api_key or _has_reserve_document_ocr()):
             raise RuntimeError('Не удалось восстановить данные загруженного архива. Прикрепите архив ещё раз.')
         if archive_path.stat().st_size > MAX_ARCHIVE_WORKER_BYTES:
             raise RuntimeError(
@@ -6860,7 +6881,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 # Анализ изображения/PDF через BitrixGPT vision
                 import io as _io, re as _re, base64 as _b64
                 api_key = os.environ.get('VIBE_API_KEY','')
-                if not api_key:
+                if not api_key and not _has_reserve_document_ocr():
                     self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
 
                 content_type = self.headers.get('Content-Type','')
@@ -7019,7 +7040,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 # Благодаря этому можно грузить архивы гораздо крупнее, чем раньше.
                 import re as _re3
                 api_key = os.environ.get('VIBE_API_KEY','')
-                if not api_key:
+                if not api_key and not _has_reserve_document_ocr():
                     self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
                 content_type = self.headers.get('Content-Type','')
                 boundary = None
