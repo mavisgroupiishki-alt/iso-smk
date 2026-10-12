@@ -5738,7 +5738,14 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     WORD_SCAN_INNER_LIMIT = 30 * 1024 * 1024  # DOCX может быть контейнером сканов
     IMAGE_INNER_LIMIT = 15 * 1024 * 1024   # фото крупнее (сами уменьшаются перед отправкой)
     PDF_INNER_LIMIT = 80 * 1024 * 1024     # PDF-сканы (паспорта/трудовые) часто крупнее — до 20 МБ
-    MAX_ITEMS = 60  # защита от архивов с сотнями фото — вышло бы на часы обработки
+    # A Word/Excel document is read locally and usually takes milliseconds;
+    # a photographed labour book or PDF scan needs remote OCR and can take
+    # minutes.  One shared ``MAX_ITEMS`` silently discarded ordinary current
+    # documents merely because an archive also contained historical templates.
+    # Keep the expensive OCR budget bounded for the 30-minute task target, but
+    # allow a materially larger set of locally-readable source documents.
+    MAX_LOCAL_ITEMS = 90
+    MAX_VISION_ITEMS = 18
 
     def p(msg):
         if ((deadline_at is not None and time.time() >= float(deadline_at))
@@ -5806,10 +5813,13 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     entries.sort(key=_archive_entry_priority)
 
     readable_entries = [e for e in entries if e[3] in ('text', 'image', 'pdf', 'nested_archive')]
-    to_process = readable_entries[:MAX_ITEMS]
+    local_entries = [e for e in readable_entries if e[3] in ('text', 'nested_archive')]
+    vision_entries = [e for e in readable_entries if e[3] in ('image', 'pdf')]
+    to_process = local_entries[:MAX_LOCAL_ITEMS] + vision_entries[:MAX_VISION_ITEMS]
+    selected_raw_names = {entry[0] for entry in to_process}
     skipped = [e for e in entries if e[3] == 'skip_size']
     unsupported = [e for e in entries if e[3] == 'unsupported']
-    not_processed_limit = readable_entries[MAX_ITEMS:]
+    not_processed_limit = [entry for entry in readable_entries if entry[0] not in selected_raw_names]
     total = len(to_process)
 
     resumed_scan_names = {
@@ -6208,7 +6218,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     if not_processed_limit:
         result += (
             f'\n\n[В архиве {len(entries)} файлов, из них автоматически читаемых '
-            f'{len(readable_entries)}; обработаны первые {MAX_ITEMS}. Остальные перечислены '
+            f'{len(readable_entries)}; обработаны до {MAX_LOCAL_ITEMS} текстовых документов '
+            f'и до {MAX_VISION_ITEMS} сканов. Остальные перечислены '
             f'в блоке «СОСТАВ АРХИВА» и не считаются отсутствующими.]'
         )
     structured_data = {}

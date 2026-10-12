@@ -242,6 +242,24 @@ def test_archive_reads_direct_current_files_before_many_old_templates():
     assert '--- Компания/Список сотрудников.txt ---\nАКТУАЛЬНЫЙ ШТАТ' in result['text']
 
 
+def test_archive_keeps_current_text_documents_beyond_the_ocr_budget():
+    """Local Word/text sources must not be dropped with the scan-file cap."""
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        for index in range(80):
+            zipped.writestr(f'Компания/Старые доки/шаблон-{index:02d}.txt', 'старый шаблон')
+        for index in range(65):
+            zipped.writestr(
+                f'Компания/Актуальные документы/документ-{index:02d}.txt',
+                f'АКТУАЛЬНЫЙ ДОКУМЕНТ {index:02d}',
+            )
+
+    result = server.extract_archive_with_vision(archive.getvalue(), 'Компания.zip', 'unused')
+
+    assert 'АКТУАЛЬНЫЙ ДОКУМЕНТ 64' in result['text']
+    assert 'не обработан из-за лимита количества файлов' in result['text']
+
+
 def test_archive_resume_reuses_finished_scan_without_calling_vision(monkeypatch):
     """A restart must not send a fully read scan to OCR a second time."""
     archive = io.BytesIO()
