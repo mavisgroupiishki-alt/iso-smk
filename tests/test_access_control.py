@@ -19,6 +19,7 @@ def _use_temp_auth_storage():
         'IGOR_OWNER_PASSWORD': os.environ.get('IGOR_OWNER_PASSWORD'),
         'IGOR_OWNER_USERNAME': os.environ.get('IGOR_OWNER_USERNAME'),
         'IGOR_WORKSPACE_USERNAME': os.environ.get('IGOR_WORKSPACE_USERNAME'),
+        'IGOR_WORKSPACE_LOGIN_ALIAS': os.environ.get('IGOR_WORKSPACE_LOGIN_ALIAS'),
         'IGOR_WORKSPACE_PASSWORD': os.environ.get('IGOR_WORKSPACE_PASSWORD'),
         'IGOR_WORKSPACE_ROLE': os.environ.get('IGOR_WORKSPACE_ROLE'),
     }
@@ -27,6 +28,9 @@ def _use_temp_auth_storage():
     server.SESSIONS_FILE = server.AUTH_DIR / 'sessions.json'
     os.environ['IGOR_OWNER_PASSWORD'] = 'owner-secret-password-123'
     os.environ['IGOR_OWNER_USERNAME'] = 'owner'
+    for name in ('IGOR_WORKSPACE_USERNAME', 'IGOR_WORKSPACE_LOGIN_ALIAS',
+                 'IGOR_WORKSPACE_PASSWORD', 'IGOR_WORKSPACE_ROLE'):
+        os.environ.pop(name, None)
     return temp, previous
 
 
@@ -35,7 +39,8 @@ def _restore_auth_storage(temp, previous):
     server.USERS_FILE = previous['USERS_FILE']
     server.SESSIONS_FILE = previous['SESSIONS_FILE']
     for name in ('IGOR_OWNER_PASSWORD', 'IGOR_OWNER_USERNAME',
-                 'IGOR_WORKSPACE_USERNAME', 'IGOR_WORKSPACE_PASSWORD', 'IGOR_WORKSPACE_ROLE'):
+                 'IGOR_WORKSPACE_USERNAME', 'IGOR_WORKSPACE_LOGIN_ALIAS',
+                 'IGOR_WORKSPACE_PASSWORD', 'IGOR_WORKSPACE_ROLE'):
         if previous[name] is None:
             os.environ.pop(name, None)
         else:
@@ -79,6 +84,23 @@ def test_dedicated_service_accepts_only_its_configured_login():
         assert server.auth_login('Кристина', 'operator-secret-password-456') is None
         with __import__('pytest').raises(PermissionError):
             server.auth_create_user({'id': 'admin', 'role': 'owner'}, 'kristina', 'operator-secret-password-456')
+    finally:
+        _restore_auth_storage(temp, previous)
+
+
+def test_dedicated_service_login_alias_keeps_existing_workspace_data():
+    temp, previous = _use_temp_auth_storage()
+    try:
+        os.environ['IGOR_WORKSPACE_USERNAME'] = 'Кристина'
+        os.environ['IGOR_WORKSPACE_LOGIN_ALIAS'] = 'kristina'
+        os.environ['IGOR_WORKSPACE_PASSWORD'] = 'operator-secret-password-456'
+        os.environ['IGOR_WORKSPACE_ROLE'] = 'operator'
+
+        account = server.auth_bootstrap_owner()
+        assert account == {'username': 'кристина', 'role': 'operator', 'active': True}
+        login = server.auth_login('kristina', 'operator-secret-password-456')
+        assert login and login['user'] == account
+        assert server.auth_login('nastya', 'operator-secret-password-456') is None
     finally:
         _restore_auth_storage(temp, previous)
 

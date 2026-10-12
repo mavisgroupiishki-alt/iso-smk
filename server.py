@@ -204,11 +204,18 @@ def _auth_workspace_config():
     raw_username = os.environ.get('IGOR_WORKSPACE_USERNAME', '').strip()
     if not raw_username:
         return None
+    raw_login_alias = os.environ.get('IGOR_WORKSPACE_LOGIN_ALIAS', '').strip()
     role = os.environ.get('IGOR_WORKSPACE_ROLE', 'operator').strip().lower()
     if role not in ('owner', 'operator'):
         raise RuntimeError('IGOR_WORKSPACE_ROLE должен быть owner или operator.')
+    username = _auth_username(raw_username)
+    login_alias = _auth_username(raw_login_alias) if raw_login_alias else ''
     return {
-        'username': _auth_username(raw_username),
+        'username': username,
+        # An optional alias lets a dedicated workspace keep its existing
+        # Cyrillic account id and data while staff sign in with the agreed
+        # Latin login.  It never grants access to a second account.
+        'login_alias': login_alias if login_alias != username else '',
         'role': role,
         'password': os.environ.get('IGOR_WORKSPACE_PASSWORD', ''),
     }
@@ -305,9 +312,10 @@ def auth_login(username: str, password: str):
     auth_bootstrap_owner()
     key = _auth_username(username)
     workspace = _auth_workspace_config()
-    if workspace and key != workspace['username']:
+    if workspace and key not in (workspace['username'], workspace.get('login_alias')):
         return None
-    user = _auth_users()['users'].get(key)
+    user_key = workspace['username'] if workspace else key
+    user = _auth_users()['users'].get(user_key)
     if not user or not user.get('active') or not _auth_password_matches(password, user.get('password_hash', '')):
         return None
     sessions = _auth_read(SESSIONS_FILE, {'sessions': {}})
