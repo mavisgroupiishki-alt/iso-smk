@@ -4854,7 +4854,12 @@ def _run_archive_task(task_id):
                      'summary': result_summary, 'analysis_text': result_analysis,
                      'structured_data': structured_data, 'warnings': read_warnings,
                      'filename': filename, 'product': product, 'package_mode': package_mode,
-                     'source_status': source_status})
+                     'source_status': source_status,
+                     # The live phase intentionally never shows 100% before
+                     # reconciliation completes. Once the task is terminal the
+                     # persisted response must, however, say 100% rather than
+                     # leaving the operator with a completed task at 99%.
+                     'progress_percent_floor': 100})
         task.pop('pdf_page_checkpoints', None)
         task.pop('archive_file_checkpoints', None)
         save_task(task_id, task)

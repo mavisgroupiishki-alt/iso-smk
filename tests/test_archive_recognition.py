@@ -1748,6 +1748,7 @@ def test_durable_archive_task_can_finish_after_process_restart(monkeypatch, tmp_
 
     assert server.TASKS[task_id]['status'] == 'done'
     assert server.TASKS[task_id]['text'] == 'архив прочитан'
+    assert server.TASKS[task_id]['progress_percent_floor'] == 100
     assert not (uploads / f'{task_id}.upload').exists()
 
 
