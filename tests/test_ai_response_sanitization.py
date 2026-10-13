@@ -21,6 +21,22 @@ def test_ai_reply_without_json_is_not_exposed_as_service_payload():
     assert server._extract_ai_json_object('обычный ответ') is None
 
 
+def test_nested_model_json_is_unwrapped_before_it_reaches_the_browser():
+    raw = json.dumps({
+        'message': json.dumps({
+            'message': 'Данные перенесены в карточку.',
+            'questions': [],
+            'data': {'company': {'name': 'ОмиТрейд'}},
+        }, ensure_ascii=False),
+        'questions': [],
+    }, ensure_ascii=False)
+
+    result = json.loads(server._sanitize_ai_visible_response(raw, 'iso_suot'))
+
+    assert result['message'] == 'Данные перенесены в карточку.'
+    assert result['data']['company']['name'] == 'ОмиТрейд'
+
+
 def test_iso_scope_alias_is_promoted_to_generator_field():
     raw = json.dumps({
         'message': 'Область сертификации обновлена.',

@@ -1427,6 +1427,36 @@ function aiSetRequestScope(value) {
   aiCurrentData.certification.scope = String(value || '').trim();
 }
 
+function aiNormalizeDocumentDate(value) {
+  const raw = String(value || '').trim();
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const dot = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  const parts = iso ? [iso[3], iso[2], iso[1]] : dot ? [dot[1], dot[2], dot[3]] : null;
+  if(!parts) return '';
+  const [day, month, year] = parts.map(Number);
+  const date = new Date(year, month - 1, day);
+  if(date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return '';
+  return `${String(day).padStart(2, '0')}.${String(month).padStart(2, '0')}.${year}`;
+}
+
+function aiSetDocumentDate(value) {
+  const date = aiNormalizeDocumentDate(value);
+  if(!date) return;
+  aiCurrentData.certification = aiCurrentData.certification || {};
+  aiCurrentData.dates = aiCurrentData.dates || {};
+  // One explicit date is the source of truth for ISO/SUOT document headers.
+  // Do not infer it from a protocol or a certificate inside the archive.
+  aiCurrentData.certification.audit_date = date;
+  aiCurrentData.dates.audit_date = date;
+  aiRenderCardFromCurrent();
+  aiSaveCurrentCompany().catch(() => {});
+}
+
+function aiSetDocumentDateToday() {
+  const now = new Date();
+  aiSetDocumentDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`);
+}
+
 function aiApplySelectedRequestProfile(data = aiCurrentData) {
   if(!data) return data;
   const product = aiGetSelectedProduct();
@@ -3191,7 +3221,14 @@ function aiRenderCard(data) {
     ? 'width:100%;height:36px;background:#A56B75;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s'
     : 'width:100%;height:36px;background:#C299A8;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:not-allowed;transition:background .15s';
   if(!readiness.ready && readiness.missing.length) {
-    document.getElementById('ai-card-body').insertAdjacentHTML('beforeend', `<div class="ai-missing-box"><b>Для формирования заполните:</b><br>${readiness.missing.join('<br>')}</div>`);
+    const dateControl = readiness.missing.includes('дата оформления документов')
+      ? `<div style="margin-top:8px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">`
+        + `<label for="ai-document-date" style="font-size:10px">📅 Дата документов:</label>`
+        + `<input id="ai-document-date" type="date" onchange="aiSetDocumentDate(this.value)" style="height:25px;border:1px solid #D9C6B8;border-radius:5px;padding:0 5px;font:inherit">`
+        + `<button type="button" onclick="aiSetDocumentDateToday()" style="height:25px;border:1px solid #D9C6B8;border-radius:5px;background:#fff;color:#8B4A5C;font:inherit;cursor:pointer">Сегодня</button>`
+        + `</div>`
+      : '';
+    document.getElementById('ai-card-body').insertAdjacentHTML('beforeend', `<div class="ai-missing-box"><b>Для формирования заполните:</b><br>${readiness.missing.join('<br>')}${dateControl}</div>`);
   }
 }
 
@@ -3219,12 +3256,37 @@ function aiExtractJsonObject(raw) {
 }
 
 function aiParseResponse(raw) {
-  try {
-    const objectText = aiExtractJsonObject(raw);
-    if(!objectText) return {message: raw};
-    const parsed = JSON.parse(objectText);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {message: raw};
-  } catch(e) { return {message: raw}; }
+  let value = String(raw || '').trim();
+  // A provider/proxy can serialise the model JSON one extra time.  In that
+  // case the old parser looked for the inner `{`, then failed on escaped
+  // quotes and printed the entire payload in the chat instead of applying it.
+  for(let pass = 0; pass < 2; pass++) {
+    try {
+      const whole = JSON.parse(value);
+      if(typeof whole === 'string') { value = whole.trim(); continue; }
+      if(whole && typeof whole === 'object' && !Array.isArray(whole)) return whole;
+    } catch(_) { /* try the first complete object below */ }
+    try {
+      const objectText = aiExtractJsonObject(value);
+      if(!objectText) break;
+      const parsed = JSON.parse(objectText);
+      if(typeof parsed === 'string') { value = parsed.trim(); continue; }
+      if(parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch(_) { break; }
+  }
+  return {message: raw};
+}
+
+function aiPreventFalseGenerationClaim(parsed) {
+  if(!parsed || typeof parsed !== 'object') return parsed;
+  const message = String(parsed.message || '');
+  // Only aiGenerate can create a download and report a finished package.  A
+  // conversational model has no access to that task, so this wording is
+  // necessarily false when it appears in an ordinary chat reply.
+  if(/пакет(?:\s+документов)?[^.]{0,100}(?:сформирован|готов(?:\s+к\s+(?:выдаче|скачиванию))?)/iu.test(message)) {
+    parsed.message = 'Данные карточки обновлены. Пакет ещё не запускался: проверьте карточку и нажмите «Сформировать пакет». Ссылка на скачивание появится только после завершения генерации.';
+  }
+  return parsed;
 }
 
 function aiHasMeaningfulValue(v) {
@@ -3788,7 +3850,7 @@ async function aiSend() {
 
     if(!result.success) throw new Error(aiFriendlyError(result.error || 'Не удалось выполнить действие'));
 
-    let parsed = aiParseResponse(result.text);
+    let parsed = aiPreventFalseGenerationClaim(aiParseResponse(result.text));
 
     if(parsed.data || Object.keys(authoritativeSourceData).length) {
       let dataForCard = Object.keys(authoritativeSourceData).length

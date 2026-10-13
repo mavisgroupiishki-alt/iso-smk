@@ -1758,6 +1758,16 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
     if payload is None:
         return _humanize_user_visible_text(raw_text)
 
+    # Some providers return the required JSON object as a JSON-encoded value
+    # in ``message``.  Passing that through made the browser print a large
+    # technical payload and skipped card updates.  Unwrap only a nested reply
+    # that has the normal assistant-response shape; ordinary text is untouched.
+    nested = _extract_ai_json_object(payload.get('message')) if isinstance(payload.get('message'), str) else None
+    if isinstance(nested, dict) and any(key in nested for key in ('data', 'questions')):
+        if not nested.get('questions') and isinstance(payload.get('questions'), list):
+            nested['questions'] = payload['questions']
+        payload = nested
+
     # The model occasionally returns an abbreviated top-level ``scope`` or
     # repeats the JSON schema with empty strings.  Neither case may erase a
     # scope that the user selected in the interface: ISO/SUOT templates use

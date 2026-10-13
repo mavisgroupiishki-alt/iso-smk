@@ -24,11 +24,23 @@ function extractFunction(name) {
 
 const context = {};
 vm.createContext(context);
-vm.runInContext(['aiExtractJsonObject', 'aiParseResponse', 'aiIsGenerateCommand'].map(extractFunction).join('\n\n'), context);
+vm.runInContext(['aiExtractJsonObject', 'aiParseResponse', 'aiPreventFalseGenerationClaim', 'aiIsGenerateCommand'].map(extractFunction).join('\n\n'), context);
 
 const parsed = context.aiParseResponse('{"message":"Пакет готов","questions":[]}\nГотово.');
 if (parsed.message !== 'Пакет готов' || parsed.questions.length !== 0) {
   throw new Error('trailing prose leaked into chat response');
+}
+const wrapped = context.aiParseResponse(JSON.stringify(
+  JSON.stringify({message: 'Данные перенесены в карточку.', questions: [], data: {company: {name: 'ОмиТрейд'}}})
+));
+if (wrapped.message !== 'Данные перенесены в карточку.' || wrapped.data?.company?.name !== 'ОмиТрейд') {
+  throw new Error('a JSON response wrapped as a string leaked into chat instead of updating the card');
+}
+const correctedClaim = context.aiPreventFalseGenerationClaim({
+  message: 'Пакет документов организации ООО «ОмиТрейд» полностью сформирован и готов к выдаче.',
+});
+if (!correctedClaim.message.includes('ещё не запускался')) {
+  throw new Error('ordinary chat output can falsely claim that package generation completed');
 }
 if (!context.aiIsGenerateCommand('формируй') || !context.aiIsGenerateCommand('Сформируй пакет документов')) {
   throw new Error('generation command was not recognized');
