@@ -766,7 +766,10 @@ def _role_audit_points_iso(position: str) -> str:
         return 'п.п. 7.1.1, 7.1.2, 7.5, 9.1.3'
     if 'кадр' in p or 'персонал' in p:
         return 'п.п. 7.2, 7.3, 7.5, 9.1'
-    return 'п.п. 7.2, 7.5, 8.1, 9.1 — ТРЕБУЕТ УТОЧНЕНИЯ для данной должности'
+    # Supporting roles use the baseline ISO 9001 audit criteria.  Do not put a
+    # review marker into a finished audit programme merely because a position
+    # is absent from the specialised-role list above.
+    return 'п.п. 7.2, 7.5, 8.1, 9.1'
 
 
 def _role_audit_points_suot(position: str) -> str:
@@ -777,7 +780,9 @@ def _role_audit_points_suot(position: str) -> str:
         return 'п.п. 6.1–6.2, 7.2–7.5, 8.1, 9.1, 10.2'
     if 'главный инженер' in p or 'гл. инженер' in p or 'производитель работ' in p or 'прораб' in p:
         return 'п.п. 6.1.2, 7.2–7.4, 8.1, 8.1.2, 9.1, 10.2'
-    return 'п.п. 7.2–7.5, 8.1, 9.1 — ТРЕБУЕТ УТОЧНЕНИЯ для данной должности'
+    # The same baseline is used for supporting roles in a completed SUOT
+    # audit programme; specialised roles above retain their narrower criteria.
+    return 'п.п. 7.2–7.5, 8.1, 9.1'
 
 
 def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
