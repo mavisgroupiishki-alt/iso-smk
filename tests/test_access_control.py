@@ -184,6 +184,21 @@ def test_workspace_storage_isolated_with_owner_only_legacy_recovery(tmp_path, mo
     assert server.get_journal_entry(legacy, kristina) is None
 
 
+def test_dedicated_service_storage_isolated_even_with_the_same_login(tmp_path, monkeypatch):
+    """Cloned Render disks must not expose a matching login's old workspace."""
+    actor = {'id': 'kristina', 'role': 'operator'}
+    monkeypatch.setattr(server, 'KV_DIR', tmp_path / 'kv')
+    server.KV_DIR.mkdir()
+    key = 'igor:company:one'
+
+    monkeypatch.setenv('IGOR_WORKSPACE_USERNAME', 'nastya')
+    server.kv_set_for_user(actor, key, 'nastya-service-copy')
+
+    monkeypatch.setenv('IGOR_WORKSPACE_USERNAME', 'kristina')
+    assert server.kv_get_for_user(actor, key) is None
+    assert not server.auth_owns_record(actor, {'owner_user_id': 'workspace:nastya:user:kristina'})
+
+
 def test_archive_queue_round_robin_between_workspaces():
     candidates = [
         ('a1', {'status': 'queued', 'queued_at': '2026-10-06T09:00:00', 'owner_user_id': 'nastya'}),

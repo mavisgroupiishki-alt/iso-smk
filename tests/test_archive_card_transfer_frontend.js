@@ -27,12 +27,18 @@ function extractFunction(name) {
 }
 
 const names = [
+  'aiWorkspaceStorageScope',
+  'aiWorkspaceLocalPrefix',
+  'aiWorkspaceLastCompanyKey',
   'aiHasMeaningfulValue',
   'aiArchiveCardTransferDescription',
   'aiMakeArchiveCardTransferMessage',
   'aiCanFinishArchiveWithoutChat',
 ];
-const context = {};
+const context = {
+  igorAuthUser: { username: 'kristina' },
+  location: { host: 'iso-smk-kristina.onrender.com' },
+};
 vm.createContext(context);
 vm.runInContext(names.map(extractFunction).join('\n\n'), context);
 
@@ -61,6 +67,12 @@ if (!context.aiCanFinishArchiveWithoutChat('', { staff: [{}] })) {
 }
 if (context.aiCanFinishArchiveWithoutChat('добавь объект', { staff: [{}] })) {
   throw new Error('a user correction still needs the chat');
+}
+if (!context.aiWorkspaceLocalPrefix().includes('iso-smk-kristina.onrender.com')) {
+  throw new Error('browser storage must be scoped to the dedicated service host');
+}
+if (!context.aiWorkspaceLastCompanyKey().includes('iso-smk-kristina.onrender.com')) {
+  throw new Error('last-card pointer must be scoped to the dedicated service host');
 }
 
 console.log('archive card-transfer status regression: PASS');

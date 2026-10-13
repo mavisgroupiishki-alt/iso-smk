@@ -130,10 +130,25 @@ def kv_list(prefix: str = ''):
 
 def _user_kv_key(actor: dict, key: str) -> str:
     """Keep the browser-facing key stable while isolating its durable value."""
+    owner_id = _storage_owner_id(actor)
+    if not owner_id:
+        raise PermissionError('Не удалось определить рабочее пространство пользователя.')
+    return f'user:{owner_id}:{key}'
+
+
+def _workspace_storage_scope() -> str:
+    """Return the dedicated Render workspace id, when this is such a service."""
+    workspace = _auth_workspace_config()
+    return str(workspace.get('username') or '') if workspace else ''
+
+
+def _storage_owner_id(actor: dict) -> str:
+    """Scope records by dedicated service as well as by authenticated user."""
     user_id = str((actor or {}).get('id') or '')
     if not user_id:
-        raise PermissionError('Не удалось определить рабочее пространство пользователя.')
-    return f'user:{user_id}:{key}'
+        return ''
+    workspace = _workspace_storage_scope()
+    return f'workspace:{workspace}:user:{user_id}' if workspace else user_id
 
 
 def kv_set_for_user(actor: dict, key: str, value: str):
@@ -144,7 +159,7 @@ def kv_get_for_user(actor: dict, key: str):
     row = kv_get(_user_kv_key(actor, key))
     # Records created before workspaces existed have no owner.  Keep them
     # recoverable only for the owner; never expose them to an operator.
-    if row is None and actor and actor.get('role') == 'owner':
+    if row is None and actor and actor.get('role') == 'owner' and not _workspace_storage_scope():
         return kv_get(key)
     return row
 
@@ -158,7 +173,7 @@ def kv_list_for_user(actor: dict, prefix: str = ''):
     scoped = kv_list(scoped_prefix)
     namespace = _user_kv_key(actor, '')
     logical = [key[len(namespace):] for key in scoped if key.startswith(namespace)]
-    if actor and actor.get('role') == 'owner':
+    if actor and actor.get('role') == 'owner' and not _workspace_storage_scope():
         # Only the owner can recover historical unscoped data.  New accounts
         # never see it, so a previous shared workspace cannot leak to them.
         logical.extend(key for key in kv_list(prefix) if not key.startswith('user:'))
@@ -433,10 +448,10 @@ def auth_owns_record(actor: dict, record: dict) -> bool:
         return False
     owner_user_id = record.get('owner_user_id')
     if owner_user_id:
-        return owner_user_id == actor.get('id')
+        return owner_user_id == _storage_owner_id(actor)
     # Historical records had no author.  They remain recoverable only to the
     # original owner instead of becoming visible to every later account.
-    return actor.get('role') == 'owner'
+    return actor.get('role') == 'owner' and not _workspace_storage_scope()
 
 
 # ── База знаний ИИгоря ───────────────────────────────────────────────
@@ -2067,7 +2082,7 @@ def save_company(data, actor: dict):
         if not auth_owns_record(actor, existing):
             raise PermissionError('Карточка принадлежит другому рабочему пространству.')
     data['id']=cid
-    data['owner_user_id'] = actor['id']
+    data['owner_user_id'] = _storage_owner_id(actor)
     _atomic_write_text(CO_DIR/f'{cid}.json', json.dumps(data,ensure_ascii=False,indent=2))
     return cid
 
@@ -7005,7 +7020,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 'environment': 'render' if RENDER_GIT_COMMIT else 'local',
             })
         elif p == '/api/archive-queue':
-            self._json({'tasks': archive_queue_items(self._request_user.get('id'))})
+            self._json({'tasks': archive_queue_items(_storage_owner_id(self._request_user))})
         elif p=='/api/companies':             self._json(get_companies(self._request_user))
         elif p=='/api/journal':               self._json(get_journal(self._request_user))
         elif p=='/api/kv/get':
@@ -7070,12 +7085,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     # mistaken for extracted company data.
                     'sourceStatus': task.get('source_status') or {},
                     'queuePosition': (
-                        archive_queue_position(task_id, self._request_user.get('id'))
+                        archive_queue_position(task_id, _storage_owner_id(self._request_user))
                         if task.get('kind') == 'archive' and task.get('status') in ('queued', 'running')
                         else 0
                     ),
                     'queueAhead': (
-                        archive_queue_ahead(task_id, self._request_user.get('id'))
+                        archive_queue_ahead(task_id, _storage_owner_id(self._request_user))
                         if task.get('kind') == 'archive' and task.get('status') in ('queued', 'running')
                         else []
                     ),
@@ -7214,7 +7229,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 archive_product = 'suot'
             elif 'исо' in low_name or 'iso' in low_name:
                 archive_product = 'iso'
-        existing = find_archive_task_by_upload_id(user['id'], client_upload_id)
+        existing = find_archive_task_by_upload_id(_storage_owner_id(user), client_upload_id)
         if existing:
             # The retry's temporary streamed body is not part of the existing
             # task.  Leaving it behind filled the 1 GB disk after several RAR
@@ -7258,7 +7273,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
         task = {
             'status': 'queued', 'kind': 'archive', 'progress': [], 'step': 0, 'total': 100,
-            'owner_user_id': user['id'], 'filename': filename, 'product': archive_product,
+            'owner_user_id': _storage_owner_id(user), 'filename': filename, 'product': archive_product,
             'package_mode': package_mode, 'scope': request_scope,
             'archive_upload': archive_path.name, 'client_upload_id': client_upload_id,
         }
@@ -7587,7 +7602,7 @@ class H(http.server.BaseHTTPRequestHandler):
                                 413)
                     return
 
-                existing = find_archive_task_by_upload_id(user['id'], client_upload_id)
+                existing = find_archive_task_by_upload_id(_storage_owner_id(user), client_upload_id)
                 if existing:
                     existing_id, _existing_task = existing
                     self._json({'success': True, 'async': True, 'task_id': existing_id})
@@ -7624,7 +7639,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 body = b''
                 task = {
                     'status':'queued', 'kind':'archive', 'progress':[], 'step':0, 'total':100,
-                    'owner_user_id': user['id'],
+                    'owner_user_id': _storage_owner_id(user),
                     'filename': filename,
                     'product': archive_product,
                     'package_mode': package_mode,
@@ -7703,7 +7718,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     task_id = str(_uuid.uuid4())[:8]
                     task = {
                         'progress': [], 'step': 0, 'total': 100,
-                        'owner_user_id': user['id'],
+                        'owner_user_id': _storage_owner_id(user),
                         '_generation_payload': {
                             'ai_data': ai_data,
                             'product': product,

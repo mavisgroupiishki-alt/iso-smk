@@ -1526,12 +1526,18 @@ function aiEscapeHtml(value) {
 
 function aiWorkspaceLocalPrefix() {
   const username = encodeURIComponent(String(igorAuthUser?.username || 'guest').toLowerCase());
-  return `igor:user:${username}:company:`;
+  return `igor:service:${aiWorkspaceStorageScope()}:user:${username}:company:`;
 }
 
 function aiWorkspaceLastCompanyKey() {
   const username = encodeURIComponent(String(igorAuthUser?.username || 'guest').toLowerCase());
-  return `igor:user:${username}:last-company-key`;
+  return `igor:service:${aiWorkspaceStorageScope()}:user:${username}:last-company-key`;
+}
+
+function aiWorkspaceStorageScope() {
+  // The browser origin is unique for each dedicated Render service. Including
+  // it makes an old local restore from another workspace impossible.
+  return encodeURIComponent(String(globalThis.location?.host || 'local').toLowerCase());
 }
 
 function aiLocalCompanyStorageKey(key) {
