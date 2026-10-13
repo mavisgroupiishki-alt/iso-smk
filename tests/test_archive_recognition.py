@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import socketserver
 import pytest
+from openpyxl import Workbook
 
 import server
 
@@ -240,6 +241,65 @@ def test_initial_iso_uses_development_order_date_instead_of_a_model_guess():
     )
 
     assert server._extract_iso_suot_document_date_from_archive(source) == '27.03.2026'
+
+
+def test_initial_iso_archive_returns_company_and_staff_for_automatic_card_fill():
+    """ISO/SUOT upload must fill the card before the chat model replies."""
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zipped:
+        zipped.writestr(
+            'ОмиТрейд/Реквизиты компании.txt',
+            'ООО «ОмиТрейд»\nУНП: 790798634\n'
+            'Юридический адрес: г. Могилев, ул. Кирова, 26Б/4\n'
+            'Директор: Глушинский Олег Иванович\n'
+            'Телефон: +375 33 914-09-89\nEmail: omitrade_build@mail.ru',
+        )
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = 'Штат'
+        sheet.append(['ФИО', 'Должность'])
+        sheet.append(['Глушинский Олег Иванович', 'Директор'])
+        sheet.append(['Никифоренко Дмитрий Леонидович', 'Заместитель директора'])
+        sheet.append(['Запруцкий Александр Викторович', 'Производитель работ'])
+        staff_file = io.BytesIO()
+        workbook.save(staff_file)
+        zipped.writestr('ОмиТрейд/Актуальный штат.xlsx', staff_file.getvalue())
+        zipped.writestr(
+            'ОмиТрейд/Перечень объектов.txt',
+            'Объект: Текущий ремонт помещений 5-го этажа УЗ «Поликлиника №10»',
+        )
+        zipped.writestr(
+            'ОмиТрейд/Перечень поставщиков.txt',
+            'Поставщик: ООО «ПКК РБК»',
+        )
+        zipped.writestr(
+            'ОмиТрейд/Приказ о начале разработки СМК.txt',
+            'ПРИКАЗ 27.03.2026 г. № 1-СМК О начале разработки СМК',
+        )
+
+    result = server.extract_archive_with_vision(
+        archive.getvalue(), 'ОмиТрейд.zip', 'unused', product='iso_suot', package_mode='initial',
+    )
+
+    assert result['structured_data']['company'] == {
+        'name': 'ОмиТрейд',
+        'form': 'ООО',
+        'unp': '790798634',
+        'address': 'г. Могилев, ул. Кирова, 26Б/4',
+        'director_fio': 'Глушинский Олег Иванович',
+        'director_position': 'Директор',
+        'phone': '+375 33 914-09-89',
+        'email': 'omitrade_build@mail.ru',
+    }
+    assert result['structured_data']['staff'] == [
+        {'fio': 'Глушинский Олег Иванович', 'position': 'Директор', 'is_worker': False},
+        {'fio': 'Никифоренко Дмитрий Леонидович', 'position': 'Заместитель директора', 'is_worker': False},
+        {'fio': 'Запруцкий Александр Викторович', 'position': 'Производитель работ', 'is_worker': False},
+    ]
+    assert result['structured_data']['objects'] == [
+        {'name': 'Текущий ремонт помещений 5-го этажа УЗ «Поликлиника №10»'},
+    ]
+    assert result['structured_data']['suppliers'] == [{'name': 'ООО «ПКК РБК»'}]
 
 
 def test_archive_reads_direct_current_files_before_many_old_templates():

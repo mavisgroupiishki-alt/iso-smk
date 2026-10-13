@@ -28,7 +28,9 @@ function extractFunction(name) {
 
 const names = [
   'aiCloneForStorage', 'aiHasMeaningfulValue', 'aiDeepMergeDefined',
-  'aiNormIdentity', 'aiMergeEntityArray', 'aiMergeStructuredSource',
+  'aiNormIdentity', 'aiIsOfficialStaffRow', 'aiOfficialStaffRows',
+  'aiSourceStaffRows',
+  'aiMergeEntityArray', 'aiMergeStructuredSource',
 ];
 const context = {};
 vm.createContext(context);
@@ -61,7 +63,10 @@ context.document = {
 };
 context.aiCurrentData = {};
 context.aiPhotoThumbnails = {};
+context.aiCanonicalizeStaffWorkerFlags = value => value;
 context.aiNormalizeCompanyAttestation = () => {};
+context.aiApplySelectedRequestProfile = () => {};
+context.aiSyncRequestProfileControls = () => {};
 context.aiSaveCurrentCompany = () => ({ catch() {} });
 context.aiValidateReadiness = () => ({ ready: false, warnings: [], missing: [] });
 context.igorEscape = value => String(value);

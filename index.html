@@ -2866,6 +2866,18 @@ function aiOfficialStaffRows(value) {
   return (Array.isArray(value) ? value : []).filter(aiIsOfficialStaffRow);
 }
 
+function aiSourceStaffRows(value) {
+  // Archive fragments may carry a diploma, labour-book or certificate for a
+  // person whose position has already been read from the staffing list. Keep
+  // that evidence for merging; the official-card filter still decides whether
+  // the resulting row is displayable on its own.
+  return (Array.isArray(value) ? value : []).filter(row => {
+    if(!row || typeof row !== 'object' || Array.isArray(row)) return false;
+    const fio = String(row.fio || row.name || row.full_name || '').replace(/\s+/g, ' ').trim();
+    return /^[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2}$/u.test(fio);
+  });
+}
+
 function aiMergeEntityArray(previous, incoming, keyFn) {
   const oldRows = Array.isArray(previous) ? previous : [];
   const newRows = Array.isArray(incoming) ? incoming : [];
@@ -3412,7 +3424,7 @@ function aiMergeStructuredSource(baseData, sourceData) {
     });
   });
   if(Array.isArray(source.staff) && source.staff.length) {
-    base.staff = aiMergeEntityArray(aiOfficialStaffRows(base.staff), aiOfficialStaffRows(source.staff),
+    base.staff = aiMergeEntityArray(aiOfficialStaffRows(base.staff), aiSourceStaffRows(source.staff),
       row => aiNormIdentity(row?.fio || row?.name || row?.full_name));
   }
   if(source.company_attestation) {
@@ -3460,6 +3472,33 @@ function aiMergeStructuredSource(baseData, sourceData) {
 
 function aiCombineStructuredSources(parts) {
   return (parts || []).filter(Boolean).reduce((acc, part) => aiMergeStructuredSource(acc, part), {});
+}
+
+function aiArchiveCardTransferDescription(sourceData) {
+  const source = sourceData || {};
+  const fields = [];
+  const company = source.company || {};
+  if(aiHasMeaningfulValue(company.name)) fields.push('название компании');
+  if(aiHasMeaningfulValue(company.form)) fields.push('форма организации');
+  if(aiHasMeaningfulValue(company.unp)) fields.push('УНП');
+  if(aiHasMeaningfulValue(company.address)) fields.push('адрес');
+  if(aiHasMeaningfulValue(company.director_fio)) fields.push('директор');
+  if(Array.isArray(source.staff) && source.staff.length) fields.push(`штат (${source.staff.length})`);
+  if(Array.isArray(source.objects) && source.objects.length) fields.push(`объекты (${source.objects.length})`);
+  if(Array.isArray(source.suppliers) && source.suppliers.length) fields.push(`поставщики (${source.suppliers.length})`);
+  if(aiHasMeaningfulValue(source.certification?.scope)) fields.push('область применения');
+  if(aiHasMeaningfulValue(source.dates?.audit_date) || aiHasMeaningfulValue(source.certification?.audit_date)) {
+    fields.push('дата оформления');
+  }
+  return fields;
+}
+
+function aiMakeArchiveCardTransferMessage(sourceData) {
+  const fields = aiArchiveCardTransferDescription(sourceData);
+  if(!fields.length) {
+    return 'Архив прочитан, но карточка автоматически не заполнена: в результате разбора нет подтверждённых реквизитов, штата или других полей.';
+  }
+  return `В карточку автоматически перенесено из архива: ${fields.join(', ')}.`;
 }
 
 // Ищет сохранённую компанию по части названия среди сохранённых на сервере (для запросов вида "загрузи ОмиТрейд")
@@ -3798,6 +3837,7 @@ async function aiSend() {
   // и вместо JSON приходит HTML-страница ошибки от Render)
   let filesContent = '';
   let authoritativeSourceData = {};
+  let archiveCardTransferMessage = '';
   if(aiAttachedFiles.length > 0) {
     const total = aiAttachedFiles.length;
     const BATCH = 2;
@@ -3845,6 +3885,7 @@ async function aiSend() {
       // over model guesses. This prevents loss of experience, inserts and attestations.
       aiCurrentData = aiMergeStructuredSource(aiCurrentData, authoritativeSourceData);
       aiRenderCardFromCurrent();
+      archiveCardTransferMessage = aiMakeArchiveCardTransferMessage(authoritativeSourceData);
     }
   }
 
@@ -3920,6 +3961,15 @@ async function aiSend() {
     // После детерминированной нормализации карточки удаляем бессмысленный запрос
     // количества/разрядов: эти данные уже рассчитаны справочником приложения.
     parsed = aiFinalizeCompanyAttestationReply(parsed);
+    // The old generic model reply said "данные карточки обновлены" even when
+    // an archive contributed only the document date.  Replace that claim with
+    // the exact fields returned by the deterministic archive reader.
+    if(archiveCardTransferMessage && /данные\s+карточки\s+обновлены/i.test(String(parsed.message || ''))) {
+      parsed.message = String(parsed.message).replace(
+        /данные\s+карточки\s+обновлены\.?/i,
+        archiveCardTransferMessage,
+      );
+    }
     const cleanHistoryPayload = JSON.stringify(parsed);
     aiHistory.push({role:'assistant', content: cleanHistoryPayload});
     aiAddMsg('ai', parsed.message || result.text, parsed.questions);

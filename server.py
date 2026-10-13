@@ -4466,6 +4466,183 @@ def _canonicalize_staff_worker_flags(data):
             person.pop('role', None)
 
 
+_ISO_SUOT_LEGAL_FORMS = {
+    'ооо': 'ООО',
+    'зао': 'ЗАО',
+    'оао': 'ОАО',
+    'уп': 'УП',
+    'чуп': 'ЧУП',
+    'чтуп': 'ЧТУП',
+    'общество с ограниченной ответственностью': 'ООО',
+    'закрытое акционерное общество': 'ЗАО',
+    'открытое акционерное общество': 'ОАО',
+    'унитарное предприятие': 'УП',
+}
+
+
+def _clean_iso_suot_source_value(value: str) -> str:
+    return re.sub(r'\s+', ' ', str(value or '')).strip(' \t\r\n,;:.')
+
+
+def _iso_suot_company_name_candidates(result_text: str) -> list:
+    """Find the organisation named repeatedly in ISO/SUOT source documents.
+
+    A source archive can also contain suppliers and customers.  Repetition across
+    the archive is a safer signal for the client company than the first legal
+    entity that happens to be mentioned in a contract.
+    """
+    candidates = {}
+    legal_form = (
+        r'Общество\s+с\s+ограниченной\s+ответственностью|'
+        r'Закрытое\s+акционерное\s+общество|Открытое\s+акционерное\s+общество|'
+        r'Унитарное\s+предприятие|ЧТУП|ЧУП|ООО|ЗАО|ОАО|УП'
+    )
+    pattern = re.compile(
+        rf'(?P<form>{legal_form})\s*[«"]\s*(?P<name>[^»"\n]{{2,140}}?)\s*[»"]',
+        re.I,
+    )
+    for path, block in _archive_document_blocks(result_text):
+        path_low = str(path).casefold().replace('ё', 'е')
+        source_bonus = 8 if any(marker in path_low for marker in (
+            'реквизит', 'карточк', 'исходн', 'штат', 'сотрудник', 'персонал',
+        )) else 0
+        seen_in_block = set()
+        for match in pattern.finditer(str(block)):
+            name = _clean_iso_suot_source_value(match.group('name')).strip('«»" ')
+            form = _ISO_SUOT_LEGAL_FORMS.get(match.group('form').casefold(), '')
+            if not name or not form:
+                continue
+            key = (form, name.casefold().replace('ё', 'е'))
+            if key in seen_in_block:
+                continue
+            seen_in_block.add(key)
+            score, count = candidates.get(key, (0, 0, name))[:2]
+            candidates[key] = (score + 1 + source_bonus, count + 1, name)
+    if not candidates:
+        return []
+    ordered = sorted(
+        candidates.items(),
+        key=lambda item: (item[1][0], item[1][1], len(item[1][2])), reverse=True,
+    )
+    return [
+        {'form': form, 'name': details[2]}
+        for (form, _), details in ordered
+    ]
+
+
+def _iso_suot_source_staff(result_text: str) -> list:
+    """Read only explicit full-name / position rows from staffing sources.
+
+    This deliberately does not guess employees from signatures or narrative
+    references.  The card must stay incomplete rather than acquire invented
+    staff; users can see the exact missing field and upload a staff list.
+    """
+    rows, seen = [], set()
+    fio_pattern = r'(?P<fio>[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2})'
+    # Excel/Word text extraction preserves one of these separators for a row.
+    row_pattern = re.compile(
+        rf'^\s*{fio_pattern}\s*(?:;|\||—|–)\s*(?P<position>[^\n;|]{{2,120}})\s*$',
+        re.M,
+    )
+    for path, block in _archive_document_blocks(result_text):
+        path_low = str(path).casefold().replace('ё', 'е')
+        if not any(marker in path_low for marker in (
+            'штат', 'сотрудник', 'персонал', 'кадр', 'список', 'приказ о приеме', 'приказ о приёме',
+        )):
+            continue
+        for match in row_pattern.finditer(str(block)):
+            fio = _clean_iso_suot_source_value(match.group('fio'))
+            position = _clean_iso_suot_source_value(match.group('position'))
+            # Table headers and explanatory notes are not job titles.
+            if not fio or not position or len(position) > 100:
+                continue
+            if position.casefold() in {'должность', 'должности', 'фио'}:
+                continue
+            key = fio.casefold().replace('ё', 'е')
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                'fio': fio,
+                'position': position,
+                'is_worker': _is_worker_position(position),
+            })
+    return rows
+
+
+def _iso_suot_archive_card_data(result_text: str) -> dict:
+    """Build the deterministic card payload for an ISO/SUOT source archive.
+
+    The fast archive pipeline intentionally avoids slow model reconciliation.
+    It therefore must return this payload itself; leaving facts only in raw text
+    made the browser depend on a later, optional chat response to fill the card.
+    """
+    full_text = str(result_text or '')
+    company = {}
+    candidates = _iso_suot_company_name_candidates(full_text)
+    if candidates:
+        company.update(candidates[0])
+
+    unp = re.search(r'\bУНП\s*[:№]?\s*(\d{7,12})\b', full_text, re.I)
+    if unp:
+        company['unp'] = unp.group(1)
+    address = re.search(r'(?:Юридическ(?:ий|ого)\s+)?адрес\s*[:—-]\s*([^\n]{5,220})', full_text, re.I)
+    if address:
+        company['address'] = _clean_iso_suot_source_value(address.group(1))
+    phone = re.search(r'(?:телефон|тел\.)\s*[:—-]\s*([+()\d\s-]{7,40})', full_text, re.I)
+    if phone:
+        company['phone'] = _clean_iso_suot_source_value(phone.group(1))
+    email = re.search(r'\b[\w.+-]+@[\w.-]+\.[A-Za-zА-Яа-я]{2,}\b', full_text)
+    if email:
+        company['email'] = email.group(0)
+
+    director = re.search(
+        r'(?:директор|руководитель)\s*[:—-]\s*'
+        r'([А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2})\b', full_text, re.I,
+    )
+    if director:
+        company['director_fio'] = _clean_iso_suot_source_value(director.group(1))
+        company['director_position'] = 'Директор'
+
+    staff = _iso_suot_source_staff(full_text)
+    if not company.get('director_fio'):
+        director_row = next((row for row in staff if 'директор' in row['position'].casefold()), None)
+        if director_row:
+            company['director_fio'] = director_row['fio']
+            company['director_position'] = director_row['position']
+
+    objects, suppliers = [], []
+    object_seen, supplier_seen = set(), set()
+    for path, block in _archive_document_blocks(full_text):
+        path_low = str(path).casefold().replace('ё', 'е')
+        body = str(block)
+        if 'объект' in path_low:
+            for match in re.finditer(r'(?:объект|наименование объекта)\s*[:—-]\s*([^\n]{3,300})', body, re.I):
+                name = _clean_iso_suot_source_value(match.group(1))
+                key = name.casefold().replace('ё', 'е')
+                if name and key not in object_seen:
+                    object_seen.add(key)
+                    objects.append({'name': name})
+        if 'поставщик' in path_low:
+            for match in re.finditer(r'(?:поставщик|поставщики)\s*[:—-]\s*([^\n]{3,220})', body, re.I):
+                name = _clean_iso_suot_source_value(match.group(1))
+                key = name.casefold().replace('ё', 'е')
+                if name and key not in supplier_seen:
+                    supplier_seen.add(key)
+                    suppliers.append({'name': name})
+
+    data = {}
+    if company:
+        data['company'] = company
+    if staff:
+        data['staff'] = staff
+    if objects:
+        data['objects'] = objects
+    if suppliers:
+        data['suppliers'] = suppliers
+    return data
+
+
 def _extract_iso_suot_document_date_from_archive(result_text):
     """Return the source approval/development date for an initial ISO/SUOT set.
 
@@ -6442,6 +6619,45 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         # confirmed list is safer than adding a person without a real FIO/role.
         structured_data['staff'] = summary_staff
     if str(product) in ('iso', 'suot', 'iso_suot') and str(package_mode) == 'initial':
+        # ISO/SUOT fast mode intentionally does not call the chat model while an
+        # archive is being read.  Return the facts needed by the card directly;
+        # otherwise they survive only in ``text`` and appear in the card only
+        # after a second, unrelated user message reaches the model.
+        iso_suot_card_data = _iso_suot_archive_card_data(final_text)
+        for section in ('company', 'certification', 'dates'):
+            incoming = iso_suot_card_data.get(section)
+            if incoming:
+                structured_data[section] = {
+                    **(structured_data.get(section) or {}),
+                    **incoming,
+                }
+        for collection in ('staff', 'objects', 'suppliers'):
+            incoming = iso_suot_card_data.get(collection) or []
+            if not incoming:
+                continue
+            existing = list(structured_data.get(collection) or [])
+            if collection == 'staff':
+                seen = {
+                    str(row.get('fio') or '').casefold().replace('ё', 'е')
+                    for row in existing if isinstance(row, dict)
+                }
+                for row in incoming:
+                    key = str(row.get('fio') or '').casefold().replace('ё', 'е')
+                    if key and key not in seen:
+                        existing.append(row)
+                        seen.add(key)
+            else:
+                seen = {
+                    str(row.get('name') if isinstance(row, dict) else row or '').casefold().replace('ё', 'е')
+                    for row in existing
+                }
+                for row in incoming:
+                    key = str(row.get('name') if isinstance(row, dict) else row or '').casefold().replace('ё', 'е')
+                    if key and key not in seen:
+                        existing.append(row)
+                        seen.add(key)
+            structured_data[collection] = existing
+        _canonicalize_staff_worker_flags(structured_data)
         document_date = _extract_iso_suot_document_date_from_archive(final_text)
         if document_date:
             # Archive evidence has priority over a model-selected stale date.
