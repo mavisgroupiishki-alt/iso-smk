@@ -21,6 +21,16 @@ def test_ai_reply_without_json_is_not_exposed_as_service_payload():
     assert server._extract_ai_json_object('обычный ответ') is None
 
 
+def test_incomplete_json_reply_is_replaced_with_a_safe_message():
+    raw = '{"message":"Данные перенесены","data":{"staff":[{"fio":"Иванов И.И."}'
+
+    result = json.loads(server._sanitize_ai_visible_response(raw, 'iso_suot'))
+
+    assert 'неполным' in result['message'].lower()
+    assert result['questions'] == []
+    assert 'Иванов' not in result['message']
+
+
 def test_nested_model_json_is_unwrapped_before_it_reaches_the_browser():
     raw = json.dumps({
         'message': json.dumps({

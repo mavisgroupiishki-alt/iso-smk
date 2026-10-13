@@ -30,6 +30,7 @@ const names = [
   'aiHasMeaningfulValue',
   'aiArchiveCardTransferDescription',
   'aiMakeArchiveCardTransferMessage',
+  'aiCanFinishArchiveWithoutChat',
 ];
 const context = {};
 vm.createContext(context);
@@ -53,6 +54,13 @@ const datesOnly = context.aiMakeArchiveCardTransferMessage({
 });
 if (datesOnly !== 'В карточку автоматически перенесено из архива: дата оформления.') {
   throw new Error('dates-only archive must not be described as a fully updated card');
+}
+
+if (!context.aiCanFinishArchiveWithoutChat('', { staff: [{}] })) {
+  throw new Error('an upload with deterministic source data must not wait for a chat reply');
+}
+if (context.aiCanFinishArchiveWithoutChat('добавь объект', { staff: [{}] })) {
+  throw new Error('a user correction still needs the chat');
 }
 
 console.log('archive card-transfer status regression: PASS');

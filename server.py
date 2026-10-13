@@ -1756,6 +1756,15 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
     """
     payload = _extract_ai_json_object(raw_text)
     if payload is None:
+        # A token-limited answer can stop inside the required JSON object. It
+        # is neither valid card data nor useful prose, so never dump it into chat.
+        raw_value = str(raw_text or '').lstrip()
+        if raw_value.startswith('{') or raw_value.startswith('['):
+            return json.dumps({
+                'message': ('Ответ сервиса оказался неполным. Данные, которые уже были надёжно '
+                            'перенесены из архива, остались в карточке.'),
+                'questions': [],
+            }, ensure_ascii=False)
         return _humanize_user_visible_text(raw_text)
 
     # Some providers return the required JSON object as a JSON-encoded value
@@ -4516,8 +4525,14 @@ def _iso_suot_company_name_candidates(result_text: str) -> list:
             if key in seen_in_block:
                 continue
             seen_in_block.add(key)
+            before = str(block)[max(0, match.start() - 180):match.start()].casefold().replace('ё', 'е')
+            # An invoice often names the executor first. Its customer is the
+            # company whose card we must complete, so give customer labels precedence.
+            client_bonus = 40 if any(marker in before for marker in (
+                'заказчик', 'клиент', 'покупатель', 'организация-заказчик',
+            )) else 0
             score, count = candidates.get(key, (0, 0, name))[:2]
-            candidates[key] = (score + 1 + source_bonus, count + 1, name)
+            candidates[key] = (score + 1 + source_bonus + client_bonus, count + 1, name)
     if not candidates:
         return []
     ordered = sorted(
@@ -4530,6 +4545,28 @@ def _iso_suot_company_name_candidates(result_text: str) -> list:
     ]
 
 
+def _iso_suot_company_context(result_text: str, company_name: str) -> str:
+    """Return the strongest local source block for the selected company."""
+    words = [re.escape(word) for word in str(company_name or '').split() if word]
+    if not words:
+        return str(result_text or '')
+    name_pattern = re.compile(r'\s+'.join(words), re.I)
+    matches = []
+    for _, block in _archive_document_blocks(result_text):
+        body = str(block)
+        for match in name_pattern.finditer(body):
+            before = body[max(0, match.start() - 180):match.start()].casefold().replace('ё', 'е')
+            score = 1 + (40 if any(marker in before for marker in (
+                'заказчик', 'клиент', 'покупатель', 'организация-заказчик',
+            )) else 0)
+            # Start at the selected company name: an executor's requisites can
+            # appear immediately before a customer label in the same invoice.
+            matches.append((score, body[match.start():match.start() + 1800]))
+    if not matches:
+        return str(result_text or '')
+    return max(matches, key=lambda item: item[0])[1]
+
+
 def _iso_suot_source_staff(result_text: str) -> list:
     """Read only explicit full-name / position rows from staffing sources.
 
@@ -4538,10 +4575,34 @@ def _iso_suot_source_staff(result_text: str) -> list:
     staff; users can see the exact missing field and upload a staff list.
     """
     rows, seen = [], set()
+
+    def add_row(fio, position, hire_date='', is_part_time=False):
+        fio = _clean_iso_suot_source_value(fio)
+        position = _clean_iso_suot_source_value(position)
+        if not fio or not position or len(position) > 100:
+            return
+        if position.casefold() in {'должность', 'должности', 'фио'}:
+            return
+        key = fio.casefold().replace('ё', 'е')
+        if key in seen:
+            return
+        seen.add(key)
+        row = {
+            'fio': fio,
+            'position': position,
+            'is_worker': _is_worker_position(position),
+        }
+        if re.fullmatch(r'\d{2}\.\d{2}\.\d{4}', str(hire_date or '').strip()):
+            row['hire_date'] = str(hire_date).strip()
+        if is_part_time:
+            row['employment_type'] = 'совместительство'
+            row['part_time'] = True
+        rows.append(row)
+
     fio_pattern = r'(?P<fio>[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2})'
     # Excel/Word text extraction preserves one of these separators for a row.
     row_pattern = re.compile(
-        rf'^\s*{fio_pattern}\s*(?:;|\||—|–)\s*(?P<position>[^\n;|]{{2,120}})\s*$',
+        rf'^\s*(?:\d+\s*(?:;|\|)\s*)?{fio_pattern}\s*(?:;|\||—|–)\s*(?P<position>[^\n;|]{{2,120}})\s*$',
         re.M,
     )
     for path, block in _archive_document_blocks(result_text):
@@ -4550,23 +4611,27 @@ def _iso_suot_source_staff(result_text: str) -> list:
             'штат', 'сотрудник', 'персонал', 'кадр', 'список', 'приказ о приеме', 'приказ о приёме',
         )):
             continue
+        lines = str(block).splitlines()
+        for index, line in enumerate(lines):
+            headers = [_clean_iso_suot_source_value(value).casefold() for value in line.split('|')]
+            fio_index = next((i for i, value in enumerate(headers) if 'фио' in value), None)
+            position_index = next((i for i, value in enumerate(headers) if 'должност' in value), None)
+            hire_date_index = next((i for i, value in enumerate(headers) if 'дата принят' in value), None)
+            if fio_index is None or position_index is None:
+                continue
+            for value_line in lines[index + 1:]:
+                cells = [_clean_iso_suot_source_value(value) for value in value_line.split('|')]
+                if len(cells) <= max(fio_index, position_index):
+                    continue
+                fio, position = cells[fio_index], cells[position_index]
+                if not re.fullmatch(r'[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2}', fio):
+                    continue
+                hire_date = cells[hire_date_index] if hire_date_index is not None and len(cells) > hire_date_index else ''
+                is_part_time = any('совместител' in value.casefold() for value in cells)
+                add_row(fio, position, hire_date, is_part_time)
+            break
         for match in row_pattern.finditer(str(block)):
-            fio = _clean_iso_suot_source_value(match.group('fio'))
-            position = _clean_iso_suot_source_value(match.group('position'))
-            # Table headers and explanatory notes are not job titles.
-            if not fio or not position or len(position) > 100:
-                continue
-            if position.casefold() in {'должность', 'должности', 'фио'}:
-                continue
-            key = fio.casefold().replace('ё', 'е')
-            if key in seen:
-                continue
-            seen.add(key)
-            rows.append({
-                'fio': fio,
-                'position': position,
-                'is_worker': _is_worker_position(position),
-            })
+            add_row(match.group('fio'), match.group('position'))
     return rows
 
 
@@ -4582,17 +4647,18 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
     candidates = _iso_suot_company_name_candidates(full_text)
     if candidates:
         company.update(candidates[0])
+    company_context = _iso_suot_company_context(full_text, company.get('name'))
 
-    unp = re.search(r'\bУНП\s*[:№]?\s*(\d{7,12})\b', full_text, re.I)
+    unp = re.search(r'\bУНП\s*[:№]?\s*(\d{7,12})\b', company_context, re.I)
     if unp:
         company['unp'] = unp.group(1)
-    address = re.search(r'(?:Юридическ(?:ий|ого)\s+)?адрес\s*[:—-]\s*([^\n]{5,220})', full_text, re.I)
+    address = re.search(r'(?:Юридическ(?:ий|ого)\s+)?адрес\s*[:—-]\s*([^\n]{5,220})', company_context, re.I)
     if address:
         company['address'] = _clean_iso_suot_source_value(address.group(1))
-    phone = re.search(r'(?:телефон|тел\.)\s*[:—-]\s*([+()\d\s-]{7,40})', full_text, re.I)
+    phone = re.search(r'(?:телефон|тел\s*\.?)\s*[:—-]\s*([+()\d\s-]{7,40})', company_context, re.I)
     if phone:
         company['phone'] = _clean_iso_suot_source_value(phone.group(1))
-    email = re.search(r'\b[\w.+-]+@[\w.-]+\.[A-Za-zА-Яа-я]{2,}\b', full_text)
+    email = re.search(r'\b[\w.+-]+@[\w.-]+\.[A-Za-zА-Яа-я]{2,}\b', company_context)
     if email:
         company['email'] = email.group(0)
 
@@ -4617,14 +4683,14 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
         path_low = str(path).casefold().replace('ё', 'е')
         body = str(block)
         if 'объект' in path_low:
-            for match in re.finditer(r'(?:объект|наименование объекта)\s*[:—-]\s*([^\n]{3,300})', body, re.I):
+            for match in re.finditer(r'(?:(?:перечень\s+)?объект(?:ов)?|наименование объекта)\s*[:—-]\s*([^\n]{3,300})', body, re.I):
                 name = _clean_iso_suot_source_value(match.group(1))
                 key = name.casefold().replace('ё', 'е')
                 if name and key not in object_seen:
                     object_seen.add(key)
                     objects.append({'name': name})
         if 'поставщик' in path_low:
-            for match in re.finditer(r'(?:поставщик|поставщики)\s*[:—-]\s*([^\n]{3,220})', body, re.I):
+            for match in re.finditer(r'(?:перечень\s+)?поставщик(?:и|ов)?\s*[:—-]\s*([^\n]{3,220})', body, re.I):
                 name = _clean_iso_suot_source_value(match.group(1))
                 key = name.casefold().replace('ё', 'е')
                 if name and key not in supplier_seen:

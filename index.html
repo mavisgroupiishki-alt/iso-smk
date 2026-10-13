@@ -3501,6 +3501,10 @@ function aiMakeArchiveCardTransferMessage(sourceData) {
   return `В карточку автоматически перенесено из архива: ${fields.join(', ')}.`;
 }
 
+function aiCanFinishArchiveWithoutChat(text, sourceData) {
+  return !String(text || '').trim() && Object.keys(sourceData || {}).length > 0;
+}
+
 // Ищет сохранённую компанию по части названия среди сохранённых на сервере (для запросов вида "загрузи ОмиТрейд")
 async function aiFindSavedCompanyByName(query) {
   const q = query.toLowerCase();
@@ -3901,6 +3905,23 @@ async function aiSend() {
       aiRemoveTyping();
       aiAddMsg('ai', '❌ ' + aiFriendlyError(e.message));
     }
+    aiLoading = false;
+    document.getElementById('ai-send-btn').disabled = false;
+    return;
+  }
+
+  // A plain archive upload already has deterministic data from the reader.
+  // Do not ask the chat model to repeat a long staff list: a token-limited
+  // response used to arrive as incomplete JSON and prevented card transfer.
+  if(aiCanFinishArchiveWithoutChat(text, authoritativeSourceData)) {
+    const parsed = {
+      message: archiveCardTransferMessage || 'Данные из архива перенесены в карточку.',
+      questions: [],
+    };
+    aiRemoveTyping();
+    aiHistory.push({role:'user', content:'ЗАГРУЖЕН АРХИВ: ' + (fileNames || 'файлы')});
+    aiHistory.push({role:'assistant', content:JSON.stringify(parsed)});
+    aiAddMsg('ai', parsed.message, parsed.questions);
     aiLoading = false;
     document.getElementById('ai-send-btn').disabled = false;
     return;
