@@ -4,6 +4,17 @@ const vm = require('vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 
+if (!html.includes('>ИСО 9001</button>') ||
+    !html.includes('>СУОТ</button>') ||
+    !html.includes('>ИСО 9001 + СУОТ</button>')) {
+  throw new Error('primary ISO/SUOT standards are not shown as separate choices');
+}
+if (!html.includes('>Новый пакет</button>') ||
+    !html.includes('>Периодика / ИК</button>') ||
+    !html.includes('Новый пакет — для первичного оформления')) {
+  throw new Error('initial package and periodika choices are not explained separately');
+}
+
 function extractFunction(name) {
   const start = html.indexOf(`function ${name}(`);
   if (start < 0) throw new Error(`Function not found: ${name}`);
@@ -28,7 +39,7 @@ function extractFunction(name) {
 
 const context = {
   AI_PRODUCT_LABELS: {
-    iso: 'ИК ИСО', suot: 'ИК СУОТ', iso_suot: 'ИК ИСО + СУОТ',
+    iso: 'ИСО 9001', suot: 'СУОТ', iso_suot: 'ИСО 9001 + СУОТ',
     spk_bisp: 'СПК БИСП', spk_stroy: 'СПК Стройкомплекс',
     company_att: 'Аттестация компании', att: 'Аттестация специалиста',
   },
@@ -86,7 +97,7 @@ const base = context.aiBuildArchivePeriodikaContext(
   'любой текст',
   '===== ФАЙЛ: прошлый ИСО+СУОТ.zip =====\nООО «Тест», штат и объекты'
 );
-if (!base.includes('ЭТО ПЕРИОДИКА: ИК ИСО') ||
+if (!base.includes('ЭТО ПЕРИОДИКА: ИСО 9001') ||
     !base.includes('НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ') ||
     !base.includes('Не создавай пустую новую компанию')) {
   throw new Error('previous package is not passed to periodika as the base');

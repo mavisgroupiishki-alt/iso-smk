@@ -481,23 +481,27 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
       </div>
 
       <section class="ai-request-setup" aria-label="Параметры нового пакета">
-        <div class="ai-request-title">1. Выберите пакет — выбор не изменится от текста чата или названия файла</div>
+        <div class="ai-request-title">1. Выберите стандарт — выбор не изменится от текста чата или названия файла</div>
         <div id="ai-product-picker" class="ai-product-grid">
-          <button type="button" class="ai-product-choice" data-product="iso" onclick="aiSelectProduct('iso')">ИК ИСО</button>
-          <button type="button" class="ai-product-choice" data-product="suot" onclick="aiSelectProduct('suot')">ИК СУОТ</button>
-          <button type="button" class="ai-product-choice" data-product="iso_suot" onclick="aiSelectProduct('iso_suot')">ИК ИСО + СУОТ</button>
+          <button type="button" class="ai-product-choice" data-product="iso" onclick="aiSelectProduct('iso')">ИСО 9001</button>
+          <button type="button" class="ai-product-choice" data-product="suot" onclick="aiSelectProduct('suot')">СУОТ</button>
+          <button type="button" class="ai-product-choice" data-product="iso_suot" onclick="aiSelectProduct('iso_suot')">ИСО 9001 + СУОТ</button>
           <button type="button" class="ai-product-choice" data-product="spk_bisp" onclick="aiSelectProduct('spk_bisp')">СПК БИСП</button>
           <button type="button" class="ai-product-choice" data-product="spk_stroy" onclick="aiSelectProduct('spk_stroy')">СПК Стройкомплекс</button>
           <button type="button" class="ai-product-choice" data-product="company_att" onclick="aiSelectProduct('company_att')">Аттестация компании</button>
           <button type="button" class="ai-product-choice" data-product="att" onclick="aiSelectProduct('att')">Аттестация специалиста</button>
         </div>
         <div class="ai-request-fields">
-          <input id="ai-request-scope" type="text" placeholder="2. Область работ, например: только СМР" oninput="aiSetRequestScope(this.value)">
-          <div aria-label="Режим пакета" class="ai-product-grid">
-            <button type="button" class="ai-mode-choice active" data-package-mode="initial" onclick="aiSelectPackageMode('initial')">Первичный</button>
-            <button type="button" class="ai-mode-choice" data-package-mode="periodika" onclick="aiSelectPackageMode('periodika')">Периодика</button>
+          <input id="ai-request-scope" type="text" placeholder="3. Область работ, например: только СМР" oninput="aiSetRequestScope(this.value)">
+          <div class="ai-package-mode">
+            <div class="ai-mode-label">2. Тип оформления</div>
+            <div aria-label="Тип оформления" class="ai-product-grid">
+              <button type="button" class="ai-mode-choice active" data-package-mode="initial" onclick="aiSelectPackageMode('initial')">Новый пакет</button>
+              <button type="button" class="ai-mode-choice" data-package-mode="periodika" onclick="aiSelectPackageMode('periodika')">Периодика / ИК</button>
+            </div>
           </div>
         </div>
+        <div class="ai-mode-help">Новый пакет — для первичного оформления. Периодика / ИК — только для обновления ранее оформленного пакета.</div>
       </section>
 
       <!-- CHAT + CARD LAYOUT -->
@@ -1357,8 +1361,11 @@ document.addEventListener('DOMContentLoaded', () => {
 .ai-product-choice:hover,.ai-mode-choice:hover{border-color:#9B5B69;background:#F9EEF0}
 .ai-product-choice.active,.ai-mode-choice.active{background:#8B4A5C;border-color:#8B4A5C;color:#fff}
 .ai-request-fields{display:grid;grid-template-columns:minmax(160px,1fr) auto;gap:6px;align-items:center}
+.ai-package-mode{display:grid;gap:3px;justify-items:end}
+.ai-mode-label{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#A8938A}
+.ai-mode-help{font-size:10px;line-height:1.35;color:#7B625E}
 .ai-request-fields input{height:29px;padding:5px 8px;font-size:11px}
-@media(max-width:720px){.ai-request-fields{grid-template-columns:1fr}.ai-product-choice,.ai-mode-choice{font-size:10px}}
+@media(max-width:720px){.ai-request-fields{grid-template-columns:1fr}.ai-package-mode{justify-items:start}.ai-product-choice,.ai-mode-choice{font-size:10px}}
 .ai-qr{font-size:11px;padding:4px 10px;border-radius:16px;border:1px solid #D4C4B8;background:#fff;color:#4A3639;cursor:pointer;font-family:inherit;transition:all .12s}
 .ai-qr:hover{border-color:#7A4552;color:#8B4A5C;background:#F3E4E8}
 .ai-msg-ai{display:flex;gap:8px;align-items:flex-start;max-width:680px;align-self:flex-start}
@@ -1404,7 +1411,7 @@ let aiHistory = [];
 let aiCurrentData = {};
 let aiPhotoThumbnails = {}; // filename -> base64 миниатюра, для проверки распознанных данных глазами
 const AI_PRODUCT_LABELS = {
-  iso: 'ИК ИСО', suot: 'ИК СУОТ', iso_suot: 'ИК ИСО + СУОТ',
+  iso: 'ИСО 9001', suot: 'СУОТ', iso_suot: 'ИСО 9001 + СУОТ',
   spk_bisp: 'СПК БИСП', spk_stroy: 'СПК Стройкомплекс',
   company_att: 'Аттестация компании', att: 'Аттестация специалиста'
 };
