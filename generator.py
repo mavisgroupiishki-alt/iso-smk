@@ -1099,11 +1099,12 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     ]
     import re as _re_worker
     def _is_worker(p):
-        if p.get('is_worker'): return True
         pos = p.get('position','').lower().strip()
         if any(excl in pos for excl in ITR_EXCLUDE):
             return False
-        return any(_re_worker.search(r'\b' + kw + r'\w*\b', pos) for kw in WORKER_KEYWORDS)
+        if any(_re_worker.search(r'\b' + kw + r'\w*\b', pos) for kw in WORKER_KEYWORDS):
+            return True
+        return bool(p.get('is_worker'))
 
     itr     = [s for s in staff if not _is_worker(s)]
     workers = [s for s in staff if _is_worker(s)]

@@ -229,6 +229,19 @@ def test_periodika_can_use_a_previous_iigor_package():
     assert 'ПРЕДЫДУЩИЙ ПАКЕТ' in result['text']
 
 
+def test_initial_iso_uses_development_order_date_instead_of_a_model_guess():
+    source = (
+        '--- ОмиТрейд_Приказ_1_о_начале_разработки_СМК.docx ---\n'
+        'ПРИКАЗ 27.03.2026 г. № 1-СМК О начале разработки СМК\n\n'
+        '--- 4.1 Внутренние аудиты программа журнал 2026.docx ---\n'
+        'УТВЕРЖДАЮ 27.03.2026. ПРОГРАММА проведения внутренних аудитов на 2026 год\n\n'
+        '--- Старый протокол.docx ---\n'
+        'Протокол от 16.03.2025'
+    )
+
+    assert server._extract_iso_suot_document_date_from_archive(source) == '27.03.2026'
+
+
 def test_archive_reads_direct_current_files_before_many_old_templates():
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, 'w') as zipped:

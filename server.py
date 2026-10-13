@@ -1809,6 +1809,7 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
             data['dates'] = dates
         if product in ('iso', 'suot', 'iso_suot') and not certification.get('standard'):
             certification['standard'] = product
+        _canonicalize_staff_worker_flags(data)
 
     # ISO/SUOT instructions are OUTPUTS of the generator, not required source files.
     # The model occasionally asks the user to upload profession-specific instructions
@@ -4427,6 +4428,82 @@ def _archive_document_blocks(result_text):
                       str(result_text or ''), flags=re.M | re.S)
 
 
+_WORKER_POSITION_STEMS = (
+    'штукатур', 'маляр', 'сварщик', 'электрогаз', 'облицовщик', 'плиточник',
+    'кровельщик', 'монтажник', 'электромонтажник', 'плотник', 'бетонщик',
+    'каменщик', 'арматурщик', 'разнорабочий', 'подсобный', 'стропальщик',
+    'водитель', 'машинист', 'оператор', 'слесарь', 'токарь', 'фрезеровщик',
+    'сантехник', 'электрик', 'тракторист', 'экскаваторщик', 'крановщик',
+)
+_ITR_POSITION_MARKERS = (
+    'производитель работ', 'директор', 'инженер', 'прораб', 'мастер',
+    'бухгалтер', 'техник-программист', 'заведующий', 'юрист', 'кадров',
+    'экономист', 'менеджер', 'начальник',
+)
+
+
+def _is_worker_position(position, declared_worker=False):
+    """Classify by the job title, not an unreliable model role label."""
+    normalized = str(position or '').casefold().replace('ё', 'е').strip()
+    if any(marker in normalized for marker in _ITR_POSITION_MARKERS):
+        return False
+    if any(re.search(r'\b' + re.escape(stem) + r'\w*\b', normalized)
+           for stem in _WORKER_POSITION_STEMS):
+        return True
+    return bool(declared_worker)
+
+
+def _canonicalize_staff_worker_flags(data):
+    """Keep workers out of ITR even when a model assigned role=itr."""
+    if not isinstance(data, dict) or not isinstance(data.get('staff'), list):
+        return
+    for person in data['staff']:
+        if not isinstance(person, dict):
+            continue
+        is_worker = _is_worker_position(person.get('position'), person.get('is_worker'))
+        person['is_worker'] = is_worker
+        if is_worker and str(person.get('role') or '').casefold() == 'itr':
+            person.pop('role', None)
+
+
+def _extract_iso_suot_document_date_from_archive(result_text):
+    """Return the source approval/development date for an initial ISO/SUOT set.
+
+    A dated order starting SМК development is the strongest evidence. If it is
+    absent, select the date supported by the most current source documents.
+    This intentionally ignores a model's date guess.
+    """
+    candidates = {}
+    for path, block in _archive_document_blocks(result_text):
+        path_low = str(path).casefold().replace('ё', 'е')
+        text_low = str(block).casefold().replace('ё', 'е')
+        weight = 1
+        if ('приказ' in path_low and 'разработ' in path_low) or (
+                'приказ' in text_low and 'начал' in text_low and 'разработ' in text_low):
+            weight = 100
+        elif any(marker in path_low for marker in ('программа внутренних аудит', 'политика', 'руководство по качеству')):
+            weight = 12
+        dates_in_block = set(re.findall(r'\b(\d{2}\.\d{2}\.20\d{2})\b', str(block)))
+        for value in dates_in_block:
+            try:
+                parsed = datetime.strptime(value, '%d.%m.%Y')
+            except ValueError:
+                continue
+            if not 2020 <= parsed.year <= 2035:
+                continue
+            score, count = candidates.get(value, (0, 0))
+            candidates[value] = (score + weight, count + 1)
+    if not candidates:
+        return ''
+    return max(
+        candidates,
+        key=lambda value: (
+            candidates[value][0], candidates[value][1],
+            datetime.strptime(value, '%d.%m.%Y'),
+        ),
+    )
+
+
 def _archive_read_warnings(result_text):
     """Return only affected filenames; raw parser exceptions remain in server logs."""
     warnings = []
@@ -6364,6 +6441,21 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         # Never return raw model placeholders to the client card. An empty
         # confirmed list is safer than adding a person without a real FIO/role.
         structured_data['staff'] = summary_staff
+    if str(product) in ('iso', 'suot', 'iso_suot') and str(package_mode) == 'initial':
+        document_date = _extract_iso_suot_document_date_from_archive(final_text)
+        if document_date:
+            # Archive evidence has priority over a model-selected stale date.
+            # Keep audit and document dates aligned so an initial package is
+            # ready immediately and every generated header uses one source date.
+            structured_data['dates'] = {
+                **(structured_data.get('dates') or {}),
+                'audit_date': document_date,
+                'development_date': document_date,
+            }
+            structured_data['certification'] = {
+                **(structured_data.get('certification') or {}),
+                'audit_date': document_date,
+            }
     return {
         'text': final_text,
         'analysis_text': _compact_product_analysis_text(final_text, product),

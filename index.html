@@ -2819,6 +2819,37 @@ function aiNormIdentity(value) {
   return String(value || '').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/gi,' ').trim();
 }
 
+const AI_WORKER_POSITION_STEMS = [
+  'штукатур','маляр','сварщик','электрогаз','облицовщик','плиточник',
+  'кровельщик','монтажник','электромонтажник','плотник','бетонщик',
+  'каменщик','арматурщик','разнорабочий','подсобный','стропальщик',
+  'водитель','машинист','оператор','слесарь','токарь','фрезеровщик',
+  'сантехник','электрик','тракторист','экскаваторщик','крановщик',
+];
+const AI_ITR_POSITION_MARKERS = [
+  'производитель работ','директор','инженер','прораб','мастер',
+  'бухгалтер','техник-программист','заведующий','юрист','кадров',
+  'экономист','менеджер','начальник',
+];
+
+function aiIsWorkerPosition(person) {
+  const position = String(person?.position || '').toLowerCase().replace(/ё/g, 'е').trim();
+  if(AI_ITR_POSITION_MARKERS.some(marker => position.includes(marker))) return false;
+  // The JavaScript \b boundary is ASCII-only, so it does not recognise the boundary
+  // before Cyrillic professions such as «Подсобный рабочий».
+  if(AI_WORKER_POSITION_STEMS.some(stem => position.includes(stem))) return true;
+  return person?.is_worker === true;
+}
+
+function aiCanonicalizeStaffWorkerFlags(staff) {
+  return aiOfficialStaffRows(staff).map(person => {
+    const isWorker = aiIsWorkerPosition(person);
+    const normalized = {...person, is_worker: isWorker};
+    if(isWorker && String(normalized.role || '').toLowerCase() === 'itr') delete normalized.role;
+    return normalized;
+  });
+}
+
 function aiIsOfficialStaffRow(row) {
   if(!row || typeof row !== 'object' || Array.isArray(row)) return false;
   if(row.needs_review || row.identity_conflict || row.position_conflict) return false;
@@ -3009,6 +3040,7 @@ function aiRenderCard(data) {
       }
     });
   }
+  aiCurrentData.staff = aiCanonicalizeStaffWorkerFlags(aiCurrentData.staff);
   aiNormalizeCompanyAttestation();
   aiApplySelectedRequestProfile();
   aiSyncRequestProfileControls();
@@ -3067,10 +3099,12 @@ function aiRenderCard(data) {
 
   // Сотрудники
   const staff = aiCurrentData.staff||[];
-  if(staff.length) {
-    html += '<div class="ai-sec">Сотрудники</div>';
+  const itrStaff = staff.filter(person => !person.is_worker);
+  const workerStaff = staff.filter(person => person.is_worker);
+  if(itrStaff.length) {
+    html += '<div class="ai-sec">ИТР</div>';
     const rl = {director:'Директор',auditor:'Аудитор',responsible:'Ответств. ФНПА',itr:'ИТР'};
-    staff.forEach(p => {
+    itrStaff.forEach(p => {
       const otBadge = p.ot_certificate ? (' · 🛡' + (p.ot_certificate_date && p.ot_certificate_date!=='undefined' ? ' '+p.ot_certificate_date : '')) : '';
       const roleBadge = p.role ? (' · '+(rl[p.role]||p.role)) : '';
       html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#8B4A5C;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${(p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase()}</div><div><div class="ai-pname">${p.fio||''}</div><div class="ai-prole">${p.position||''}${roleBadge}${otBadge}</div></div></div>`;
@@ -3079,9 +3113,21 @@ function aiRenderCard(data) {
 
   // Рабочие профессии (для СУОТ — инструкции ОТ и карты рисков)
   const workers = aiCurrentData.workers||[];
-  if(workers.length) {
-    html += '<div class="ai-sec">Рабочие профессии (' + workers.length + ')</div><div>';
-    workers.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🦺 ${w}</span></div>`);
+  const workerLabels = [];
+  const workerPositionKeys = new Set();
+  workerStaff.forEach(person => {
+    const label = `${person.position || 'Рабочий'}${person.fio ? ' — ' + person.fio : ''}`;
+    if(person.position) workerPositionKeys.add(aiNormIdentity(person.position));
+    if(label) workerLabels.push(label);
+  });
+  workers.forEach(worker => {
+    const label = typeof worker === 'string' ? worker : (worker?.profession || worker?.position || worker?.name || '');
+    if(label && !workerPositionKeys.has(aiNormIdentity(label))) workerLabels.push(label);
+  });
+  const uniqueWorkerLabels = [...new Set(workerLabels.map(label => String(label).trim()).filter(Boolean))];
+  if(uniqueWorkerLabels.length) {
+    html += '<div class="ai-sec">Рабочие профессии (' + uniqueWorkerLabels.length + ')</div><div>';
+    uniqueWorkerLabels.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🦺 ${w}</span></div>`);
     html += '</div>';
   } else if(staff.length) {
     html += '<div class="ai-sec" style="color:#C97A5F">⚠️ Рабочие профессии не указаны</div>';
@@ -4493,7 +4539,7 @@ async function aiGenerate() {
   aiNormalizeCompanyAttestation();
   // A card saved before the validation rule may still contain a placeholder.
   // Final cleanup here ensures it can never reach a generated document.
-  aiCurrentData.staff = aiOfficialStaffRows(aiCurrentData.staff);
+  aiCurrentData.staff = aiCanonicalizeStaffWorkerFlags(aiCurrentData.staff);
   const validation = aiValidateReadiness(aiCurrentData);
   if(!validation.ready) {
     aiAddMsg('ai', '❌ Нельзя сформировать пакет. Не заполнено:<br>• ' + validation.missing.join('<br>• '));

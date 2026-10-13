@@ -300,6 +300,31 @@ def test_iso_uses_explicit_development_date_and_preserves_approved_forms():
     assert '0/2' in process
 
 
+def test_package_uses_position_not_model_flag_to_keep_workers_out_of_itr_documents():
+    data = sample_data()
+    data['staff'] = [
+        {'fio': 'Глушинский Олег Иванович', 'position': 'Директор', 'is_worker': True},
+        {'fio': 'Лукашик Сергей Васильевич', 'position': 'Заместитель директора-главный инженер', 'is_worker': True},
+        {'fio': 'Никифоренко Дмитрий Леонидович', 'position': 'Заместитель директора', 'is_worker': False},
+        {'fio': 'Брикин Денис Александрович', 'position': 'Подсобный рабочий', 'role': 'itr', 'is_worker': False},
+    ]
+    data['workers'] = ['Подсобный рабочий']
+    data['dates'] = {'development_date': '27.03.2026'}
+
+    result = generator.generate_package(data, 'dummy', 'iso')
+    docs = {doc['name']: doc['bytes'] for doc in result['docs']}
+    protocol = next(value for name, value in docs.items() if 'Протокол внутреннего обучения' in name)
+    text = '\n'.join(
+        [paragraph.text for paragraph in Document(io.BytesIO(protocol)).paragraphs]
+        + [cell.text for table in Document(io.BytesIO(protocol)).tables for row in table.rows for cell in row.cells]
+    )
+
+    assert 'Глушинский Олег Иванович' in text
+    assert 'Лукашик Сергей Васильевич' in text
+    assert 'Никифоренко Дмитрий Леонидович' in text
+    assert 'Брикин Денис Александрович' not in text
+
+
 def test_iso_audit_journal_date_column_fits_full_date():
     data = sample_data()
     company = dict(data['company'])
