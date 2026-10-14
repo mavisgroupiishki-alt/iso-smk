@@ -418,6 +418,14 @@ def test_suot_archive_routes_knowledge_forms_and_electrical_instruction_to_worki
     assert electrical_instruction_path.startswith('СУОТ/3 Инструкции/')
 
 
+def test_suot_archive_route_normalizes_decomposed_cyrillic_filenames():
+    """Archive folders must not depend on how macOS encodes the letter «й»."""
+    from generator_iso_suot_templates import _archive_folder_for_document
+
+    filename = 'БАЙРУЗ СУОТ - ВОПРОСЫ по проверке знаний.docx'
+    assert _archive_folder_for_document(filename) == 'СУОТ/6 Проверка знаний'
+
+
 def test_suot_template_lists_replace_generic_specialist_and_current_document_year():
     data = sample_data()
     result = generator.generate_package(data, 'dummy', 'suot')

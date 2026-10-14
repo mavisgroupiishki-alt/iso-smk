@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json as _json
 import re
+import unicodedata
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -256,7 +257,7 @@ def _initials(fio: str) -> str:
 
 
 def _norm(value: str) -> str:
-    return re.sub(r'\s+', ' ', str(value or '').lower().replace('ё', 'е')).strip()
+    return re.sub(r'\s+', ' ', unicodedata.normalize('NFC', str(value or '')).lower().replace('ё', 'е')).strip()
 
 
 def _find_person(people: Iterable[dict], keywords: Iterable[str]) -> dict | None:

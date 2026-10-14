@@ -25,14 +25,20 @@ function extractFunction(name) {
 
 const context = {
   aiCurrentData: {workers: ['Штукатур']},
+  AI_WORKER_PROFESSION_OPTIONS: ['Монтажник стальных конструкций', 'Электромонтажник'],
   aiRenderCardFromCurrent: () => {},
   aiSaveCurrentCompany: () => ({catch: () => {}}),
+  aiAddMsg: () => {},
+  igorEscape: value => String(value == null ? '' : value),
   console,
 };
 vm.createContext(context);
 vm.runInContext([
   extractFunction('aiNormIdentity'),
   extractFunction('aiWorkerCommand'),
+  extractFunction('aiWorkerPickerHtml'),
+  extractFunction('aiAddWorkerProfessions'),
+  extractFunction('aiApplyWorkerPicker'),
   extractFunction('aiApplyWorkerCommand'),
 ].join('\n\n'), context);
 
@@ -59,5 +65,28 @@ if (context.aiCurrentData.workers.join('|') !==
   throw new Error('explicit worker professions were not put into the card');
 }
 if (!/добавлены/i.test(message)) throw new Error('card update was not confirmed');
+
+const pickerAdded = context.aiAddWorkerProfessions([
+  'Монтажник стальных конструкций', 'Электромонтажник', 'Монтажник стальных конструкций', 'Разнорабочий'
+]);
+if (pickerAdded.join('|') !== 'Монтажник стальных конструкций|Разнорабочий') {
+  throw new Error(`manual picker did not preserve unique selected professions: ${JSON.stringify(pickerAdded)}`);
+}
+if (!html.includes('Добавить профессии вручную') || !html.includes('Добавить выбранные')) {
+  throw new Error('manual worker picker controls are absent from the card');
+}
+if (!context.aiWorkerPickerHtml().includes('Монтажник стальных конструкций')) {
+  throw new Error('manual picker does not render professions from the catalog');
+}
+
+const hint = {textContent: ''};
+const picker = {
+  querySelectorAll: () => [{value: 'Бетонщик'}, {value: 'Штукатур'}],
+  querySelector: selector => selector.includes('custom') ? {value: 'Слесарь-сантехник'} : hint,
+};
+context.aiApplyWorkerPicker({closest: () => picker});
+if (!context.aiCurrentData.workers.includes('Бетонщик') || !context.aiCurrentData.workers.includes('Слесарь-сантехник')) {
+  throw new Error('selected or custom manual profession was not added to the card');
+}
 
 console.log('worker command fast path: PASS');

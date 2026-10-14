@@ -222,6 +222,17 @@ input::placeholder{color:#CDB8AA}
 .ai-worker-note{display:block;font-size:9px;color:#A8938A;font-weight:400;margin-top:1px}
 .ai-mini-btn{border:1px solid #D9C8BC;background:#fff;color:#8B4A5C;border-radius:4px;padding:2px 5px;font-size:9px;cursor:pointer;flex:0 0 auto}
 .ai-worker-add{width:100%;margin-top:6px;border:1px dashed #C9B4A7;background:#FFFDFC;color:#8B4A5C;border-radius:5px;padding:5px;font-size:10px;cursor:pointer}
+.ai-worker-picker{margin:4px 0 6px;border:1px solid #E5D5C8;border-radius:7px;background:#FFFDFC}
+.ai-worker-picker summary{padding:6px 7px;color:#8B4A5C;font-size:10px;font-weight:700;cursor:pointer}
+.ai-worker-picker-body{padding:0 7px 7px;display:grid;gap:6px}
+.ai-worker-picker-list{display:grid;grid-template-columns:1fr 1fr;gap:3px 6px;max-height:144px;overflow:auto;padding:5px;border-top:1px solid #F0E5DC;border-bottom:1px solid #F0E5DC}
+.ai-worker-picker-option{display:flex;align-items:flex-start;gap:4px;color:#5E6F51;font-size:9.5px;line-height:1.25}
+.ai-worker-picker-option input{margin:1px 0 0;accent-color:#8B4A5C}
+.ai-worker-picker-custom{width:100%;box-sizing:border-box;border:1px solid #DCC9BC;border-radius:5px;padding:5px 6px;font:10px/1.25 inherit;color:#4A3639;background:#fff}
+.ai-worker-picker-actions{display:flex;gap:5px;align-items:center}
+.ai-worker-picker-apply{border:1px solid #8B4A5C;background:#8B4A5C;color:#fff;border-radius:5px;padding:5px 7px;font:700 9.5px/1.2 inherit;cursor:pointer}
+.ai-worker-picker-hint{font-size:9px;color:#A8938A;line-height:1.25}
+@media(max-width:720px){.ai-worker-picker-list{grid-template-columns:1fr}}
 .ai-missing-box{margin-top:7px;padding:7px 8px;border-radius:6px;background:#FFF4E8;border:1px solid #E8C5A8;color:#9A5C35;font-size:10px;line-height:1.4}
 
 
@@ -1415,6 +1426,15 @@ const AI_PRODUCT_LABELS = {
   spk_bisp: 'СПК БИСП', spk_stroy: 'СПК Стройкомплекс',
   company_att: 'Аттестация компании', att: 'Аттестация специалиста'
 };
+// Справочник нужен только для ручного выбора. Он не добавляет в карточку
+// сотрудников и не подменяет профессии, которые пользователь не выбрал.
+const AI_WORKER_PROFESSION_OPTIONS = [
+  'Арматурщик', 'Бетонщик', 'Газосварщик', 'Каменщик', 'Кровельщик',
+  'Маляр', 'Монтажник связи', 'Монтажник стальных конструкций',
+  'Облицовщик-плиточник', 'Плотник', 'Подсобный рабочий', 'Разнорабочий',
+  'Слесарь-сантехник', 'Столяр', 'Штукатур', 'Электрогазосварщик',
+  'Электромонтажник', 'Электромонтажник по электрооборудованию'
+];
 let aiSelectedProduct = '';
 let aiSelectedPackageMode = 'initial';
 
@@ -3155,13 +3175,16 @@ function aiRenderCard(data) {
     if(label && !workerPositionKeys.has(aiNormIdentity(label))) workerLabels.push(label);
   });
   const uniqueWorkerLabels = [...new Set(workerLabels.map(label => String(label).trim()).filter(Boolean))];
+  html += '<div class="ai-sec">Рабочие профессии (' + uniqueWorkerLabels.length + ')</div><div>';
   if(uniqueWorkerLabels.length) {
-    html += '<div class="ai-sec">Рабочие профессии (' + uniqueWorkerLabels.length + ')</div><div>';
-    uniqueWorkerLabels.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🦺 ${w}</span></div>`);
-    html += '</div>';
+    uniqueWorkerLabels.forEach(w => html += `<div class="ai-df"><span class="ai-dv">🦺 ${igorEscape(w)}</span></div>`);
   } else if(staff.length) {
-    html += '<div class="ai-sec" style="color:#C97A5F">⚠️ Рабочие профессии не указаны</div>';
+    html += '<div class="ai-df" style="color:#C97A5F">Рабочие профессии не указаны.</div>';
+  } else {
+    html += '<div class="ai-df" style="color:#A8938A">Выберите профессии вручную или загрузите штатное расписание.</div>';
   }
+  html += aiWorkerPickerHtml();
+  html += '</div>';
 
   // Виды работ для СПК
   const workTypes = aiCurrentData.work_types||[];
@@ -3580,25 +3603,63 @@ function aiWorkerCommand(text) {
     : {kind: 'needs_professions'};
 }
 
-function aiApplyWorkerCommand(command) {
-  if (command.kind !== 'add') {
-    return 'В сообщении нет названий профессий. Напишите их одной строкой, например: «добавь рабочих: электромонтажник, монтажник связи, подсобный рабочий». Тогда они сразу появятся в карточке без ожидания ИИ.';
-  }
+function aiWorkerPickerHtml() {
+  const options = AI_WORKER_PROFESSION_OPTIONS.map(profession =>
+    `<label class="ai-worker-picker-option"><input type="checkbox" data-worker-profession value="${igorEscape(profession)}">${igorEscape(profession)}</label>`
+  ).join('');
+  return `<details class="ai-worker-picker"><summary>＋ Добавить профессии вручную</summary>
+    <div class="ai-worker-picker-body">
+      <div class="ai-worker-picker-hint">Выберите одну или несколько профессий. ФИО сотрудников не создаются автоматически.</div>
+      <div class="ai-worker-picker-list">${options}</div>
+      <input class="ai-worker-picker-custom" type="text" maxlength="100" placeholder="Другая профессия, если её нет в списке">
+      <div class="ai-worker-picker-actions"><button type="button" class="ai-worker-picker-apply" onclick="aiApplyWorkerPicker(this)">Добавить выбранные</button></div>
+    </div>
+  </details>`;
+}
+
+function aiAddWorkerProfessions(professions) {
   const current = Array.isArray(aiCurrentData.workers) ? aiCurrentData.workers : [];
   const names = current.map(worker => typeof worker === 'string'
     ? worker : (worker?.profession || worker?.position || '')
   ).filter(Boolean);
   const existing = new Set(names.map(aiNormIdentity));
-  const added = command.professions.filter(profession => {
-    const key = aiNormIdentity(profession);
-    if (!key || existing.has(key)) return false;
-    existing.add(key);
-    names.push(profession);
-    return true;
-  });
+  const added = (Array.isArray(professions) ? professions : []).map(value => String(value || '').trim())
+    .filter(value => value.length >= 2 && value.length <= 100)
+    .filter(profession => {
+      const key = aiNormIdentity(profession);
+      if (!key || existing.has(key)) return false;
+      existing.add(key);
+      names.push(profession);
+      return true;
+    });
   aiCurrentData.workers = names;
-  aiRenderCardFromCurrent();
-  aiSaveCurrentCompany().catch(e => console.warn('autosave failed:', e));
+  if (added.length) {
+    aiRenderCardFromCurrent();
+    aiSaveCurrentCompany().catch(e => console.warn('autosave failed:', e));
+  }
+  return added;
+}
+
+function aiApplyWorkerPicker(button) {
+  const picker = button.closest('.ai-worker-picker');
+  const selected = [...picker.querySelectorAll('input[data-worker-profession]:checked')].map(input => input.value);
+  const custom = picker.querySelector('.ai-worker-picker-custom').value.trim();
+  if (custom) selected.push(custom);
+  const added = aiAddWorkerProfessions(selected);
+  if (!added.length) {
+    picker.querySelector('.ai-worker-picker-hint').textContent = selected.length
+      ? 'Все выбранные профессии уже есть в карточке.'
+      : 'Сначала выберите профессию или впишите свою.';
+    return;
+  }
+  aiAddMsg('ai', `В карточку добавлены рабочие профессии: ${added.map(igorEscape).join(', ')}.`);
+}
+
+function aiApplyWorkerCommand(command) {
+  if (command.kind !== 'add') {
+    return 'В сообщении нет названий профессий. Напишите их одной строкой, например: «добавь рабочих: электромонтажник, монтажник связи, подсобный рабочий». Тогда они сразу появятся в карточке без ожидания ИИ.';
+  }
+  const added = aiAddWorkerProfessions(command.professions);
   return added.length
     ? `В карточку добавлены рабочие профессии: ${added.join(', ')}.`
     : 'Эти рабочие профессии уже есть в карточке.';
