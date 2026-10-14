@@ -3562,6 +3562,48 @@ function aiIsGenerateCommand(text) {
   return /^(?:формируй|сформируй|генерируй|сгенерируй)(?:\s+(?:пакет(?:\s+документов)?|документы))?$|^(?:давай\s+)?(?:сформируй|генерируй)\s+(?:пакет(?:\s+документов)?|документы)$/iu.test(value);
 }
 
+function aiWorkerCommand(text) {
+  // Adding known professions is a card edit, not a question for the model.
+  // A vague request must also return immediately: the source may contain no
+  // worker professions, and inventing them would produce wrong OT documents.
+  const value = String(text || '').trim();
+  if (!/(?:добав|внес|запиш|укаж|допол)[\s\S]{0,120}(?:рабоч|професси)/iu.test(value)) return null;
+  const list = value.match(/(?:рабоч[А-ЯЁа-яё]*|професси[А-ЯЁа-яё]*)\s*[:—-]\s*([\s\S]+)$/iu);
+  if (!list) return {kind: 'needs_professions'};
+  const professions = list[1]
+    .split(/[,;\n]+/u)
+    .map(item => item.replace(/^\s*\d+[.)]\s*/u, '').trim())
+    .filter(item => item.length >= 2 && item.length <= 100 && /[А-ЯЁа-яё]/u.test(item))
+    .filter(item => !/^(?:рабоч(?:ие|их)?|професси[яи])$/iu.test(item));
+  return professions.length
+    ? {kind: 'add', professions: [...new Set(professions)]}
+    : {kind: 'needs_professions'};
+}
+
+function aiApplyWorkerCommand(command) {
+  if (command.kind !== 'add') {
+    return 'В сообщении нет названий профессий. Напишите их одной строкой, например: «добавь рабочих: электромонтажник, монтажник связи, подсобный рабочий». Тогда они сразу появятся в карточке без ожидания ИИ.';
+  }
+  const current = Array.isArray(aiCurrentData.workers) ? aiCurrentData.workers : [];
+  const names = current.map(worker => typeof worker === 'string'
+    ? worker : (worker?.profession || worker?.position || '')
+  ).filter(Boolean);
+  const existing = new Set(names.map(aiNormIdentity));
+  const added = command.professions.filter(profession => {
+    const key = aiNormIdentity(profession);
+    if (!key || existing.has(key)) return false;
+    existing.add(key);
+    names.push(profession);
+    return true;
+  });
+  aiCurrentData.workers = names;
+  aiRenderCardFromCurrent();
+  aiSaveCurrentCompany().catch(e => console.warn('autosave failed:', e));
+  return added.length
+    ? `В карточку добавлены рабочие профессии: ${added.join(', ')}.`
+    : 'Эти рабочие профессии уже есть в карточке.';
+}
+
 function aiApplyRequestedPackageMode(data, text) {
   // Product and package mode are an explicit choice in the interface. A chat
   // phrase or filename must never turn СПК into ИСО/СУОТ (or vice versa).
@@ -3867,6 +3909,17 @@ async function aiSend() {
     aiHistory.push({role:'user', content:'ЗАПРОС: ' + text});
     await aiGenerate();
     return;
+  }
+
+  if(aiAttachedFiles.length === 0) {
+    const workerCommand = aiWorkerCommand(text);
+    if(workerCommand) {
+      const message = aiApplyWorkerCommand(workerCommand);
+      aiHistory.push({role:'user', content:'ЗАПРОС: ' + text});
+      aiHistory.push({role:'assistant', content:message});
+      aiAddMsg('ai', message);
+      return;
+    }
   }
 
   aiLoading = true;
