@@ -1,4 +1,5 @@
 import io
+import re
 import sys
 import time
 import unicodedata
@@ -242,6 +243,7 @@ def test_initial_suot_has_the_complete_staff_dependent_control_set():
     for expected in required:
         assert any(expected in name for name in names), expected
     assert sum('Программа управления' in name for name in names) == 1
+    assert not any('12. реестр рисков и мероприятия' in name for name in names)
 
 
 def test_suot_appointment_orders_have_the_required_operational_clauses():
@@ -264,12 +266,32 @@ def test_suot_appointment_orders_have_the_required_operational_clauses():
     assert 'вводного инструктажа' in order4
     assert 'электрохозяйства' in order4
     assert 'комиссии для проверки знаний' in order4
+    assert 'председатель — Директор — Глушинский Олег Иванович; члены комиссии — Заместитель директора-главный инженер — Лукашик Сергей Васильевич; Производитель работ — Волков Василий Анатольевич.' in order4
+    assert 'члены комиссии — Директор — Глушинский Олег Иванович' not in order4
     assert 'представление требуемой информации' in order5
     assert 'необходимые условия для проведения аудита' in order5
     assert 'реестр неприемлемых рисков' in order6
     assert 'мероприятия по снижению профессиональных рисков' in order6
     assert 'журнале учета выдачи инструкций' in order7
     assert 'Общее руководство разработкой инструкций' in order7
+
+
+def test_suot_training_and_safety_day_records_use_only_current_staff():
+    """Do not retain Varta's duplicate "главный специалист" training records."""
+    data = sample_data()
+    result = generator.generate_package(data, 'dummy', 'suot')
+    docs = {doc['name']: _visible_doc_text(doc['bytes']) for doc in result['docs']}
+
+    training_order = next(text for name, text in docs.items() if 'Приказ 10.1-OH&S' in name)
+    training_protocol = next(text for name, text in docs.items() if 'Протокол внутреннего обучения' in name)
+    training_program = next(text for name, text in docs.items() if 'Программа внутреннего обучения' in name)
+    safety_day = next(text for name, text in docs.items() if 'Приказ 9-OH&S' in name)
+
+    for text in (training_order, training_protocol, training_program, safety_day):
+        assert 'Главный специалист' not in text
+        assert 'Лукашик Сергей Васильевич' in text
+        assert 'Волков Василий Анатольевич' in text
+    assert 'председатель — Директор — Глушинский Олег Иванович; члены комиссии — Заместитель директора-главный инженер — Лукашик Сергей Васильевич; Производитель работ — Волков Василий Анатольевич.' in safety_day
 
 
 def test_suot_never_adds_worker_instructions_absent_from_the_staff_roster():
@@ -287,7 +309,9 @@ def test_suot_never_adds_worker_instructions_absent_from_the_staff_roster():
     assert 'бетонщик' not in names
     assert 'каменщик' not in names
     assert 'монтажник строительных конструкций' not in names
-    assert 'карточка учета выдачи сиз' not in names
+    assert 'карточка учета выдачи сиз (бланк)' in names
+    assert 'карточка учета выдачи сиз яскин' not in names
+    assert 'карточка учета выдачи сиз падуто' not in names
 
 
 def test_suot_commission_prefers_the_actual_operational_manager_to_accountant():
@@ -421,7 +445,7 @@ def test_iso_uses_explicit_document_date_and_preserves_approved_forms():
     assert 'Должность' not in familiarization
     assert familiarization.count('12.01.2026') == 3
     assert 'Журнал регистрации внутренних аудитов' in audits
-    assert 'на 2025 год' in audits
+    assert 'на 2026 год' in audits
     assert 'ООО «Первый поставщик»' in supplier
     assert 'ООО «Второй поставщик»' in supplier
     assert 'за 2025 год' in report
@@ -432,6 +456,92 @@ def test_iso_uses_explicit_document_date_and_preserves_approved_forms():
     process = text(next(value for name, value in docs.items() if 'Отчет по процессу строительства' in name))
     assert '0/6' not in process
     assert '0/2' in process
+
+
+def _visible_doc_text(doc_bytes):
+    document = Document(io.BytesIO(doc_bytes))
+    return '\n'.join(
+        [paragraph.text for paragraph in document.paragraphs]
+        + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+    )
+
+
+def test_iso_audit_artifacts_use_current_year_and_never_self_audit():
+    data = sample_data()
+    company = dict(data['company']); company['scope'] = data['certification']['scope']
+    itr = [person for person in data['staff'] if not person['is_worker']]
+    workers = [person for person in data['staff'] if person['is_worker']]
+    result = generate_iso_suot_package_v2(
+        company, itr, generator.calculate_dates('20.08.2026'), generator.select_responsible(itr),
+        product='iso', workers=workers, suppliers=data['suppliers'], objects=data['objects'],
+    )
+    docs = {doc['name']: doc['bytes'] for doc in result['docs']}
+    audit = next(value for name, value in docs.items() if 'Программа внутренних аудитов СМК' in name)
+    audit_document = Document(io.BytesIO(audit))
+    assert 'на 2026 год' in _visible_doc_text(audit)
+    assert 'на 2025 год' not in _visible_doc_text(audit)
+    for row in audit_document.tables[1].rows[3:]:
+        audited = row.cells[1].text
+        auditor = row.cells[7].text
+        assert audited and auditor and audited != auditor
+    assert sum('Контрольный лист внутреннего аудита' in name for name in docs) == len(itr)
+    assert sum('Отчет по внутреннему аудиту' in name for name in docs) == len(itr)
+
+
+def test_iso_coordination_protocol_uses_current_staff_without_duplicate_roles():
+    company = {
+        'name': 'Мавис Групп', 'form': 'ООО', 'city': 'Минск',
+        'director_fio': 'Клепицкая Валентина Алексеевна', 'director_position': 'Директор',
+        'scope': 'Производство строительно-монтажных работ',
+    }
+    itr = [
+        {'fio': 'Клепицкая Валентина Алексеевна', 'position': 'Директор', 'ot_certificate': True},
+        {'fio': 'Падуто Александр Сергеевич', 'position': 'Начальник участка', 'ot_certificate': True},
+        {'fio': 'Кульбакин Александр Валерьевич', 'position': 'Бухгалтер'},
+    ]
+    result = generate_iso_suot_package_v2(
+        company, itr, generator.calculate_dates('20.08.2026'), generator.select_responsible(itr),
+        product='iso', workers=[], suppliers=[], objects=[],
+    )
+    protocol = next(doc['bytes'] for doc in result['docs'] if 'протокол кс' in doc['name'].lower())
+    text = _visible_doc_text(protocol)
+    assert 'Главный специалист' not in text
+    assert text.count('Клепицкая Валентина Алексеевна') == 2  # председатель и подпись
+    assert 'Начальник участка — Падуто Александр Сергеевич' in text
+    assert 'Кульбакин Александр Валерьевич — Бухгалтер' not in text
+
+
+def test_iso_current_document_versions_replace_stale_template_references():
+    data = sample_data()
+    data['dates'] = {'document_date': '12.01.2026'}
+    result = generator.generate_package(data, 'dummy', 'iso')
+    texts = {name: _visible_doc_text(doc['bytes']) for name, doc in ((d['name'], d) for d in result['docs'])}
+    manual = next(text for name, text in texts.items() if 'РК СМК' in name)
+    info = next(text for name, text in texts.items() if 'Информационный лист БСЦ' in name)
+    management_report = next(text for name, text in texts.items() if 'сводн' in name.lower())
+    assert 'СТП СМК 02-2025' not in manual
+    assert 'СТП СМК 03-2025' not in manual
+    assert 'СТП СМК 04-2025' not in manual
+    assert not re.search(r'СТП СМК 03-202(?!\d)', info)
+    assert 'СТП СМК 04-2025' not in info
+    assert 'СТП СМК 03-2026' in info
+    assert 'СТП СМК 04-2026' in info
+    assert 'запланировано проведение 8 внутренних аудитов' not in management_report
+    assert 'Внутренние аудиты проводились директором и производителем работ' not in management_report
+    assert 'по 3 направлениям' in management_report
+
+
+def test_suot_keeps_ppe_form_and_routes_documents_to_working_folders():
+    data = sample_data()
+    result = generator.generate_package(data, 'dummy', 'suot')
+    paths = {doc['name']: doc['archive_path'] for doc in result['docs']}
+    journal_path = next(path for name, path in paths.items() if 'Журнал  учета выдачи  инструкции' in name)
+    assert journal_path.startswith('СУОТ/4 Журналы/')
+    assert any('Карточка учета выдачи СИЗ (бланк)' in name for name in paths)
+    assert any(path.startswith('СУОТ/1 Приказы/') and 'Протокол внутреннего обучения' in name
+               for name, path in paths.items())
+    assert any(path.startswith('СУОТ/1 Приказы/') and 'Программа внутреннего обучения' in name
+               for name, path in paths.items())
 
 
 def test_package_uses_position_not_model_flag_to_keep_workers_out_of_itr_documents():
