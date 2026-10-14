@@ -1238,8 +1238,15 @@ def _audit_report_doc(company: dict, person: dict, auditor: dict, dates: dict,
 
 def _siz_card_doc(company: dict, worker: dict, dates: dict) -> bytes:
     doc = _new_doc(company, 'ЛИЧНАЯ КАРТОЧКА УЧЕТА ВЫДАЧИ СРЕДСТВ ИНДИВИДУАЛЬНОЙ ЗАЩИТЫ', dates, 'goals')
-    doc.add_paragraph(f'ФИО: {str(worker.get("fio") or "ТРЕБУЕТ УТОЧНЕНИЯ")}')
-    doc.add_paragraph(f'Профессия: {str(worker.get("position") or "ТРЕБУЕТ УТОЧНЕНИЯ")}')
+    fio = str(worker.get('fio') or '').strip()
+    position = str(worker.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
+    if fio:
+        doc.add_paragraph(f'ФИО: {fio}')
+    elif position != 'ТРЕБУЕТ УТОЧНЕНИЯ':
+        doc.add_paragraph('Карточка подготовлена для профессии; ФИО работника заполняется при выдаче СИЗ.')
+    else:
+        doc.add_paragraph('ФИО: ________________________________')
+    doc.add_paragraph(f'Профессия: {position}')
     table = doc.add_table(rows=1, cols=6)
     table.style = 'Table Grid'
     for i, heading in enumerate(['№', 'Наименование СИЗ', 'Норма выдачи', 'Дата выдачи', 'Подпись получившего', 'Дата возврата']):
@@ -1308,10 +1315,10 @@ def _suot_manifest_missing(docs: list[dict], itr: list, workers: list, dates: di
         'контрольный лист внутреннего аудита': count('контрольный лист внутреннего аудита') >= len(_unique_people(itr)),
         'отчет по внутреннему аудиту': count('отчет по внутреннему аудиту') >= len(_unique_people(itr)),
     }
-    people = _unique_people(list(itr or []) + list(workers or []))
+    people = _unique_staff_entries(list(itr or []) + list(workers or []))
     if people:
         required['карточки рисков по фактическому штату'] = count('карта рисков') >= len(people)
-    worker_rows = _unique_people(workers or [])
+    worker_rows = _unique_staff_entries(workers or [])
     if worker_rows:
         required['карточки учета выдачи СИЗ'] = count('карточка учета выдачи сиз') >= len(worker_rows)
     if _completed_document_quarter(dates):
@@ -2498,7 +2505,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 prog(f'Отчет внутреннего аудита: {fio}')
                 docs.append({'name': f'{org} СУОТ - Отчет по внутреннему аудиту {index}.docx', 'bytes': _audit_report_doc(company, person, auditor, dates)})
 
-            for worker in _unique_people(workers_rows):
+            for worker in _unique_staff_entries(workers_rows):
                 fio = str(worker.get('fio') or worker.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
                 prog(f'Карточка учета выдачи СИЗ: {fio}')
                 docs.append({'name': f'{org} СУОТ - Карточка учета выдачи СИЗ {fio}.docx', 'bytes': _siz_card_doc(company, worker, dates)})

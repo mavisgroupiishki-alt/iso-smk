@@ -433,6 +433,24 @@ def test_suot_lists_and_risk_cards_use_manual_worker_professions_without_templat
         assert all(stale_role not in text for text in current_staff_lists)
 
 
+def test_suot_manual_worker_professions_receive_ppe_cards_and_pass_manifest():
+    """Selected professions have no FIO yet, but still require a PPE card."""
+    data = sample_data()
+    workers = ['Монтажник стальных конструкций', 'Электромонтажник', 'Разнорабочий']
+    data['workers'] = workers
+    data['staff'] = [person for person in data['staff'] if not person['is_worker']]
+
+    result = generator.generate_package(data, 'dummy', 'suot')
+    docs = {doc['name']: doc['bytes'] for doc in result['docs']}
+
+    assert not result.get('error')
+    for profession in workers:
+        name = next(name for name in docs if f'Карточка учета выдачи СИЗ {profession}' in name)
+        text = _visible_doc_text(docs[name])
+        assert f'Профессия: {profession}' in text
+        assert 'ФИО: ТРЕБУЕТ УТОЧНЕНИЯ' not in text
+
+
 def test_suot_archive_routes_knowledge_forms_and_electrical_instruction_to_working_folders():
     data = sample_data()
     result = generator.generate_package(data, 'dummy', 'suot')
