@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Iterable
 
 from docx import Document
+from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Cm, Pt
 
@@ -166,6 +167,7 @@ _DYNAMIC_KEYS = {
     # SUOT staff dependent
     'suot_root_4.docx',          # familiarisation with policy
     'suot_root_6.docx',          # familiarisation with goals
+    'suot_root_1.docx',          # risk programme must use current professions
     'suot_perechen_5.docx',      # ITR knowledge list
     'suot_perechen_6.docx',      # worker knowledge list
     'suot_instr_6.docx',         # list of OT instructions
@@ -565,6 +567,28 @@ def _set_journal_date_column_width(table) -> None:
         row.cells[0].width = width
 
 
+def _make_audit_program_table_readable(doc: Document, table) -> None:
+    """Keep the six-column audit programme readable for real names and criteria."""
+    section = doc.sections[0]
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width, section.page_height = section.page_height, section.page_width
+    section.left_margin = Cm(1.35)
+    section.right_margin = Cm(1.35)
+    section.top_margin = Cm(1.5)
+    section.bottom_margin = Cm(1.5)
+
+    table.autofit = False
+    widths = (Cm(1.0), Cm(5.5), Cm(7.0), Cm(2.5), Cm(6.0), Cm(3.0))
+    for column, width in zip(table.columns, widths):
+        column.width = width
+    for row in table.rows:
+        for cell, width in zip(row.cells, widths):
+            cell.width = width
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.size = Pt(9)
+
+
 def _set_text(paragraph, text: str) -> None:
     """Set visible paragraph text without throwing away its first-run formatting."""
     if paragraph.runs:
@@ -843,14 +867,14 @@ def _role_audit_points_suot(position: str) -> str:
     if 'директор' in p and 'замест' not in p:
         return 'п.п. 4.1–4.4, 5.1–5.4, 6.1–6.2, 7.1–7.5, 9.1–9.3, 10.1–10.3'
     if 'бухгалтер' in p:
-        return 'п.п. 7.1, 7.2, 7.3, 7.4, 7.5, 9.1'
+        return 'п.п. 4.1–4.4, 7.1–7.5, 8.1–8.2, 10.1–10.3'
     if 'охране труда' in p:
         return 'п.п. 4.1–4.4, 7.1–7.5, 8.1–8.2, 10.1–10.3'
     if 'смет' in p or 'договор' in p:
         return 'п.п. 4.1, 4.2, 7.2, 7.5, 8.2, 10.3'
     if 'проектиров' in p or 'руководитель проекта' in p:
         return 'п.п. 4.1–4.4, 5.1–5.3, 6.1–6.3, 7.1–7.5, 8.1–8.3, 8.4–8.7, 9.1–9.3, 10.1–10.3'
-    if any(token in p for token in ('главный инженер', 'гл инженер', 'производитель работ', 'прораб', 'мастер', 'главный механик', 'главный энергетик')):
+    if any(token in p for token in ('главный инженер', 'гл инженер', 'производитель работ', 'прораб', 'мастер', 'начальник участка', 'главный механик', 'главный энергетик')):
         return 'п.п. 4.1–4.4, 7.1–7.5, 8.1–8.2, 10.1–10.3'
     if 'кадр' in p or 'персонал' in p:
         return 'п.п. 4.1, 4.2, 5.2, 5.3, 7.2, 7.3, 7.4, 7.5, 8.2, 10.3'
@@ -883,12 +907,12 @@ def _archive_folder_for_document(name: str) -> str:
         if 'риск' in text:
             return 'СУОТ/5 Риски'
         if any(token in text for token in (
-                'проверка знаний', 'внутреннего обучения', 'билет',
+                'проверка знаний', 'проверки знаний', 'внутреннего обучения', 'билет',
                 'вопросы по проверке знаний', 'программа по обучению правилам пожарной безопасности')):
             return 'СУОТ/6 Проверка знаний'
         if any(token in text for token in ('аудит', 'контрольный лист', 'отчет по внутреннему аудиту', 'анкета вопросник')):
             return 'СУОТ/7 Аудиты'
-        if 'иот' in text or 'инструкц' in text:
+        if 'иот' in text or 'инструкц' in text or 'при работе с электроинструментом' in text:
             return 'СУОТ/3 Инструкции'
         return 'СУОТ/8 Формы и прочее'
     if 'приказ' in text:
@@ -898,11 +922,18 @@ def _archive_folder_for_document(name: str) -> str:
     return 'ИСО 9001/3 СМК и карточки'
 
 
-def _different_auditor(audited: dict, auditors: list[dict], index: int) -> dict:
+def _different_auditor(audited: dict, auditors: list[dict], index: int,
+                       fallback_people: list[dict] | None = None) -> dict:
     """Return an actual auditor who is not auditing their own work."""
     person_key = _norm(audited.get('fio'))
     candidates = [person for person in _unique_people(auditors)
                   if _norm(person.get('fio')) and _norm(person.get('fio')) != person_key]
+    # A certificate list can legitimately contain only the director.  Do not
+    # turn a finished programme into a placeholder when another current ITR
+    # can audit the director's area; still never fabricate a person.
+    if not candidates:
+        candidates = [person for person in _unique_people(fallback_people)
+                      if _norm(person.get('fio')) and _norm(person.get('fio')) != person_key]
     return candidates[(index - 1) % len(candidates)] if candidates else {}
 
 
@@ -927,7 +958,7 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
                 row[2].text = _role_audit_points_iso(person.get('position', ''))
                 if len(row) > 3:
                     row[3 + ((index - 1) % 12)].text = 'Х'
-                auditor = _different_auditor(person, auditors, index)
+                auditor = _different_auditor(person, auditors, index, itr)
                 log = journal.add_row().cells
                 values = [
                     str(dates.get('document') or dates.get('audit') or ''),
@@ -953,7 +984,7 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
     auditors = [p for p in itr if p.get('ot_certificate')] or itr[:3]
     for idx, person in enumerate(itr, 1):
         row = table.add_row().cells
-        auditor = _different_auditor(person, auditors, idx)
+        auditor = _different_auditor(person, auditors, idx, itr)
         points = _role_audit_points_suot(person.get('position', '')) if is_suot else _role_audit_points_iso(person.get('position', ''))
         values = [
             str(idx),
@@ -964,6 +995,7 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
             '',
         ]
         for i, value in enumerate(values): row[i].text = value
+    _make_audit_program_table_readable(doc, table)
     return _doc_bytes(doc)
 
 
@@ -1051,6 +1083,95 @@ def _suot_unacceptable_risks_doc(company: dict, people: list, dates: dict) -> by
         cells = table.add_row().cells
         cells[0].text = '1'; cells[1].text = 'ТРЕБУЕТ УТОЧНЕНИЯ'
     return _doc_bytes(doc)
+
+
+def _suot_risk_management_program_doc(company: dict, people: list, dates: dict) -> bytes:
+    """Build the risk-management programme from the current staff card only.
+
+    The template contains occupations from its source company.  They are not a
+    starting point for a new client: an unverified profession in a risk record is
+    worse than an explicit generic row waiting for workplace assessment.
+    """
+    doc = _new_doc(
+        company,
+        f'ПРОГРАММА УПРАВЛЕНИЯ ОХРАНОЙ ТРУДА И СНИЖЕНИЯ НЕПРИЕМЛЕМЫХ РИСКОВ НА {dates.get("year") or "ТРЕБУЕТ УТОЧНЕНИЯ"} ГОД',
+        dates,
+        'risks',
+    )
+    doc.add_paragraph(
+        'Мероприятия уточняются по результатам идентификации опасностей и оценки рисков на каждом рабочем месте.'
+    )
+    table = doc.add_table(rows=1, cols=10)
+    table.style = 'Table Grid'
+    headings = [
+        '№ п/п', 'Должность (профессия)', 'Неприемлемый риск (описание риска)', 'Цель',
+        'Наименование мероприятия', 'Срок выполнения работ', 'Ресурсы, руб.',
+        'Ответственный исполнитель', 'Фактическое выполнение', 'Примечания',
+    ]
+    for index, heading in enumerate(headings):
+        table.rows[0].cells[index].text = heading
+
+    positions, seen = [], set()
+    for person in people or []:
+        position = str(person.get('position') or '').strip()
+        key = _norm(position)
+        if position and key not in seen:
+            seen.add(key)
+            positions.append(position)
+    if not positions:
+        positions = ['Все должности (профессии)']
+    responsible = str(company.get('director_position') or 'Директор').strip() or 'Директор'
+    for index, position in enumerate(positions, 1):
+        values = [
+            str(index), position, 'Определяется по карте оценки рисков', 'Снижение профессионального риска',
+            'Идентификация опасностей, инструктаж, применение предусмотренных СИЗ и контроль условий труда.',
+            'Постоянно', '', responsible, '', '',
+        ]
+        cells = table.add_row().cells
+        for col, value in enumerate(values):
+            cells[col].text = value
+    return _doc_bytes(doc)
+
+
+def _position_genitive(position: str) -> str:
+    """A conservative form for replacing the template's generic role labels."""
+    value = str(position or '').strip()
+    lower = _norm(value)
+    known = {
+        'директор': 'Директора',
+        'начальник участка': 'Начальника участка',
+        'главный инженер': 'Главного инженера',
+        'мастер': 'Мастера',
+        'производитель работ': 'Производителя работ',
+        'прораб': 'Прораба',
+    }
+    return known.get(lower, value)
+
+
+def _normalize_suot_template_facts(data: bytes, key: str, dates: dict, resp: dict) -> bytes:
+    """Remove a small, verified set of stale SUOT template facts.
+
+    This is intentionally key-scoped: legal references containing a historic
+    year are not touched, and only the known document-code field is updated.
+    """
+    process = (resp.get('process_resp') or resp.get('director') or {}) if isinstance(resp, dict) else {}
+    position = str(process.get('position') or 'Директор').strip() or 'Директор'
+    replacements = []
+    if key in {'suot_perechen_7.docx', 'suot_perechen_8.docx', 'suot_perechen_9.docx', 'suot_perechen_11.docx'}:
+        replacements.extend([
+            ('Главного специалиста', _position_genitive(position)),
+            ('главного специалиста', _position_genitive(position).lower()),
+            ('Главный специалист', position),
+            ('главный специалист', position.lower()),
+        ])
+    if key == 'suot_root_24.docx':
+        year = str(dates.get('year') or '')
+        if year:
+            replacements.extend([
+                ('СТП OH&S 8.1-02- 2025', f'СТП OH&S 8.1-02-{year}'),
+                ('СТП OH&S 8.1-02-2025', f'СТП OH&S 8.1-02-{year}'),
+            ])
+    return _apply_text_replacements_to_docx(data, replacements)
 
 
 def _knowledge_check_protocol_doc(company: dict, people: list, commission: list, dates: dict) -> bytes:
@@ -1684,7 +1805,11 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
     if 'suot' in wanted_categories:
         ot_people = _unique_people(auditors)
         lead = director or (ot_people[0] if ot_people else {})
-        operational = _person_order_label(di_person or process_person or lead)
+        # Office roles may own records, but must not become a silent default for
+        # electrical and fire-safety responsibility. Prefer the real manager of
+        # the work area, then the director when that person is unavailable.
+        operational_person = process_person or lead or di_person
+        operational = _person_order_label(operational_person)
         committee_members = labels(ot_people)
         committee_without_chair = [
             person for person in ot_people
@@ -1700,6 +1825,7 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
             ('10.1-OH&S', 'О проведении внутреннего обучения специалистов СУОТ',
              [f'Провести внутреннее обучение по требованиям СУОТ для следующих работников: {committee_members}.',
               f'Утвердить программу внутреннего обучения СУОТ и протокол его проведения. Ответственный за организацию обучения: {_person_order_label(lead)}.',
+              'Обучение провести с привлечением внештатных специалистов при необходимости профильной подготовки.',
               'Результаты обучения и проверки знаний оформить протоколом.'], ot_people),
             ('4-OH&S', 'О назначении ответственных лиц СУОТ',
              [f'Назначить ответственными за организацию работы по охране труда: {committee_members}.',
@@ -1707,6 +1833,7 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
               f'Назначить ответственными за проведение инструктажей по охране труда и противопожарных инструктажей: {committee_members}.',
               f'Назначить ответственным за общее состояние электрохозяйства, исправность электроинструмента, лестниц и средств защиты: {operational}.',
               f'Назначить ответственным за пожарную безопасность, первичные средства пожаротушения и организацию обучения требованиям пожарной безопасности: {operational}.',
+              f'Назначить ответственным за безопасное производство погрузочно-разгрузочных работ, осмотр лестниц и стремянок, а также исправность ручного инструмента: {operational}.',
               f'Утвердить состав комиссии для проверки знаний работающих по вопросам охраны труда: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.'], ot_people),
             ('5-OH&S', 'О назначении аудиторов СУОТ',
              [f'Назначить руководителем группы по аудиту СУОТ: {_person_order_label(lead)}.',
@@ -1720,7 +1847,7 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
             ('7-OH&S', 'О назначении ответственного за инструкции по охране труда',
              [f'Назначить ответственным за учёт, актуализацию и выдачу инструкций по охране труда: {operational}.',
               'Выдавать утвержденные инструкции соответствующим должностным лицам с регистрацией в журнале учета выдачи инструкций по охране труда.',
-              f'Общее руководство разработкой инструкций по охране труда и пожарной безопасности возложить на: {_person_order_label(lead)}.'], [di_person or director]),
+              f'Общее руководство разработкой инструкций по охране труда и пожарной безопасности возложить на: {_person_order_label(lead)}.'], [operational_person or director]),
         ]
         for number,title,clauses,people in items:
             docs.append({'name': f'{org} СУОТ - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people)})
@@ -2047,6 +2174,8 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 data = _rewrite_report_period(data, str(dates.get('reporting_year') or dates.get('year') or ''))
             if category == 'iso':
                 data = _normalize_iso_document_references(data, str(dates.get('year') or ''))
+            elif category == 'suot':
+                data = _normalize_suot_template_facts(data, key, dates, resp)
             if key == 'smk_doc_24.docx':
                 data = _rewrite_management_audit_summary(data, itr, dates)
             if key == 'suot_root_16.docx':
@@ -2120,7 +2249,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         if not periodika:
             audit_commission = _unique_people(resp.get('auditors') or itr[:3])
             for index, person in enumerate(_unique_people(itr), 1):
-                auditor = _different_auditor(person, audit_commission, index)
+                auditor = _different_auditor(person, audit_commission, index, itr)
                 fio = str(person.get('fio') or index)
                 prog(f'Контрольный лист аудита СМК: {fio}')
                 docs.append({
@@ -2165,6 +2294,11 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
     if 'suot' in wanted_categories:
         all_people = list(itr or []) + workers_rows
         if not periodika:
+            prog('Программа управления рисками по фактическому штату')
+            docs.append({
+                'name': f'{org} СУОТ - 1 Программа управления охраной труда и снижения неприемлемых рисков.docx',
+                'bytes': _suot_risk_management_program_doc(company, all_people, dates),
+            })
             prog('Лист ознакомления с политикой СУОТ')
             docs.append({'name': f'{org} СУОТ - 2.2 Лист ознакомления с политикой.docx', 'bytes': _awareness_doc(company, 'ЛИСТ ОЗНАКОМЛЕНИЯ С ПОЛИТИКОЙ В ОБЛАСТИ ОХРАНЫ ТРУДА', all_people, dates, 'goals')})
         prog('Лист ознакомления с целями СУОТ')
@@ -2194,13 +2328,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
 
             audit_targets = _unique_people(itr)
             for index, person in enumerate(audit_targets, 1):
-                # A person cannot audit their own area.  Prefer another actual
-                # member of the commission; leave the auditor explicit for a
-                # one-person organisation instead of fabricating a name.
-                person_key = _norm(person.get('fio'))
-                candidates = [member for member in audit_commission
-                              if _norm(member.get('fio')) != person_key]
-                auditor = candidates[(index - 1) % len(candidates)] if candidates else {}
+                auditor = _different_auditor(person, audit_commission, index, audit_targets)
                 fio = str(person.get('fio') or index)
                 prog(f'Контрольный лист аудита: {fio}')
                 docs.append({'name': f'{org} СУОТ - Контрольный лист внутреннего аудита {index}.docx', 'bytes': _audit_checklist_doc(company, person, auditor, dates)})

@@ -14,6 +14,7 @@ import generator
 import server
 from generator_iso_suot_templates import generate_iso_suot_package_v2
 from docx import Document
+from docx.enum.section import WD_ORIENT
 
 
 def xml_text(doc_bytes):
@@ -346,6 +347,103 @@ def test_suot_audit_checklist_never_assigns_a_person_to_audit_themself():
 
     assert 'Проверяемое лицо: Директор — Яскин Илья Васильевич' in text
     assert 'Аудитор: Начальник участка — Падуто Александр Сергеевич' in text
+
+
+def test_suot_audit_program_uses_another_itr_when_only_director_has_ot_certificate():
+    """A valid second ITR is safer than a placeholder in a finished programme."""
+    data = sample_data()
+    data['company']['director_fio'] = 'Яскин Илья Васильевич'
+    data['company']['director_position'] = 'Директор'
+    data['staff'] = [
+        {'fio': 'Яскин Илья Васильевич', 'position': 'Директор', 'is_worker': False, 'ot_certificate': True},
+        {'fio': 'Падуто Александр Сергеевич', 'position': 'Начальник участка', 'is_worker': False},
+        {'fio': 'Кульбакин Александр Валерьевич', 'position': 'Бухгалтер', 'is_worker': False},
+    ]
+
+    result = generator.generate_package(data, 'dummy', 'suot')
+    programme = next(doc['bytes'] for doc in result['docs'] if 'Программа внутренних аудитов' in doc['name'])
+    rows = Document(io.BytesIO(programme)).tables[0].rows
+    director_row = next(row for row in rows if row.cells[1].text.startswith('Директор'))
+
+    assert 'Падуто Александр Сергеевич' in director_row.cells[4].text
+    assert 'ТРЕБУЕТ УТОЧНЕНИЯ' not in director_row.cells[4].text
+
+
+def test_suot_role_orders_never_assign_operational_safety_to_an_accountant():
+    """Operational duties follow the actual operational manager, not office fallback roles."""
+    data = sample_data()
+    data['company']['director_fio'] = 'Яскин Илья Васильевич'
+    data['company']['director_position'] = 'Директор'
+    data['staff'] = [
+        {'fio': 'Яскин Илья Васильевич', 'position': 'Директор', 'is_worker': False, 'ot_certificate': True},
+        {'fio': 'Падуто Александр Сергеевич', 'position': 'Начальник участка', 'is_worker': False},
+        {'fio': 'Кульбакин Александр Валерьевич', 'position': 'Бухгалтер', 'is_worker': False},
+    ]
+
+    result = generator.generate_package(data, 'dummy', 'suot')
+    docs = {doc['name']: _visible_doc_text(doc['bytes']) for doc in result['docs']}
+    order4 = next(text for name, text in docs.items() if 'Приказ 4-OH&S' in name)
+    order7 = next(text for name, text in docs.items() if 'Приказ 7-OH&S' in name)
+
+    for text in (order4, order7):
+        assert 'Падуто Александр Сергеевич' in text
+        assert 'Кульбакин Александр Валерьевич' not in text
+
+
+def test_suot_risk_program_uses_only_current_worker_professions():
+    """Old template professions must never leak into a new company's risk programme."""
+    data = sample_data()
+    data['workers'] = ['Монтажник связи', 'Электромонтажник', 'Подсобный рабочий']
+    data['staff'] = [person for person in data['staff'] if not person['is_worker']]
+
+    result = generator.generate_package(data, 'dummy', 'suot')
+    programme = next(doc['bytes'] for doc in result['docs'] if 'Программа управления охраной труда' in doc['name'])
+    text = _visible_doc_text(programme)
+
+    for profession in data['workers']:
+        assert profession in text
+    for stale in ('Штукатур', 'Кровельщик', 'Электрогазосварщик'):
+        assert stale not in text
+
+
+def test_suot_archive_routes_knowledge_forms_and_electrical_instruction_to_working_folders():
+    data = sample_data()
+    result = generator.generate_package(data, 'dummy', 'suot')
+    paths = {doc['name']: doc['archive_path'] for doc in result['docs']}
+
+    protocol_path = next(path for name, path in paths.items() if 'Протокол проверки знаний' in name)
+    electrical_instruction_path = next(path for name, path in paths.items() if '7 при работе с электроинструментом' in name)
+
+    assert protocol_path.startswith('СУОТ/6 Проверка знаний/')
+    assert electrical_instruction_path.startswith('СУОТ/3 Инструкции/')
+
+
+def test_suot_template_lists_replace_generic_specialist_and_current_document_year():
+    data = sample_data()
+    result = generator.generate_package(data, 'dummy', 'suot')
+    docs = {doc['name']: _visible_doc_text(doc['bytes']) for doc in result['docs']}
+
+    combined = '\n'.join(docs.values())
+    assert 'Главный специалист' not in combined
+    assert 'Заместитель директора-главный инженер' in combined
+
+    stp = next(value for name, value in docs.items() if 'СТП 8.1-02' in name)
+    assert 'СТП OH&S 8.1-02- 2025' not in stp
+    assert 'СТП OH&S 8.1-02-2026' in stp
+
+
+def test_suot_audit_program_is_landscape_and_uses_selected_document_date():
+    data = sample_data()
+    data['dates'] = {'document_date': '14.10.2026'}
+    result = generator.generate_package(data, 'dummy', 'suot')
+
+    audit = next(doc for doc in result['docs'] if 'Программа внутренних аудитов' in doc['name'])
+    order = next(doc for doc in result['docs'] if 'Приказ 4-OH&S' in doc['name'])
+    audit_document = Document(io.BytesIO(audit['bytes']))
+
+    assert audit_document.sections[0].orientation == WD_ORIENT.LANDSCAPE
+    assert '14.10.2026' in _visible_doc_text(audit['bytes'])
+    assert '14.10.2026' in _visible_doc_text(order['bytes'])
 
 
 def test_generator_uses_only_company_director_in_suot_orders():
