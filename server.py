@@ -1153,6 +1153,7 @@ def _run_generation_task(task_id):
             ai_data['_knowledge_rules'] = knowledge_list(active_only=True, scope=product) if user_role == 'owner' else []
             result = generate_package(ai_data, api_key, product, on_prog)
         docs = result['docs']
+        extra_files = result.get('extra_files') or []
         if result.get('error') or not docs:
             raise RuntimeError(result.get('error') or 'Генератор не вернул ни одного документа.')
         org_name = ai_data.get('company', {}).get('name', '')
@@ -1160,7 +1161,7 @@ def _run_generation_task(task_id):
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         zip_path = str(OUT_DIR / f'{safe_org}_{timestamp}.zip')
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for doc in docs:
+            for doc in [*docs, *extra_files]:
                 archive.writestr(_generated_archive_entry_name(doc), doc['bytes'])
         journal_id = save_journal({
             'owner_user_id': task.get('owner_user_id'),

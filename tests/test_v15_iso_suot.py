@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 import generator
 import server
 from generator_iso_suot_templates import generate_iso_suot_package_v2
+from iso_suot_scope_profiles import resolve_scope_profile
 from docx import Document
 from docx.enum.section import WD_ORIENT
 
@@ -68,7 +69,7 @@ def test_fast_deterministic_iso_suot_package():
     assert result['docs']
     assert not result.get('warnings')
     assert not any('Варта' in d['name'] for d in result['docs'])
-    combined = '\n'.join(xml_text(d['bytes']) for d in result['docs'])
+    combined = '\n'.join(xml_text(d['bytes']) for d in result['docs'] if d['name'].endswith('.docx'))
     assert 'Варта' not in combined
     assert '[Наименование]' not in combined
     assert '[Форма_собственности_сокращенная]' not in combined
@@ -547,6 +548,51 @@ def test_nonstandard_scope_is_visible_in_smk_orders_but_not_added_to_customer_re
     assert 'ООО «Заказчик 1»' in report_text
     assert 'ОДО «Заказчик 2»' in report_text
     assert 'Устройство системы адресной пожарной сигнализации' not in report_text
+
+
+def test_confirmed_scope_profiles_change_iso_suot_content_not_only_scope_label():
+    cases = [
+        ('СМР и разработка разделов проектной документации', 'construction_design', 'проектной документации'),
+        ('Геодезические работы и инженерно-геодезические изыскания', 'geodesy_surveys', 'геодезических работ'),
+        ('Монтаж и наладка систем пожарной сигнализации, СОУЭ и огнезащита', 'fire_systems', 'пожарной сигнализации'),
+    ]
+    data = sample_data()
+    itr = [x for x in data['staff'] if not x['is_worker']]
+    workers = [x for x in data['staff'] if x['is_worker']]
+    dates = generator.calculate_dates('20.08.2026')
+    for scope, profile_id, expected in cases:
+        profile = resolve_scope_profile(scope)
+        assert profile['id'] == profile_id
+        company = dict(data['company'], scope=scope)
+        result = generate_iso_suot_package_v2(
+            company, itr, dates, generator.select_responsible(itr), product='iso_suot',
+            workers=workers, suppliers=data['suppliers'], objects=data['objects'],
+        )
+        profile_doc = next(doc for doc in result['docs'] if 'Профиль области работ' in doc['name'])
+        instruction_list = next(doc for doc in result['docs'] if 'Перечень инструкций по ОТ' in doc['name'])
+        audit_program = next(doc for doc in result['docs'] if 'Программа внутренних аудитов' in doc['name'] and 'СУОТ' in doc['name'])
+        assert expected in xml_text(profile_doc['bytes']).lower()
+        assert profile['audit_focus'].lower() in xml_text(audit_program['bytes']).lower()
+        assert any(title.lower() in xml_text(instruction_list['bytes']).lower() for title in profile['instructions'])
+
+
+def test_unknown_scope_is_explicit_ai_draft_with_provenance_and_official_sources():
+    data = sample_data()
+    data['company']['scope'] = 'Производство нестандартных изделий из биополимеров'
+    data['certification']['scope'] = 'Производство нестандартных изделий из биополимеров'
+    data['iso_suot'] = {'scope_profile_mode': 'ai_draft'}
+    result = generator.generate_package(data, 'dummy', 'iso_suot')
+    assert not result.get('error')
+    assert any('ИИ-черновик' in warning for warning in result['warnings'])
+    report = next(doc for doc in result['extra_files'] if doc['name'].endswith('Отчет происхождения профиля.json'))
+    payload = __import__('json').loads(report['bytes'].decode('utf-8'))
+    assert payload['profile']['status'] == 'ai_draft'
+    assert payload['unverified_assumptions']
+    assert {source['url'] for source in payload['official_source_registry']} == {
+        'https://pravo.by/', 'https://tnpa.by/',
+        'https://eec.eaeunion.org/comission/department/deptexreg/',
+    }
+    assert report['archive_path'].startswith('Служебная информация/')
 
 
 def test_iso_scope_from_current_card_never_turns_into_a_placeholder():

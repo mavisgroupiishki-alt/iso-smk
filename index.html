@@ -513,6 +513,7 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
           </div>
         </div>
         <div class="ai-mode-help">Новый пакет — для первичного оформления. Периодика / ИК — только для обновления ранее оформленного пакета.</div>
+        <div id="ai-scope-profile-choice" style="display:none;margin-top:8px;padding:8px 10px;border:1px solid #E8B39F;border-radius:8px;background:#FFF8F0;font-size:11px;color:#825345"></div>
       </section>
 
       <!-- CHAT + CARD LAYOUT -->
@@ -1445,6 +1446,60 @@ function aiGetSelectedProduct() {
 function aiSetRequestScope(value) {
   aiCurrentData.certification = aiCurrentData.certification || {};
   aiCurrentData.certification.scope = String(value || '').trim();
+  aiRenderScopeProfileChoice();
+}
+
+function aiScopeProfileKind(scope) {
+  const text = String(scope || '').toLowerCase().replace(/ё/g, 'е');
+  // Keep the client-side hint aligned with the deterministic server profile:
+  // "проектной документации" has endings between both word stems.
+  if(/(?:строительно-монтаж|смр)/.test(text) && /проектн.*документ/.test(text)) return 'construction_design';
+  if(/геодез/.test(text) && /изыскан/.test(text)) return 'geodesy_surveys';
+  if(/пожарн|оповещ|огнезащ|соуэ|противодымн/.test(text)) return 'fire_systems';
+  if(/строительно-монтаж|смр|текущий ремонт|отделочн/.test(text)) return 'construction_general';
+  return '';
+}
+
+function aiChooseScopeProfile(mode) {
+  aiCurrentData.iso_suot = aiCurrentData.iso_suot || {};
+  aiCurrentData.iso_suot.scope_profile_mode = mode;
+  aiRenderScopeProfileChoice();
+  if(mode === 'sample_review') {
+    aiAddMsg('ai', 'Прикрепите пример пакета для этой области. Он будет разобран как источник для проверки; пока профиль не утвержден, готовый пакет не будет помечен как проверенный.');
+    document.getElementById('ai-file-input')?.click();
+  }
+}
+
+function aiRenderScopeProfileChoice() {
+  const box = document.getElementById('ai-scope-profile-choice');
+  if(!box) return;
+  const product = aiGetSelectedProduct();
+  const scope = String(aiCurrentData?.certification?.scope || document.getElementById('ai-request-scope')?.value || '').trim();
+  if(!['iso','suot','iso_suot'].includes(product) || !scope) { box.style.display = 'none'; return; }
+  const profile = aiScopeProfileKind(scope);
+  if(profile) {
+    const labels = {
+      construction_design: 'СМР и проектная документация',
+      construction_general: 'строительно-монтажные и ремонтно-отделочные работы',
+      geodesy_surveys: 'геодезия и инженерные изыскания',
+      fire_systems: 'пожарная сигнализация, СОУЭ и огнезащита',
+    };
+    box.style.display = 'block';
+    box.style.borderColor = '#B8C9A8'; box.style.background = '#F5FAF0'; box.style.color = '#647A55';
+    box.innerHTML = `✅ Применится проверенный профиль: <b>${igorEscape(labels[profile])}</b>.`;
+    return;
+  }
+  const mode = String(aiCurrentData?.iso_suot?.scope_profile_mode || '');
+  box.style.display = 'block'; box.style.borderColor = '#E8B39F'; box.style.background = '#FFF8F0'; box.style.color = '#825345';
+  if(mode === 'ai_draft') {
+    box.innerHTML = '⚠️ Будет сформирован <b>ИИ-черновик</b>: в ZIP появится отчёт о допущениях и официальных источниках для проверки. Перед применением нужен предметный просмотр.';
+  } else if(mode === 'sample_review') {
+    box.innerHTML = '📎 Выбран путь с примером. Прикрепите человеческий пакет и дождитесь его разбора; до проверки такой профиль не считается утверждённым.';
+  } else {
+    box.innerHTML = 'Для этой области ещё нет проверенного профиля. '
+      + '<button type="button" onclick="aiChooseScopeProfile(\'sample_review\')" style="margin-left:6px;border:1px solid #D4C4B8;border-radius:6px;background:#fff;color:#825345;padding:3px 7px;cursor:pointer;font:inherit">Загрузить пример</button>'
+      + '<button type="button" onclick="aiChooseScopeProfile(\'ai_draft\')" style="margin-left:4px;border:1px solid #C97B84;border-radius:6px;background:#8B4A5C;color:#fff;padding:3px 7px;cursor:pointer;font:inherit">Сформировать ИИ-черновик</button>';
+  }
 }
 
 function aiNormalizeDocumentDate(value) {
@@ -1500,6 +1555,7 @@ function aiSyncRequestProfileControls() {
   });
   const scope = document.getElementById('ai-request-scope');
   if(scope && document.activeElement !== scope) scope.value = cert.scope || '';
+  aiRenderScopeProfileChoice();
 }
 
 function aiSelectProduct(product) {
@@ -4814,6 +4870,13 @@ async function aiGenerate() {
   // Определяем продукт из данных Игоря
   const certStd = aiCurrentData.certification?.standard || 'iso';
   const product = certStd; // iso | suot | iso_suot | spk_stroy | spk_bisp
+  const scope = String(aiCurrentData.certification?.scope || '').trim();
+  const profileMode = String(aiCurrentData.iso_suot?.scope_profile_mode || '');
+  if(['iso','suot','iso_suot'].includes(product) && scope && !aiScopeProfileKind(scope) && profileMode !== 'ai_draft') {
+    aiAddMsg('ai', '⚠️ Для этой области нет проверенного профиля. Выберите выше «Загрузить пример» или «Сформировать ИИ-черновик».');
+    aiRenderScopeProfileChoice();
+    return;
+  }
 
   const payload = {
     orgName: c.name,

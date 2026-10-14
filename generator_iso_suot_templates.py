@@ -27,6 +27,12 @@ from docx import Document
 from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Cm, Pt
+from iso_suot_scope_profiles import (
+    OFFICIAL_SOURCES_CHECKED_ON,
+    provenance as scope_profile_provenance,
+    resolve_scope_profile,
+    source_rows as scope_profile_source_rows,
+)
 
 BASE_DIR = Path(__file__).parent.resolve()
 TPL_DIR = BASE_DIR / 'iso_suot_templates'
@@ -825,6 +831,59 @@ def _iso_document_list_doc(company: dict, dates: dict) -> bytes:
     return _doc_bytes(doc)
 
 
+def _scope_profile_doc(company: dict, profile: dict, dates: dict) -> bytes:
+    """Document the approved activity profile used by this exact package."""
+    doc = _new_doc(company, 'ПРОФИЛЬ ОБЛАСТИ РАБОТ ДЛЯ ДОКУМЕНТОВ СМК И СУОТ', dates, 'document')
+
+    def add(text: str, *, bold: bool = False) -> None:
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.space_after = Pt(0)
+        run = paragraph.add_run(text)
+        run.bold = bold
+
+    status = str(profile.get('status') or '')
+    if status == 'approved_reference':
+        add('Статус: профиль сформирован по проверенному человеческому образцу.')
+    else:
+        add('Статус: ИИ-черновик. До применения необходимо проверить профильные документы и применимость требований.')
+    add(f'Профиль: {profile.get("title") or "ТРЕБУЕТ УТОЧНЕНИЯ"}.')
+    add(f'Основной процесс: {profile.get("process_name") or "ТРЕБУЕТ УТОЧНЕНИЯ"}.')
+    if profile.get('sample'):
+        add(f'Основание профиля: {profile["sample"]}.')
+    for heading, values in (
+        ('Процессы', profile.get('process_steps') or ()),
+        ('Профильные опасности для оценки рисков', profile.get('hazards') or ()),
+        ('Требуемые меры управления', profile.get('controls') or ()),
+        ('Профильные инструкции по охране труда', profile.get('instructions') or ()),
+    ):
+        add(heading, bold=True)
+        for value in values:
+            add('• ' + str(value))
+    add('Фокус внутреннего аудита: ' + str(profile.get('audit_focus') or 'ТРЕБУЕТ УТОЧНЕНИЯ') + '.')
+    return _doc_bytes(doc)
+
+
+def _official_sources_doc(company: dict, profile: dict, dates: dict) -> bytes:
+    """List only allowed primary sources; do not manufacture legal citations."""
+    doc = _new_doc(company, 'РЕЕСТР ОФИЦИАЛЬНЫХ ИСТОЧНИКОВ ДЛЯ ПРОВЕРКИ НПА И ТНПА', dates, 'document')
+    doc.add_paragraph(
+        'Реестр содержит официальные источники для проверки действующей редакции. '
+        'Он не заменяет проверку применимости конкретного НПА или ТНПА к работам, оборудованию и рабочим местам организации.'
+    )
+    doc.add_paragraph(f'Дата актуализации реестра в приложении: {OFFICIAL_SOURCES_CHECKED_ON}.')
+    table = doc.add_table(rows=1, cols=4)
+    table.style = 'Table Grid'
+    for cell, value in zip(table.rows[0].cells, ('№', 'Источник', 'Что проверяется', 'Адрес')):
+        cell.text = value
+    for index, source in enumerate(scope_profile_source_rows(profile), 1):
+        cells = table.add_row().cells
+        cells[0].text = str(index)
+        cells[1].text = str(source.get('title') or '')
+        cells[2].text = str(source.get('coverage') or '')
+        cells[3].text = str(source.get('url') or '')
+    return _doc_bytes(doc)
+
+
 def _awareness_doc(company: dict, title: str, people: list, dates: dict, date_key='goals') -> bytes:
     doc = _new_doc(company, title, dates, date_key)
     _add_staff_table(doc, people, str(dates.get(date_key) or dates.get('goals') or 'ТРЕБУЕТ УТОЧНЕНИЯ'))
@@ -943,7 +1002,7 @@ def _different_auditor(audited: dict, auditors: list[dict], index: int,
 
 
 def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
-                       template_data: bytes | None = None) -> bytes:
+                       template_data: bytes | None = None, profile: dict | None = None) -> bytes:
     if standard == 'iso' and template_data:
         doc = Document(io.BytesIO(template_data))
         period_year = str(dates.get('year') or '')
@@ -975,6 +1034,8 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
                     log[col].text = value
             for cell in journal.rows[2].cells:
                 cell.text = f'{period_year} год'
+        if profile:
+            doc.add_paragraph('Профильный фокус аудита: ' + str(profile.get('audit_focus') or 'ТРЕБУЕТ УТОЧНЕНИЯ') + '.')
         return _doc_bytes(doc)
 
     is_suot = standard == 'suot'
@@ -982,6 +1043,8 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
              if is_suot else 'ПРОГРАММА ПРОВЕДЕНИЯ ВНУТРЕННИХ АУДИТОВ СМК')
     doc = _new_doc(company, f'{title} НА {dates.get("year") or "ТРЕБУЕТ УТОЧНЕНИЯ"} ГОД', dates, 'goals')
     doc.add_paragraph('Цель: систематическая оценка соответствия системы менеджмента установленным требованиям и внутренним документам организации.')
+    if profile:
+        doc.add_paragraph('Профильный фокус аудита: ' + str(profile.get('audit_focus') or 'ТРЕБУЕТ УТОЧНЕНИЯ') + '.')
     table = doc.add_table(rows=1, cols=6)
     table.style = 'Table Grid'
     for i, h in enumerate(['№', 'Проверяемое должностное лицо', 'Критерии аудита', 'Срок', 'Аудитор', 'Отметка']):
@@ -1042,7 +1105,7 @@ def _coordination_council_protocol_doc(company: dict, director: dict, council: l
     return _doc_bytes(doc)
 
 
-def _suot_risk_card_doc(company: dict, person: dict, dates: dict) -> bytes:
+def _suot_risk_card_doc(company: dict, person: dict, dates: dict, profile: dict | None = None) -> bytes:
     """Create one risk card for an actual person or a selected worker profession."""
     fio = str(person.get('fio') or '').strip()
     position = str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
@@ -1061,6 +1124,9 @@ def _suot_risk_card_doc(company: dict, person: dict, dates: dict) -> bytes:
         ('2', 'Падение, скольжение, загромождение проходов', 'Травма', 'ТРЕБУЕТ ОЦЕНКИ', 'Содержание рабочего места и проходов в безопасном состоянии', ''),
         ('3', 'Воздействие оборудования и инструмента', 'Травма', 'ТРЕБУЕТ ОЦЕНКИ', 'Осмотр до работы, применение исправного оборудования', ''),
     ]
+    for index, (hazard, control) in enumerate(zip(
+            (profile or {}).get('hazards') or (), (profile or {}).get('controls') or ()), len(rows) + 1):
+        rows.append((str(index), str(hazard), 'Требует оценки', 'ТРЕБУЕТ ОЦЕНКИ', str(control), ''))
     for values in rows:
         cells = table.add_row().cells
         for i, value in enumerate(values):
@@ -1093,7 +1159,8 @@ def _suot_unacceptable_risks_doc(company: dict, people: list, dates: dict) -> by
     return _doc_bytes(doc)
 
 
-def _suot_risk_management_program_doc(company: dict, people: list, dates: dict) -> bytes:
+def _suot_risk_management_program_doc(company: dict, people: list, dates: dict,
+                                      profile: dict | None = None) -> bytes:
     """Build the risk-management programme from the current staff card only.
 
     The template contains occupations from its source company.  They are not a
@@ -1109,6 +1176,8 @@ def _suot_risk_management_program_doc(company: dict, people: list, dates: dict) 
     doc.add_paragraph(
         'Мероприятия уточняются по результатам идентификации опасностей и оценки рисков на каждом рабочем месте.'
     )
+    if profile:
+        doc.add_paragraph('Профильные опасности: ' + '; '.join(str(x) for x in profile.get('hazards') or ()) + '.')
     table = doc.add_table(rows=1, cols=10)
     table.style = 'Table Grid'
     headings = [
@@ -1130,9 +1199,11 @@ def _suot_risk_management_program_doc(company: dict, people: list, dates: dict) 
         positions = ['Все должности (профессии)']
     responsible = str(company.get('director_position') or 'Директор').strip() or 'Директор'
     for index, position in enumerate(positions, 1):
+        profile_controls = '; '.join(str(x) for x in (profile or {}).get('controls') or ())
         values = [
             str(index), position, 'Определяется по карте оценки рисков', 'Снижение профессионального риска',
-            'Идентификация опасностей, инструктаж, применение предусмотренных СИЗ и контроль условий труда.',
+            'Идентификация опасностей, инструктаж, применение предусмотренных СИЗ и контроль условий труда.'
+            + ((' Профильные меры: ' + profile_controls) if profile_controls else ''),
             'Постоянно', '', responsible, '', '',
         ]
         cells = table.add_row().cells
@@ -1728,7 +1799,8 @@ def _worker_specific_controls(profession: str) -> list[str]:
     ]
 
 
-def _generic_worker_instruction(company: dict, profession: str, dates: dict) -> bytes:
+def _generic_worker_instruction(company: dict, profession: str, dates: dict,
+                                profile: dict | None = None) -> bytes:
     title_prof = profession or 'ТРЕБУЕТ УТОЧНЕНИЯ'
     doc = _new_doc(company, f'ИНСТРУКЦИЯ ПО ОХРАНЕ ТРУДА ДЛЯ ПРОФЕССИИ «{title_prof}»', dates, 'goals')
     sections = [
@@ -1750,10 +1822,13 @@ def _generic_worker_instruction(company: dict, profession: str, dates: dict) -> 
         if heading.startswith('2.'):
             for rule in _worker_specific_controls(profession):
                 doc.add_paragraph('• ' + rule)
+            for rule in (profile or {}).get('controls') or ():
+                doc.add_paragraph('• ' + str(rule))
     return _doc_bytes(doc)
 
 
-def _ot_instruction_list_doc(company: dict, worker_professions: list[str], dates: dict) -> bytes:
+def _ot_instruction_list_doc(company: dict, worker_professions: list[str], dates: dict,
+                             profile: dict | None = None) -> bytes:
     doc = _new_doc(company, 'ПЕРЕЧЕНЬ ИНСТРУКЦИЙ ПО ОХРАНЕ ТРУДА', dates, 'goals')
     general = [
         'Инструкция о проведении контроля за соблюдением законодательства об охране труда',
@@ -1763,7 +1838,9 @@ def _ot_instruction_list_doc(company: dict, worker_professions: list[str], dates
         'Инструкция действий работников при возникновении пожара',
         'Инструкция по безопасной эвакуации работников',
     ]
-    rows = general + [f'Инструкция по охране труда для профессии «{p}»' for p in worker_professions]
+    profile_rows = [str(value) for value in (profile or {}).get('instructions') or ()]
+    rows = general + profile_rows + [f'Инструкция по охране труда для профессии «{p}»' for p in worker_professions]
+    rows = list(dict.fromkeys(rows))
     table = doc.add_table(rows=1, cols=3); table.style = 'Table Grid'
     for i, h in enumerate(['№', 'Наименование инструкции', 'Срок пересмотра']): table.rows[0].cells[i].text = h
     for idx, title in enumerate(rows, 1):
@@ -2241,6 +2318,11 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
     """Generate ISO/SUOT package in seconds using current card data only."""
     org = _clean_org_name(company)
     scope = str(company.get('scope') or '').strip()
+    profile_request = str((iso_suot or {}).get('scope_profile_mode') or '').strip()
+    # Direct API users from older releases have no UI choice.  Preserve their
+    # ability to receive a package, but make an unknown scope visibly a draft
+    # rather than pretending that it has an approved profile.
+    profile = resolve_scope_profile(scope, profile_request or 'ai_draft')
     workers_rows = _actual_worker_rows(workers or [])
 
     director = (resp.get('director') or {}) if isinstance(resp, dict) else {}
@@ -2337,6 +2419,11 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
 
     docs = []
     warnings = []
+    if profile.get('status') == 'ai_draft':
+        warnings.append(
+            'Область работ не сопоставлена с проверенным профилем: пакет сформирован как ИИ-черновик. '
+            'Проверьте профильные НПА/ТНПА, риски и инструкции перед применением.'
+        )
     extra = _date_map(dates)
     total = len(filtered_keys) + 12 + len(itr or []) + len(workers_rows)
     done = 0
@@ -2433,7 +2520,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             company=render_company, scope_text=scope, dates=dates,
         )
         docs.append({'name': f'{org} - 4.1 Программа внутренних аудитов СМК.docx',
-                     'bytes': _audit_program_doc(company, itr, dates, 'iso', audit_template)})
+                     'bytes': _audit_program_doc(company, itr, dates, 'iso', audit_template, profile)})
         if not periodika:
             audit_commission = _unique_people(resp.get('auditors') or itr[:3])
             for index, person in enumerate(_unique_people(itr), 1):
@@ -2485,7 +2572,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             prog('Программа управления рисками по фактическому штату')
             docs.append({
                 'name': f'{org} СУОТ - 1 Программа управления охраной труда и снижения неприемлемых рисков.docx',
-                'bytes': _suot_risk_management_program_doc(company, all_people, dates),
+                'bytes': _suot_risk_management_program_doc(company, all_people, dates, profile),
             })
             prog('Лист ознакомления с политикой СУОТ')
             docs.append({'name': f'{org} СУОТ - 2.2 Лист ознакомления с политикой.docx', 'bytes': _awareness_doc(company, 'ЛИСТ ОЗНАКОМЛЕНИЯ С ПОЛИТИКОЙ В ОБЛАСТИ ОХРАНЫ ТРУДА', all_people, dates, 'goals')})
@@ -2499,7 +2586,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             prog('Перечни СУОТ по актуальному штату и профессиям')
             docs.extend(_suot_current_staff_lists(company, itr, workers_rows, dates, resp))
         prog('Программа внутренних аудитов СУОТ по фактическим ИТР')
-        docs.append({'name': f'{org} СУОТ - Программа внутренних аудитов.docx', 'bytes': _audit_program_doc(company, itr, dates, 'suot')})
+        docs.append({'name': f'{org} СУОТ - Программа внутренних аудитов.docx', 'bytes': _audit_program_doc(company, itr, dates, 'suot', profile=profile)})
         if not periodika:
             all_staff = _unique_staff_entries(all_people)
             audit_commission = _unique_people(resp.get('auditors') or itr[:3])
@@ -2513,7 +2600,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 position = str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
                 label = fio or f'для профессии {position}'
                 prog(f'Карта рисков: {label}')
-                docs.append({'name': f'{org} СУОТ - Карта рисков {label}.docx', 'bytes': _suot_risk_card_doc(company, person, dates)})
+                docs.append({'name': f'{org} СУОТ - Карта рисков {label}.docx', 'bytes': _suot_risk_card_doc(company, person, dates, profile)})
 
             prog('Протокол проверки знаний по фактическому штату')
             docs.append({'name': f'{org} СУОТ - Протокол проверки знаний.docx', 'bytes': _knowledge_check_protocol_doc(company, all_staff, audit_commission, dates)})
@@ -2548,7 +2635,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
 
             worker_professions = [str(w.get('position') or '').strip() for w in workers_rows if str(w.get('position') or '').strip()]
             prog('Перечень инструкций ОТ по фактическому штату')
-            docs.append({'name': f'{org} СУОТ - Перечень инструкций по ОТ.docx', 'bytes': _ot_instruction_list_doc(company, worker_professions, dates)})
+            docs.append({'name': f'{org} СУОТ - Перечень инструкций по ОТ.docx', 'bytes': _ot_instruction_list_doc(company, worker_professions, dates, profile)})
 
             # Create instructions for professions not covered by a concrete template.
             for worker in workers_rows:
@@ -2556,7 +2643,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 if not profession or _matching_template(profession, _WORKER_TEMPLATE_RULES):
                     continue
                 prog(f'Инструкция ОТ: {profession}')
-                docs.append({'name': f'{org} СУОТ - ИОТ {profession}.docx', 'bytes': _generic_worker_instruction(company, profession, dates)})
+                docs.append({'name': f'{org} СУОТ - ИОТ {profession}.docx', 'bytes': _generic_worker_instruction(company, profession, dates, profile)})
 
     # Staff-dependent orders are rebuilt from the current card so each FIO keeps
     # its real current position. This eliminates the old Varta role/name cross-wiring.
@@ -2564,6 +2651,26 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         for order_doc in _dynamic_role_orders(company, itr, dates, resp, wanted_categories):
             prog(order_doc['name'][:50])
             docs.append(order_doc)
+
+    # Profile and provenance live in every generated ZIP.  They make it
+    # inspectable why these texts were used and prevent an AI draft from being
+    # mistaken for an approved human-profile package.
+    prog('Профиль области работ и источники проверки')
+    docs.append({
+        'name': f'{org} - 0 Профиль области работ.docx',
+        'bytes': _scope_profile_doc(company, profile, dates),
+        'archive_path': f'Служебная информация/{org} - 0 Профиль области работ.docx',
+    })
+    docs.append({
+        'name': f'{org} - 0 Реестр официальных источников.docx',
+        'bytes': _official_sources_doc(company, profile, dates),
+        'archive_path': f'Служебная информация/{org} - 0 Реестр официальных источников.docx',
+    })
+    extra_files = [{
+        'name': f'{org} - 0 Отчет происхождения профиля.json',
+        'bytes': _json.dumps(scope_profile_provenance(scope, profile), ensure_ascii=False, indent=2).encode('utf-8'),
+        'archive_path': f'Служебная информация/{org} - 0 Отчет происхождения профиля.json',
+    }]
 
     # A legacy detailed order and a newer dynamic order can otherwise appear side by
     # side. Collapse them before the final package is returned.
@@ -2584,9 +2691,17 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
 
     for doc in docs:
         name = str(doc.get('name') or 'Документ.docx').replace('\\', '/').split('/')[-1]
-        doc['archive_path'] = f'{_archive_folder_for_document(name)}/{name}'
+        doc['archive_path'] = str(doc.get('archive_path') or f'{_archive_folder_for_document(name)}/{name}')
 
     missing = _suot_manifest_missing(docs, itr, workers_rows, dates, periodika) if 'suot' in wanted_categories else []
     if missing:
         warnings.append('СУОТ-пакет не может быть выдан: отсутствуют ' + ', '.join(missing) + '.')
-    return {'docs': docs, 'warnings': warnings, 'required_missing': missing}
+    # Keep non-DOCX provenance outside ``docs``.  Existing generator consumers
+    # legitimately open every entry in ``docs`` with python-docx; the ZIP
+    # writer receives ``extra_files`` separately below.
+    return {
+        'docs': docs,
+        'extra_files': extra_files,
+        'warnings': warnings,
+        'required_missing': missing,
+    }

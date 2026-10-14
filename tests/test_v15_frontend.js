@@ -1,7 +1,7 @@
 const fs = require('fs');
 const vm = require('vm');
 const html = fs.readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
-const names = ['aiIsCorrectionIntent','aiStableSemanticValue','aiCardFingerprint','aiSuccessClaimWithoutDataChange','aiFriendlyError'];
+const names = ['aiIsCorrectionIntent','aiStableSemanticValue','aiCardFingerprint','aiSuccessClaimWithoutDataChange','aiFriendlyError', 'aiScopeProfileKind'];
 let code = '';
 for (const name of names) {
   const start = html.indexOf('function ' + name + '(');
@@ -27,5 +27,11 @@ if (!ctx.aiSuccessClaimWithoutDataChange('Да, всё исправил и го�
 const networkMessage = ctx.aiFriendlyError('Failed to fetch');
 if (!networkMessage.includes('Связь с сервисом временно прервалась') || /failed to fetch/i.test(networkMessage)) {
   throw new Error('browser network error leaked into a user-visible message');
+}
+if (ctx.aiScopeProfileKind('СМР и разработка разделов проектной документации') !== 'construction_design') {
+  throw new Error('scope profile hint diverged from the server profile');
+}
+if (ctx.aiScopeProfileKind('Производство изделий из биополимеров') !== '') {
+  throw new Error('unknown scope was silently mapped to an approved profile');
 }
 console.log('frontend v15 helpers OK');

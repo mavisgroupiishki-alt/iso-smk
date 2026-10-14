@@ -1176,6 +1176,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     worker_professions = list({s.get('position','') for s in workers if s.get('position')})
 
     docs = []
+    extra_files = []
 
     def add(name, text):
         try:
@@ -1215,6 +1216,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
                     'error': error,
                 }, company_data, product)
             docs.extend(result_is['docs'])
+            extra_files.extend(result_is.get('extra_files') or [])
             warnings.extend(result_is.get('warnings', []))
         except Exception as e:
             # Never fall back to the legacy AI-per-document renderer here.  That path
@@ -1265,6 +1267,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
 
     return _finalize_package_result({
         'docs': docs,
+        'extra_files': extra_files,
         'dates': dates,
         'responsible': resp,
         'itr_count': len(itr),
