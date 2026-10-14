@@ -171,6 +171,10 @@ _DYNAMIC_KEYS = {
     'suot_root_1.docx',          # risk programme must use current professions
     'suot_perechen_5.docx',      # ITR knowledge list
     'suot_perechen_6.docx',      # worker knowledge list
+    # Lists 4–12 in the source library contain the former employer's roles.
+    # Rebuild them from the current card instead of trying to replace table cells.
+    'suot_perechen_7.docx', 'suot_perechen_8.docx', 'suot_perechen_9.docx',
+    'suot_perechen_10.docx', 'suot_perechen_11.docx', 'suot_perechen_12.docx',
     'suot_instr_6.docx',         # list of OT instructions
     'suot_znaniya_4.docx',       # knowledge protocol sample people
     'suot_prikaz_2.docx',        # legacy internal-training order with former staff
@@ -1039,11 +1043,14 @@ def _coordination_council_protocol_doc(company: dict, director: dict, council: l
 
 
 def _suot_risk_card_doc(company: dict, person: dict, dates: dict) -> bytes:
-    """Create one reviewable risk card for one actual person from the card."""
-    fio = str(person.get('fio') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
+    """Create one risk card for an actual person or a selected worker profession."""
+    fio = str(person.get('fio') or '').strip()
     position = str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
     doc = _new_doc(company, 'КАРТА ИДЕНТИФИКАЦИИ ОПАСНОСТЕЙ, ОЦЕНКИ РИСКОВ И МЕР УПРАВЛЕНИЯ', dates, 'risks')
-    doc.add_paragraph(f'Работник: {fio}')
+    if fio:
+        doc.add_paragraph(f'Работник: {fio}')
+    else:
+        doc.add_paragraph('Карта составлена для профессии; ФИО работника заполняется при оформлении персональной карты.')
     doc.add_paragraph(f'Должность (профессия): {position}')
     table = doc.add_table(rows=1, cols=6)
     table.style = 'Table Grid'
@@ -1337,6 +1344,157 @@ def _positions_list_doc(company: dict, people: list, dates: dict, workers=False)
     for idx, value in enumerate(unique, 1):
         row = table.add_row().cells; row[0].text = str(idx); row[1].text = value
     return _doc_bytes(doc)
+
+
+def _unique_staff_entries(people) -> list[dict]:
+    """Keep actual named staff and manually selected worker professions.
+
+    A manual profession has no FIO by design.  It must still receive a risk
+    card and appear in profession-based lists, while an unnamed ITR row must
+    not be silently turned into a real person elsewhere in the package.
+    """
+    out, seen = [], set()
+    for person in people or []:
+        if not isinstance(person, dict):
+            continue
+        fio = str(person.get('fio') or '').strip()
+        position = str(person.get('position') or person.get('profession') or '').strip()
+        if not position:
+            continue
+        key = ('fio', _norm(fio)) if fio else ('profession', _norm(position))
+        if not key[1] or key in seen:
+            continue
+        seen.add(key)
+        row = dict(person)
+        row['position'] = position
+        out.append(row)
+    return out
+
+
+def _suot_table_doc(company: dict, title: str, headings: list[str], rows: list[list[str]], dates: dict) -> bytes:
+    """Create a staff-safe SUOT list without inheriting rows from a sample DOCX."""
+    doc = _new_doc(company, title, dates, 'goals')
+    table = doc.add_table(rows=1, cols=len(headings))
+    table.style = 'Table Grid'
+    for index, heading in enumerate(headings):
+        table.rows[0].cells[index].text = heading
+    if not rows:
+        rows = [['1'] + ['ТРЕБУЕТ УТОЧНЕНИЯ'] + [''] * max(0, len(headings) - 2)]
+    for row_values in rows:
+        cells = table.add_row().cells
+        for index, value in enumerate(row_values[:len(cells)]):
+            cells[index].text = str(value)
+    return _doc_bytes(doc)
+
+
+def _scope_high_risk_work(scope: str) -> list[str]:
+    """Use only work types explicitly indicated by the current certification scope."""
+    text = _norm(scope)
+    rows = []
+    if any(token in text for token in ('строитель', 'монтаж', 'ремонт')):
+        rows.append('Строительно-монтажные и ремонтные работы — по ППР и наряду-допуску, когда он требуется.')
+    if any(token in text for token in ('электро', 'электромонтаж', 'слаботоч')):
+        rows.append('Работы в электроустановках и с электроинструментом — при наличии требуемого допуска.')
+    if any(token in text for token in ('высот', 'кровел', 'фасад')):
+        rows.append('Работы на высоте — при наличии организационных и технических мер безопасности.')
+    if any(token in text for token in ('сварк', 'газорез')):
+        rows.append('Огневые работы — по наряду-допуску и мерам пожарной безопасности.')
+    return rows or ['Виды работ повышенной опасности определяются по фактическому ППР, объекту и условиям работ.']
+
+
+def _suot_current_staff_lists(company: dict, itr: list, workers: list, dates: dict, resp: dict) -> list[dict]:
+    """Rebuild all employee/profession lists 4–12 from the current card only."""
+    org = _clean_org_name(company)
+    actual_itr = _unique_people(itr)
+    actual_workers = _unique_staff_entries(workers)
+    all_staff = _unique_staff_entries(list(actual_itr) + list(actual_workers))
+    director = (resp.get('director') or {}) if isinstance(resp, dict) else {}
+    process_person = (resp.get('process_resp') or director) if isinstance(resp, dict) else director
+    eligible_narad = _unique_people([process_person, director]) or actual_itr[:1]
+
+    def position_rows(people, note=''):
+        return [[str(index), str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ'), note]
+                for index, person in enumerate(people, 1)]
+
+    def named_rows(people):
+        return [[str(index), str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+                 str(person.get('fio') or 'ТРЕБУЕТ УТОЧНЕНИЯ')]
+                for index, person in enumerate(people, 1)]
+
+    docs = [
+        {
+            'name': f'{org} СУОТ - 4 Перечень лиц выдачи наряда-допуска.docx',
+            'bytes': _suot_table_doc(
+                company,
+                'ПЕРЕЧЕНЬ ДОЛЖНОСТНЫХ ЛИЦ, ИМЕЮЩИХ ПРАВО ВЫДАЧИ НАРЯДА-ДОПУСКА',
+                ['№', 'Должность', 'ФИО'], named_rows(eligible_narad), dates,
+            ),
+        },
+        {
+            'name': f'{org} СУОТ - 5 Перечень профессий медосмотры.docx',
+            'bytes': _suot_table_doc(
+                company,
+                'ПЕРЕЧЕНЬ ПРОФЕССИЙ, ДЛЯ КОТОРЫХ ТРЕБУЕТСЯ МЕДИЦИНСКИЙ ОСМОТР',
+                ['№', 'Профессия', 'Основание / периодичность'],
+                position_rows(actual_workers, 'Требуется подтвердить по фактическим условиям труда.'), dates,
+            ),
+        },
+        {
+            'name': f'{org} СУОТ - 6 Перечень рабочих мест.docx',
+            'bytes': _suot_table_doc(
+                company,
+                'ПЕРЕЧЕНЬ РАБОЧИХ МЕСТ, НА КОТОРЫХ ИДЕНТИФИЦИРУЮТСЯ ОПАСНОСТИ, ОЦЕНИВАЮТСЯ РИСКИ И ОПРЕДЕЛЯЮТСЯ МЕРЫ УПРАВЛЕНИЯ',
+                ['№', 'Рабочее место', 'Примечание'], position_rows(all_staff), dates,
+            ),
+        },
+        {
+            'name': f'{org} СУОТ - 7 Перечень мест с повыш опасн.docx',
+            'bytes': _suot_table_doc(
+                company,
+                'ПЕРЕЧЕНЬ МЕСТ (УСЛОВИЙ) И ВИДОВ РАБОТ С ПОВЫШЕННОЙ ОПАСНОСТЬЮ',
+                ['№', 'Вид работ / условие', 'Примечание'],
+                [[str(index), value, 'Актуализируется по объекту и ППР.']
+                 for index, value in enumerate(_scope_high_risk_work(str(company.get('scope') or '')), 1)], dates,
+            ),
+        },
+        {
+            'name': f'{org} СУОТ - 8 Перечень проф и должн раб 1 группа.docx',
+            'bytes': _suot_table_doc(
+                company,
+                'ПЕРЕЧЕНЬ ДОЛЖНОСТЕЙ И ПРОФЕССИЙ ДЛЯ ПРИСВОЕНИЯ I ГРУППЫ ПО ЭЛЕКТРОБЕЗОПАСНОСТИ',
+                ['№', 'Должность (профессия)', 'Группа / основание'],
+                position_rows(all_staff, 'Требуется подтвердить по фактическому допуску.'), dates,
+            ),
+        },
+        {
+            'name': f'{org} СУОТ - 9 Перечень раб стажировка.docx',
+            'bytes': _suot_table_doc(
+                company,
+                'ПЕРЕЧЕНЬ РАБОЧИХ ПРОФЕССИЙ, ПОДЛЕЖАЩИХ СТАЖИРОВКЕ',
+                ['№', 'Профессия', 'Примечание'],
+                position_rows(actual_workers, 'Срок и порядок стажировки подтверждаются по условиям работ.'), dates,
+            ),
+        },
+        {
+            'name': f'{org} СУОТ - 11 Перечень рабочих мест электробезопасность ТНПА.docx',
+            'bytes': _suot_table_doc(
+                company,
+                'ПЕРЕЧЕНЬ РАБОЧИХ МЕСТ ПО ЭЛЕКТРОБЕЗОПАСНОСТИ',
+                ['№', 'Рабочее место', 'Группа по электробезопасности'],
+                position_rows(all_staff, 'Требуется подтвердить по фактическому допуску.'), dates,
+            ),
+        },
+        {
+            'name': f'{org} СУОТ - 12 Перечень СИЗ.docx',
+            'bytes': _suot_table_doc(
+                company,
+                'ПЕРЕЧЕНЬ СРЕДСТВ ИНДИВИДУАЛЬНОЙ ЗАЩИТЫ ПО ПРОФЕССИЯМ',
+                ['№', 'Профессия', 'СИЗ / основание выдачи'],
+                position_rows(actual_workers, 'Определяется по актуальным нормам и оценке рисков рабочего места.'), dates,
+            ),
+        },
+    ]
+    return docs
 
 
 
@@ -2309,10 +2467,12 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             docs.append({'name': f'{org} СУОТ - Перечень должностей ИТР для проверки знаний.docx', 'bytes': _positions_list_doc(company, itr, dates, workers=False)})
             prog('Перечень профессий рабочих для проверки знаний ОТ')
             docs.append({'name': f'{org} СУОТ - Перечень профессий рабочих для проверки знаний.docx', 'bytes': _positions_list_doc(company, workers_rows, dates, workers=True)})
+            prog('Перечни СУОТ по актуальному штату и профессиям')
+            docs.extend(_suot_current_staff_lists(company, itr, workers_rows, dates, resp))
         prog('Программа внутренних аудитов СУОТ по фактическим ИТР')
         docs.append({'name': f'{org} СУОТ - Программа внутренних аудитов.docx', 'bytes': _audit_program_doc(company, itr, dates, 'suot')})
         if not periodika:
-            all_staff = _unique_people(all_people)
+            all_staff = _unique_staff_entries(all_people)
             audit_commission = _unique_people(resp.get('auditors') or itr[:3])
             if not audit_commission:
                 audit_commission = _unique_people(itr[:1])
@@ -2320,9 +2480,11 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             prog('Реестр неприемлемых рисков по фактическому штату')
             docs.append({'name': f'{org} СУОТ - Реестр неприемлемых рисков.docx', 'bytes': _suot_unacceptable_risks_doc(company, all_staff, dates)})
             for person in all_staff:
-                fio = str(person.get('fio') or '').strip() or str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
-                prog(f'Карта рисков: {fio}')
-                docs.append({'name': f'{org} СУОТ - Карта рисков {fio}.docx', 'bytes': _suot_risk_card_doc(company, person, dates)})
+                fio = str(person.get('fio') or '').strip()
+                position = str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
+                label = fio or f'для профессии {position}'
+                prog(f'Карта рисков: {label}')
+                docs.append({'name': f'{org} СУОТ - Карта рисков {label}.docx', 'bytes': _suot_risk_card_doc(company, person, dates)})
 
             prog('Протокол проверки знаний по фактическому штату')
             docs.append({'name': f'{org} СУОТ - Протокол проверки знаний.docx', 'bytes': _knowledge_check_protocol_doc(company, all_staff, audit_commission, dates)})

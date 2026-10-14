@@ -406,6 +406,33 @@ def test_suot_risk_program_uses_only_current_worker_professions():
         assert stale not in text
 
 
+def test_suot_lists_and_risk_cards_use_manual_worker_professions_without_template_roles():
+    """Manual professions are real package data, not placeholders or sample-template rows."""
+    data = sample_data()
+    workers = ['Монтажник стальных конструкций', 'Электромонтажник', 'Разнорабочий']
+    data['workers'] = workers
+    data['staff'] = [person for person in data['staff'] if not person['is_worker']]
+
+    result = generator.generate_package(data, 'dummy', 'suot')
+    docs = {doc['name']: doc['bytes'] for doc in result['docs']}
+    current_list = _visible_doc_text(next(value for name, value in docs.items() if '6 Перечень рабочих мест' in name))
+    ppe_list = _visible_doc_text(next(value for name, value in docs.items() if '12 Перечень СИЗ' in name))
+    current_staff_lists = [
+        _visible_doc_text(value)
+        for name, value in docs.items()
+        if any(f'СУОТ - {number} ' in name for number in (4, 5, 6, 7, 8, 9, 11, 12))
+    ]
+
+    for profession in workers:
+        assert profession in current_list
+        assert profession in ppe_list
+        assert any(f'Карта рисков для профессии {profession}' in name for name in docs)
+    for stale_role in ('Техник по связи', 'Инженер-проектировщик', 'Электромонтер ОПС'):
+        assert stale_role not in current_list
+        assert stale_role not in ppe_list
+        assert all(stale_role not in text for text in current_staff_lists)
+
+
 def test_suot_archive_routes_knowledge_forms_and_electrical_instruction_to_working_folders():
     data = sample_data()
     result = generator.generate_package(data, 'dummy', 'suot')
