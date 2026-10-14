@@ -1442,12 +1442,10 @@ function aiNormalizeDocumentDate(value) {
 function aiSetDocumentDate(value) {
   const date = aiNormalizeDocumentDate(value);
   if(!date) return;
-  aiCurrentData.certification = aiCurrentData.certification || {};
   aiCurrentData.dates = aiCurrentData.dates || {};
-  // One explicit date is the source of truth for ISO/SUOT document headers.
-  // Do not infer it from a protocol or a certificate inside the archive.
-  aiCurrentData.certification.audit_date = date;
-  aiCurrentData.dates.audit_date = date;
+  // This is the common document-header date, not the audit date. A package
+  // can be prepared before the audit takes place.
+  aiCurrentData.dates.document_date = date;
   aiRenderCardFromCurrent();
   aiSaveCurrentCompany().catch(() => {});
 }
@@ -2734,11 +2732,15 @@ function aiValidateReadiness(data) {
   if(!product) missing.push('выбранный продукт');
   if(['iso','suot','iso_suot'].includes(product)) {
     const scope = String(data.certification?.scope || company.scope || '').trim();
-    const auditDate = String(data.certification?.audit_date || data.dates?.audit_date || '').trim();
+    const documentDate = String(data.dates?.document_date || data.dates?.development_date || '').trim();
     const confirmedStaff = aiOfficialStaffRows(data.staff);
     if(!scope) missing.push('область применения');
-    if(!auditDate) missing.push('дата оформления документов');
+    if(!documentDate) missing.push('дата оформления документов');
     if(!confirmedStaff.length) missing.push('актуальный штат с ФИО и должностями');
+    aiCardStaffRows(data.staff).filter(person =>
+      ['manual', 'expert'].includes(String(person.source || '').toLowerCase()) &&
+      !aiIsOfficialStaffRow(person)
+    ).forEach(person => missing.push('должность сотрудника: ' + person.fio));
   }
   if(product === 'company_att') {
     const ca = data.company_attestation || {};
@@ -2848,7 +2850,7 @@ function aiIsWorkerPosition(person) {
 }
 
 function aiCanonicalizeStaffWorkerFlags(staff) {
-  return aiOfficialStaffRows(staff).map(person => {
+  return aiCardStaffRows(staff).map(person => {
     const isWorker = aiIsWorkerPosition(person);
     const normalized = {...person, is_worker: isWorker};
     if(isWorker && String(normalized.role || '').toLowerCase() === 'itr') delete normalized.role;
@@ -2864,7 +2866,7 @@ function aiIsOfficialStaffRow(row) {
   if(!/^[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2}$/u.test(fio)) return false;
   if(/[\[\]<>?]/.test(fio) || /имя|отчество|фамил|фио|не\s*указан|неизвест|должност/iu.test(fio)) return false;
   if(!position || !/[А-ЯЁа-яё]/u.test(position)) return false;
-  if(/[\[\]<>?]/.test(position) || /не\s*(?:указан|найден)|неизвест|должност/iu.test(position)) return false;
+  if(/[\[\]<>?]/.test(position) || /не\s*(?:указан|найден)|неизвест|должност|требует\s*уточнения/iu.test(position)) return false;
   return !['итр', 'специалист', 'сотрудник', 'работник'].includes(position.toLowerCase());
 }
 
@@ -2882,6 +2884,16 @@ function aiSourceStaffRows(value) {
     const fio = String(row.fio || row.name || row.full_name || '').replace(/\s+/g, ' ').trim();
     return /^[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2}$/u.test(fio);
   });
+}
+
+function aiCardStaffRows(value) {
+  // A person typed explicitly by the user must remain visible even if their
+  // position still needs clarification. Such a row never passes the official
+  // generation gate, but losing it from the card forces the user to type the
+  // same list again and again.
+  return aiSourceStaffRows(value).filter(row =>
+    aiIsOfficialStaffRow(row) || ['manual', 'expert'].includes(String(row.source || '').toLowerCase())
+  );
 }
 
 function aiMergeEntityArray(previous, incoming, keyFn) {
@@ -2949,7 +2961,7 @@ function aiRenderCard(data) {
   if(data.staff !== undefined) {
     // Only a full FIO and an actual job title may become an official person.
     // This also removes old template rows from a saved company card.
-    aiCurrentData.staff = aiMergeEntityArray(aiOfficialStaffRows(aiCurrentData.staff), aiOfficialStaffRows(data.staff),
+    aiCurrentData.staff = aiMergeEntityArray(aiCardStaffRows(aiCurrentData.staff), aiCardStaffRows(data.staff),
       row => aiNormIdentity(row?.fio || row?.name || row?.full_name));
   }
   if(data.workers !== undefined) {
@@ -3108,7 +3120,7 @@ function aiRenderCard(data) {
 
   // Даты
   const dt = aiCurrentData.dates||{};
-  const dtF = [['Аудит',dt.audit_date],['Разработка',dt.development_date],['Внедрение',dt.implementation_date]].filter(([,v])=>v);
+  const dtF = [['Дата документов',dt.document_date],['Аудит',dt.audit_date],['Разработка',dt.development_date],['Внедрение',dt.implementation_date]].filter(([,v])=>v);
   if(dtF.length) {
     html += '<div class="ai-sec">Даты</div><div>';
     dtF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
@@ -3493,7 +3505,8 @@ function aiArchiveCardTransferDescription(sourceData) {
   if(Array.isArray(source.objects) && source.objects.length) fields.push(`объекты (${source.objects.length})`);
   if(Array.isArray(source.suppliers) && source.suppliers.length) fields.push(`поставщики (${source.suppliers.length})`);
   if(aiHasMeaningfulValue(source.certification?.scope)) fields.push('область применения');
-  if(aiHasMeaningfulValue(source.dates?.audit_date) || aiHasMeaningfulValue(source.certification?.audit_date)) {
+  if(aiHasMeaningfulValue(source.dates?.document_date) || aiHasMeaningfulValue(source.dates?.development_date) ||
+     aiHasMeaningfulValue(source.dates?.audit_date) || aiHasMeaningfulValue(source.certification?.audit_date)) {
     fields.push('дата оформления');
   }
   return fields;
@@ -3785,6 +3798,47 @@ async function aiRetryCorrectionIfNeeded(originalText, parsed, beforeFingerprint
   return parsed;
 }
 
+function aiParseRussianHireDate(value) {
+  const match = String(value || '').match(/(\d{1,2})\s+(январ[ья]|феврал[ья]|март[ае]?|апрел[ья]|ма[йя]|июн[ья]|июл[ья]|август[ае]?|сентябр[ья]|октябр[ья]|ноябр[ья]|декабр[ья])\s+(20\d{2})/iu);
+  if(!match) return '';
+  const months = {
+    января: 1, январь: 1, февраля: 2, февраль: 2, марта: 3, март: 3,
+    апреля: 4, апрель: 4, мая: 5, май: 5, июня: 6, июнь: 6,
+    июля: 7, июль: 7, августа: 8, август: 8, сентября: 9, сентябрь: 9,
+    октября: 10, октябрь: 10, ноября: 11, ноябрь: 11, декабря: 12, декабрь: 12,
+  };
+  const month = months[match[2].toLowerCase()];
+  return month ? `${String(match[1]).padStart(2, '0')}.${String(month).padStart(2, '0')}.${match[3]}` : '';
+}
+
+function aiExtractExplicitStaffFromText(value) {
+  const text = String(value || '');
+  if(!/сотрудник|штат|персонал/iu.test(text)) return [];
+  const matcher = /[А-ЯЁ][а-яё-]+\s+[А-ЯЁ][а-яё-]+\s+[А-ЯЁ][а-яё-]+/gu;
+  const matches = [...text.matchAll(matcher)];
+  if(matches.length < 2) return [];
+  return matches.map((match, index) => {
+    const next = matches[index + 1];
+    const detail = text.slice(match.index + match[0].length, next ? next.index : text.length);
+    const withoutNotes = detail.replace(/\([^)]*\)/gu, ' ');
+    const position = withoutNotes
+      .replace(/^[\s,;:–—-]+/u, '')
+      .split(/\s*,?\s*(?:принят[аы]?|официально|работает|с\s+удостоверением)/iu)[0]
+      .replace(/[,.\s–—-]+$/u, '')
+      .trim() || 'Требует уточнения';
+    return {
+      fio: match[0],
+      position,
+      source: 'manual',
+      employment_type: /совместител/iu.test(detail) ? 'совместительство' : 'основное место',
+      part_time: /совместител/iu.test(detail),
+      ot_certificate: /удостоверени[ея].{0,30}(?:тб|техник[еи]\s+безопасност|охран[еы]\s+труд)/iu.test(detail),
+      hire_date: aiParseRussianHireDate(detail),
+      manual_position_needs_review: position === 'Требует уточнения',
+    };
+  });
+}
+
 async function aiSend() {
   if(aiLoading) return;
   const ta = document.getElementById('ai-input');
@@ -3935,6 +3989,16 @@ async function aiSend() {
 
   // Запоминаем состояние перед обычной правкой. Если ИИ ответит «исправил», но
   // структурированные данные не поменяются, интерфейс это обнаружит и не соврёт пользователю.
+  const explicitStaff = aiExtractExplicitStaffFromText(text);
+  let explicitStaffMessage = '';
+  if(explicitStaff.length) {
+    const beforeKeys = new Set(aiCardStaffRows(aiCurrentData.staff).map(row => aiNormalizeFioKey(row.fio)));
+    aiRenderCard({staff: explicitStaff});
+    const added = explicitStaff.filter(row => !beforeKeys.has(aiNormalizeFioKey(row.fio)));
+    explicitStaffMessage = added.length
+      ? `В карточку добавлены сотрудники: ${added.map(row => row.fio).join(', ')}.`
+      : 'Данные перечисленных сотрудников обновлены в карточке.';
+  }
   const correctionBeforeFingerprint = aiCardFingerprint(aiCurrentData);
   const correctionRequested = aiIsCorrectionIntent(text);
 
@@ -3999,7 +4063,10 @@ async function aiSend() {
     }
     const cleanHistoryPayload = JSON.stringify(parsed);
     aiHistory.push({role:'assistant', content: cleanHistoryPayload});
-    aiAddMsg('ai', parsed.message || result.text, parsed.questions);
+    const message = explicitStaffMessage
+      ? `${explicitStaffMessage}\n\n${parsed.message || result.text}`
+      : (parsed.message || result.text);
+    aiAddMsg('ai', message, parsed.questions);
 
   } catch(e) {
     aiRemoveTyping();
@@ -4322,7 +4389,11 @@ function aiArchiveSourceStatusHtml(sourceStatus) {
   const activeNote = active
     ? ' Сейчас: ' + aiEscapeHtml(String(active[0]).split('/').pop()) + activePageNote + '.'
     : '';
-  return `<div style="font-size:12px;color:#856F68;margin-top:5px">Файлы: ${aiEscapeHtml(summary)}.${activeNote}</div>`;
+  const notRead = entries.filter(([, item]) => item?.state === 'not_read');
+  const notReadDetails = notRead.length
+    ? `<details style="margin-top:4px"><summary>Не прочитано: ${notRead.length}</summary><ul style="margin:3px 0 0;padding-left:18px">${notRead.slice(0, 20).map(([name, item]) => `<li>${aiEscapeHtml(String(name).split('/').pop())}: ${aiEscapeHtml(item?.note || 'причина не указана')}</li>`).join('')}</ul></details>`
+    : '';
+  return `<div style="font-size:12px;color:#856F68;margin-top:5px">Файлы: ${aiEscapeHtml(summary)}.${activeNote}${notReadDetails}</div>`;
 }
 
 function aiArchiveProgressHtml(filename, message, step, total, minimumPercent = 0, meta) {

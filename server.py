@@ -2,7 +2,7 @@
 """ИСО/СМК Генератор с ИИ-оформителем. Запуск: python server.py → http://localhost:8766"""
 import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,hmac,hashlib,secrets,time,struct,copy,requests as req_lib
 import http.server,socketserver
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from datetime import datetime,timedelta,timezone
 
 BASE_DIR = Path(__file__).parent.resolve()
@@ -1113,6 +1113,16 @@ def load_task(task_id):
     return None
 
 
+def _generated_archive_entry_name(doc):
+    """Keep generated ZIP paths safe while preserving the package structure."""
+    fallback = str((doc or {}).get('name') or 'Документ.docx').replace('\\', '/').split('/')[-1]
+    candidate = str((doc or {}).get('archive_path') or fallback).replace('\\', '/')
+    path = PurePosixPath(candidate)
+    if path.is_absolute() or '..' in path.parts or not path.name:
+        return fallback
+    return path.as_posix()
+
+
 def _run_generation_task(task_id):
     """Build one document package from an already accepted queued task."""
     task = TASKS.get(task_id)
@@ -1151,7 +1161,7 @@ def _run_generation_task(task_id):
         zip_path = str(OUT_DIR / f'{safe_org}_{timestamp}.zip')
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as archive:
             for doc in docs:
-                archive.writestr(doc['name'], doc['bytes'])
+                archive.writestr(_generated_archive_entry_name(doc), doc['bytes'])
         journal_id = save_journal({
             'owner_user_id': task.get('owner_user_id'),
             'orgName': org_name,
@@ -1526,7 +1536,7 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
   "data": {
     "company": {"name":"","form":"","unp":"","address":"","city":"","director_fio":"","director_position":"","glavbukh_fio":"","scope":"","has_welding": false, "machinery": ["Автомобиль"], "bisp_org": "РУП «СтройМедиаПроект»", "phone":"", "email":"", "bank_details":"полная строка банковских реквизитов", "bank_account":"IBAN", "bank_name":"наименование банка", "bik":"БИК"},
     "certification": {"standard":"iso|suot|iso_suot|spk_stroy|spk_bisp|att|company_att","package_mode":"initial|periodika","scope":"","body":"","audit_date":""},
-    "dates": {"audit_date":"","development_date":"","implementation_date":""},
+    "dates": {"document_date":"","audit_date":"","development_date":"","implementation_date":""},
     "staff": [{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":"","diplomas":[{"number":"","date":"","institution":"","speciality":"","qualification":""}],"trudovye_numbers":[""],"attestat_number":"","attestat_date_from":"","attestat_date_to":"","attestat_specialization":""}],
     "workers": ["Штукатур","Маляр","Электрогазосварщик"],
     "objects": [{"name":"","year":"","customer":""}],
@@ -1652,7 +1662,7 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
   "data":{
     "company":{"name":"без ООО/ОДО","form":"ООО","unp":"","address":"","city":"","director_fio":"","director_position":"","phone":"","email":"","bank_details":"","bank_account":"","bank_name":"","bik":"","scope":"","has_welding":false},
     "certification":{"standard":"iso|suot|iso_suot","package_mode":"initial|periodika","scope":"точная область текущего пакета","body":"","audit_date":""},
-    "dates":{"audit_date":"","development_date":"","implementation_date":""},
+    "dates":{"document_date":"","audit_date":"","development_date":"","implementation_date":""},
     "staff":[{"fio":"","position":"","role":"director|auditor|responsible|itr","is_worker":false,"employment_type":"основное место|совместительство|договор|","part_time":false,"ot_certificate":false,"ot_certificate_date":"","hire_date":"","needs_review":false,"confidence":1.0}],
     "workers":["профессия"],
     "objects":[{"name":"","year":"","customer":""}],
@@ -6699,7 +6709,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         # Never return raw model placeholders to the client card. An empty
         # confirmed list is safer than adding a person without a real FIO/role.
         structured_data['staff'] = summary_staff
-    if str(product) in ('iso', 'suot', 'iso_suot') and str(package_mode) == 'initial':
+    if str(product) in ('iso', 'suot', 'iso_suot'):
         # ISO/SUOT fast mode intentionally does not call the chat model while an
         # archive is being read.  Return the facts needed by the card directly;
         # otherwise they survive only in ``text`` and appear in the card only
@@ -6739,20 +6749,6 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                         seen.add(key)
             structured_data[collection] = existing
         _canonicalize_staff_worker_flags(structured_data)
-        document_date = _extract_iso_suot_document_date_from_archive(final_text)
-        if document_date:
-            # Archive evidence has priority over a model-selected stale date.
-            # Keep audit and document dates aligned so an initial package is
-            # ready immediately and every generated header uses one source date.
-            structured_data['dates'] = {
-                **(structured_data.get('dates') or {}),
-                'audit_date': document_date,
-                'development_date': document_date,
-            }
-            structured_data['certification'] = {
-                **(structured_data.get('certification') or {}),
-                'audit_date': document_date,
-            }
     return {
         'text': final_text,
         'analysis_text': _compact_product_analysis_text(final_text, product),

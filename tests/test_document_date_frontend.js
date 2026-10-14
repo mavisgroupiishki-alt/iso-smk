@@ -40,6 +40,8 @@ vm.createContext(context);
 vm.runInContext([
   extractFunction('aiIsOfficialStaffRow'),
   extractFunction('aiOfficialStaffRows'),
+  extractFunction('aiSourceStaffRows'),
+  extractFunction('aiCardStaffRows'),
   extractFunction('aiValidateReadiness'),
   extractFunction('aiNormalizeDocumentDate'),
   extractFunction('aiSetDocumentDate'),
@@ -49,8 +51,9 @@ if (context.aiValidateReadiness(context.aiCurrentData).ready) {
   throw new Error('fixture must be blocked before an explicit document date is set');
 }
 context.aiSetDocumentDate('2026-10-13');
-if (context.aiCurrentData.certification.audit_date !== '13.10.2026' ||
-    context.aiCurrentData.dates.audit_date !== '13.10.2026' || rendered !== 1) {
+if (context.aiCurrentData.certification.audit_date ||
+    context.aiCurrentData.dates.audit_date ||
+    context.aiCurrentData.dates.document_date !== '13.10.2026' || rendered !== 1) {
   throw new Error('date picker does not make an ISO/SUOT card ready for generation');
 }
 if (!context.aiValidateReadiness(context.aiCurrentData).ready) {

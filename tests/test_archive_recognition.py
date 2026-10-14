@@ -230,6 +230,17 @@ def test_periodika_can_use_a_previous_iigor_package():
     assert 'ПРЕДЫДУЩИЙ ПАКЕТ' in result['text']
 
 
+def test_generated_zip_entry_preserves_safe_folder_structure():
+    assert server._generated_archive_entry_name({
+        'name': 'Приказ.docx',
+        'archive_path': 'СУОТ/1 Приказы/Приказ.docx',
+    }) == 'СУОТ/1 Приказы/Приказ.docx'
+    assert server._generated_archive_entry_name({
+        'name': 'Приказ.docx',
+        'archive_path': '../чужой.docx',
+    }) == 'Приказ.docx'
+
+
 def test_initial_iso_uses_development_order_date_instead_of_a_model_guess():
     source = (
         '--- ОмиТрейд_Приказ_1_о_начале_разработки_СМК.docx ---\n'
@@ -300,6 +311,32 @@ def test_initial_iso_archive_returns_company_and_staff_for_automatic_card_fill()
         {'name': 'Текущий ремонт помещений 5-го этажа УЗ «Поликлиника №10»'},
     ]
     assert result['structured_data']['suppliers'] == [{'name': 'ООО «ПКК РБК»'}]
+
+
+def test_periodika_iso_suot_archive_returns_card_fields_before_chat():
+    """Periodic ISO/SUOT uploads must fill the card without a follow-up message."""
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zipped:
+        zipped.writestr(
+            'МасКомпани/Реквизиты.txt',
+            'ООО «МасКомпани»\nУНП: 123456789\nДиректор: Иванов Иван Иванович',
+        )
+        zipped.writestr(
+            'МасКомпани/Штат.txt',
+            'Иванов Иван Иванович — Директор\nПетров Петр Петрович — Производитель работ',
+        )
+        zipped.writestr('МасКомпани/Поставщики.txt', 'Поставщик: ООО «Стройснаб»')
+
+    result = server.extract_archive_with_vision(
+        archive.getvalue(), 'МасКомпани.zip', 'unused', product='iso_suot', package_mode='periodika',
+    )
+
+    assert result['structured_data']['company']['name'] == 'МасКомпани'
+    assert result['structured_data']['company']['director_fio'] == 'Иванов Иван Иванович'
+    assert {person['fio'] for person in result['structured_data']['staff']} == {
+        'Иванов Иван Иванович', 'Петров Петр Петрович',
+    }
+    assert result['structured_data']['suppliers'] == [{'name': 'ООО «Стройснаб»'}]
 
 
 def test_iso_suot_archive_uses_customer_requisites_and_numbered_staff_table():

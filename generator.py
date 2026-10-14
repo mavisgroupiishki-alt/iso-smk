@@ -111,11 +111,17 @@ def select_responsible(itr: list) -> dict:
         reverse=True
     )
 
+    operational_roles = ('главный инженер', 'гл. инженер', 'прораб', 'производитель работ', 'начальник участка', 'мастер')
     process_resp = next(
-        (p for p in itr if has_kw(p, 'главный инженер', 'гл. инженер', 'прораб', 'производитель работ')),
+        (p for p in itr if has_kw(p, *operational_roles)),
         director
     )
 
+    # The membership of an OH&S commission must not be filled with arbitrary
+    # office employees simply to reach three rows.  Prefer the director, people
+    # with an actual OT certificate, and then the operational manager.  This
+    # keeps a Bayruz-style director + site-manager commission intact and leaves
+    # a genuinely missing member visible for the user to add explicitly.
     auditor_pool = [director] if director else []
     for p in with_ot:
         if p not in auditor_pool:
@@ -124,7 +130,7 @@ def select_responsible(itr: list) -> dict:
             break
     if len(auditor_pool) < 3:
         for p in itr:
-            if p not in auditor_pool:
+            if has_kw(p, *operational_roles) and p not in auditor_pool:
                 auditor_pool.append(p)
             if len(auditor_pool) >= 3:
                 break
@@ -848,7 +854,7 @@ def _iso_suot_generation_missing_fields(company_data: dict, product: str) -> lis
         missing.append('ФИО директора')
     if not str(certification.get('scope') or company.get('scope') or '').strip():
         missing.append('область применения')
-    if not str(certification.get('audit_date') or dates.get('audit_date') or '').strip():
+    if not str(dates.get('document_date') or dates.get('development_date') or certification.get('audit_date') or dates.get('audit_date') or '').strip():
         missing.append('дата оформления документов')
     def is_usable_staff_member(person):
         if not isinstance(person, dict):
@@ -859,12 +865,19 @@ def _iso_suot_generation_missing_fields(company_data: dict, product: str) -> lis
             return False
         if not position or not re.search(r'[А-ЯЁа-яё]', position):
             return False
-        placeholder = r'\[|\]|<|>|\?|не\s*(?:указан|найден)|неизвест|должност|имя|отчество|фамил'
+        placeholder = r'\[|\]|<|>|\?|не\s*(?:указан|найден)|неизвест|должност|требует\s*уточнения|имя|отчество|фамил'
         return not (re.search(placeholder, fio, re.I) or re.search(placeholder, position, re.I))
 
     has_staff = any(is_usable_staff_member(person) for person in staff)
     if not has_staff:
         missing.append('актуальный штат с ФИО и должностями')
+    for person in staff:
+        if (isinstance(person, dict)
+                and str(person.get('source') or '').lower() in ('manual', 'expert')
+                and not is_usable_staff_member(person)):
+            fio = re.sub(r'\s+', ' ', str(person.get('fio') or '')).strip()
+            if fio:
+                missing.append(f'должность сотрудника: {fio}')
     return missing
 
 def _merge_company_att_itr_from_staff(att_data: dict, staff: list) -> dict:
@@ -1015,7 +1028,11 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     company['work_types'] = work_types
 
     audit_date = dates_in.get('audit_date', '') or company_data.get('certification', {}).get('audit_date', '')
-    dates = calculate_dates(audit_date, dates_in.get('development_date', ''))
+    # Old saved cards have only audit_date. They remain readable, while the
+    # current UI always supplies document_date separately.
+    document_date = (dates_in.get('document_date', '') or dates_in.get('development_date', '')
+                     or audit_date)
+    dates = calculate_dates(audit_date, document_date)
 
     # ── Аттестация специалистов — отдельная ветка, без штата/рисков/ISO-логики ──
     if product == 'att':
@@ -1188,6 +1205,15 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
                 knowledge_text=_GENERATION_KNOWLEDGE_CONTEXT,
                 knowledge_rules=generation_knowledge_rules,
             )
+            required_missing = result_is.get('required_missing') or []
+            if required_missing:
+                error = 'Пакет ISO/СУОТ не сформирован: отсутствуют обязательные документы: ' + ', '.join(required_missing) + '.'
+                return _finalize_package_result({
+                    'docs': [], 'dates': dates, 'responsible': resp,
+                    'itr_count': len(itr), 'workers_count': len(workers),
+                    'professions': worker_professions, 'warnings': result_is.get('warnings', []),
+                    'error': error,
+                }, company_data, product)
             docs.extend(result_is['docs'])
             warnings.extend(result_is.get('warnings', []))
         except Exception as e:

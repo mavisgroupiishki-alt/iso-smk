@@ -1,6 +1,7 @@
 import io
 import sys
 import time
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -75,12 +76,36 @@ def test_fast_deterministic_iso_suot_package():
     assert 'Волков Василий Анатольевич' in combined
     assert any('ИОТ Штукатур' in d['name'] for d in result['docs'])
     assert any('Карточка оценки поставщика' in d['name'] for d in result['docs'])
+    paths = {doc['archive_path'] for doc in result['docs']}
+    assert any(path.startswith('ИСО 9001/1 Приказы/') for path in paths)
+    assert any(path.startswith('СУОТ/1 Приказы/') for path in paths)
+    assert any(path.startswith('СУОТ/5 Риски/') for path in paths)
+    assert all('/' in path and '..' not in path for path in paths)
     org_structure = next(d for d in result['docs'] if d['name'] == 'ОмиТрейд - Приложение 1 организационная структура.docx')
     document_list = next(d for d in result['docs'] if d['name'] == 'ОмиТрейд - Приложение 2 Перечень документов СМК.docx')
     assert 'Лукашик Сергей Васильевич' in xml_text(org_structure['bytes'])
     assert 'Грук Сергей Борисович' in xml_text(org_structure['bytes'])
     assert 'СТП СМК Управление рисками' in xml_text(document_list['bytes'])
     assert not any('валидац' in d['name'].lower() for d in result['docs'])
+
+
+def test_iso_suot_package_includes_professional_diseases_journal():
+    """The statutory professional-diseases journal must stay in initial SUOT output."""
+    data = sample_data()
+    result = generator.generate_package(data, 'dummy', 'iso_suot')
+
+    journal = next(
+        doc for doc in result['docs']
+        if 'журнал регистрации профзаболеван' in doc['name'].lower()
+    )
+    rendered = Document(io.BytesIO(journal['bytes']))
+    text = unicodedata.normalize(
+        'NFC',
+        ' '.join('\n'.join(paragraph.text for paragraph in rendered.paragraphs).split()),
+    )
+    assert 'Журнал регистрации профессиональных заболеваний' in text
+    assert 'ОмиТрейд' in text
+    assert 'Варта' not in text
 
 
 def test_suot_report_has_current_scope_and_current_staff_count():
@@ -183,11 +208,120 @@ def test_generator_does_not_treat_template_staff_row_as_a_real_employee():
 def test_initial_suot_keeps_orders_and_instructions_without_periodika_flag():
     data = sample_data()
     result = generator.generate_package(data, 'dummy', 'suot')
+    assert not result.get('error')
     names = [doc['name'] for doc in result['docs']]
+    assert not result.get('error')
 
     assert any('Приказ 4-OH&S' in name for name in names)
     assert any('Перечень инструкций по ОТ' in name for name in names)
     assert any('ИОТ Штукатур' in name for name in names)
+
+
+def test_initial_suot_has_the_complete_staff_dependent_control_set():
+    """The fast renderer must not drop documents that were excluded as stale templates.
+
+    The approved Bayruz package contains these documents.  They must be rebuilt
+    from the current card, rather than copied with former employees or omitted.
+    """
+    data = sample_data()
+    result = generator.generate_package(data, 'dummy', 'suot')
+    names = [doc['name'] for doc in result['docs']]
+
+    required = [
+        'Реестр неприемлемых рисков',
+        'Карта рисков Глушинский Олег Иванович',
+        'Карта рисков Лукашик Сергей Васильевич',
+        'Карта рисков Волков Василий Анатольевич',
+        'Карта рисков Грук Сергей Борисович',
+        'Протокол проверки знаний',
+        'Контрольный лист внутреннего аудита',
+        'Отчет по внутреннему аудиту',
+        'Карточка учета выдачи СИЗ Грук Сергей Борисович',
+        'Акт ежеквартального контроля за 2 квартал 2026',
+    ]
+    for expected in required:
+        assert any(expected in name for name in names), expected
+    assert sum('Программа управления' in name for name in names) == 1
+
+
+def test_suot_appointment_orders_have_the_required_operational_clauses():
+    """Orders 4–7 must retain the duties from the approved Bayruz reference."""
+    data = sample_data()
+    result = generator.generate_package(data, 'dummy', 'suot')
+    def visible(doc_bytes):
+        document = Document(io.BytesIO(doc_bytes))
+        return '\n'.join(
+            [paragraph.text for paragraph in document.paragraphs]
+            + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+        )
+    docs = {doc['name']: visible(doc['bytes']) for doc in result['docs']}
+
+    order4 = next(text for name, text in docs.items() if 'Приказ 4-OH&S' in name)
+    order5 = next(text for name, text in docs.items() if 'Приказ 5-OH&S' in name)
+    order6 = next(text for name, text in docs.items() if 'Приказ 6-OH&S' in name)
+    order7 = next(text for name, text in docs.items() if 'Приказ 7-OH&S' in name)
+
+    assert 'вводного инструктажа' in order4
+    assert 'электрохозяйства' in order4
+    assert 'комиссии для проверки знаний' in order4
+    assert 'представление требуемой информации' in order5
+    assert 'необходимые условия для проведения аудита' in order5
+    assert 'реестр неприемлемых рисков' in order6
+    assert 'мероприятия по снижению профессиональных рисков' in order6
+    assert 'журнале учета выдачи инструкций' in order7
+    assert 'Общее руководство разработкой инструкций' in order7
+
+
+def test_suot_never_adds_worker_instructions_absent_from_the_staff_roster():
+    """Bayruz regression: the source roster has no construction workers."""
+    data = sample_data()
+    data['staff'] = [
+        {'fio': 'Яскин Илья Васильевич', 'position': 'Директор', 'is_worker': False, 'ot_certificate': True},
+        {'fio': 'Падуто Александр Сергеевич', 'position': 'Начальник участка', 'is_worker': False, 'ot_certificate': True},
+        {'fio': 'Кульбакин Александр Валерьевич', 'position': 'Бухгалтер', 'is_worker': False, 'employment_type': 'совместительство'},
+    ]
+    data['workers'] = []
+    result = generator.generate_package(data, 'dummy', 'suot')
+    names = '\n'.join(doc['name'] for doc in result['docs']).lower()
+
+    assert 'бетонщик' not in names
+    assert 'каменщик' not in names
+    assert 'монтажник строительных конструкций' not in names
+    assert 'карточка учета выдачи сиз' not in names
+
+
+def test_suot_commission_prefers_the_actual_operational_manager_to_accountant():
+    """Bayruz regression: a two-person commission must not promote the accountant."""
+    itr = [
+        {'fio': 'Яскин Илья Васильевич', 'position': 'Директор'},
+        {'fio': 'Падуто Александр Сергеевич', 'position': 'Начальник участка'},
+        {'fio': 'Кульбакин Александр Валерьевич', 'position': 'Бухгалтер'},
+    ]
+    responsible = generator.select_responsible(itr)
+    assert [person['fio'] for person in responsible['auditors']] == [
+        'Яскин Илья Васильевич',
+        'Падуто Александр Сергеевич',
+    ]
+
+
+def test_suot_audit_checklist_never_assigns_a_person_to_audit_themself():
+    """Bayruz regression: director/auditor names must not be the same."""
+    data = sample_data()
+    data['company']['director_fio'] = 'Яскин Илья Васильевич'
+    data['company']['director_position'] = 'Директор'
+    data['staff'] = [
+        {'fio': 'Яскин Илья Васильевич', 'position': 'Директор', 'is_worker': False, 'ot_certificate': True},
+        {'fio': 'Падуто Александр Сергеевич', 'position': 'Начальник участка', 'is_worker': False, 'ot_certificate': True},
+        {'fio': 'Кульбакин Александр Валерьевич', 'position': 'Бухгалтер', 'is_worker': False},
+    ]
+    result = generator.generate_package(data, 'dummy', 'suot')
+    checklist = next(doc['bytes'] for doc in result['docs']
+                     if 'Контрольный лист внутреннего аудита 1' in doc['name'])
+    document = Document(io.BytesIO(checklist))
+    text = '\n'.join(paragraph.text for paragraph in document.paragraphs)
+
+    assert 'Проверяемое лицо: Директор — Яскин Илья Васильевич' in text
+    assert 'Аудитор: Начальник участка — Падуто Александр Сергеевич' in text
 
 
 def test_generator_uses_only_company_director_in_suot_orders():
@@ -253,9 +387,9 @@ def test_iso_scope_from_current_card_never_turns_into_a_placeholder():
     assert 'В ОБЛАСТИ: ТРЕБУЕТ УТОЧНЕНИЯ' not in order_text
 
 
-def test_iso_uses_explicit_development_date_and_preserves_approved_forms():
+def test_iso_uses_explicit_document_date_and_preserves_approved_forms():
     data = sample_data()
-    data['dates'] = {'development_date': '12.01.2026'}
+    data['dates'] = {'document_date': '12.01.2026'}
     data['suppliers'] = [
         {'name': 'ООО «Первый поставщик»', 'type': 'Материалы'},
         {'name': 'ООО «Второй поставщик»', 'type': 'Материалы'},

@@ -34,10 +34,12 @@ const names = [
   'aiArchiveCardTransferDescription',
   'aiMakeArchiveCardTransferMessage',
   'aiCanFinishArchiveWithoutChat',
+  'aiArchiveSourceStatusHtml',
 ];
 const context = {
   igorAuthUser: { username: 'kristina' },
   location: { host: 'iso-smk-kristina.onrender.com' },
+  aiEscapeHtml: value => String(value),
 };
 vm.createContext(context);
 vm.runInContext(names.map(extractFunction).join('\n\n'), context);
@@ -67,6 +69,13 @@ if (!context.aiCanFinishArchiveWithoutChat('', { staff: [{}] })) {
 }
 if (context.aiCanFinishArchiveWithoutChat('добавь объект', { staff: [{}] })) {
   throw new Error('a user correction still needs the chat');
+}
+const sourceStatus = context.aiArchiveSourceStatusHtml({
+  'Старые/Штат.xlsx': {state: 'read_local'},
+  'Старые/Неизвестный.pdf': {state: 'not_read', note: 'файл превышает безопасный лимит размера'},
+});
+if (!sourceStatus.includes('Неизвестный.pdf') || !sourceStatus.includes('превышает безопасный лимит')) {
+  throw new Error('archive status hides the exact unread file and reason');
 }
 if (!context.aiWorkspaceLocalPrefix().includes('iso-smk-kristina.onrender.com')) {
   throw new Error('browser storage must be scoped to the dedicated service host');
