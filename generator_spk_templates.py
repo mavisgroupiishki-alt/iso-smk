@@ -1060,9 +1060,23 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
     docs = verifications + calibrations
     warnings = []
 
+    def is_certificate_reference(value):
+        """Return whether a supplied number can belong to a SI certificate.
+
+        A contract, invoice or delivery note can establish that the company owns
+        an instrument, but it is not proof of verification/calibration.  The
+        source archives sometimes contain those numbers beside a device, and an
+        extraction model can place them in the certificate collection.  Never
+        turn such a reference into a false "Поверка № ..." record.
+        """
+        text = str(value or '').casefold().replace('ё', 'е')
+        return not bool(re.search(r'(?<![а-яa-z])(?:счет|договор|накладн\w*)(?![а-яa-z])', text))
+
     def doc_text(d):
         bits = []
         number = d.get('number') or d.get('certificate_number') or ''
+        if number and not is_certificate_reference(number):
+            return ''
         date = d.get('date') or d.get('verification_date') or d.get('calibration_date') or ''
         valid = d.get('valid_until') or d.get('expiry_date') or ''
         kind = d.get('type') or ('Калибровка' if d in calibrations else 'Поверка')

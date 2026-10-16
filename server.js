@@ -55,8 +55,11 @@ const config = {
   managerAiConcurrency: Number(process.env.MANAGER_AI_CONCURRENCY || 1),
   // v26: первый безопасный ИИ-анализ одной сделки. Ключ НЕ отдаётся в браузер.
   aiEnabled: String(process.env.AI_ENABLED || 'false').toLowerCase() === 'true',
-  aiProvider: process.env.AI_PROVIDER || 'openai',
-  aiModel: process.env.AI_MODEL || 'gpt-4o-mini',
+  // Never turn on a paid OpenAI route simply because somebody enabled AI.
+  // This Node service is not the Docker entry point for ИИ-оформитель; it
+  // remains opt-in until it is migrated to the shared free-first router.
+  aiProvider: process.env.AI_PROVIDER || 'disabled',
+  aiModel: process.env.AI_MODEL || '',
   aiTemperature: Number(process.env.AI_TEMPERATURE || 0.2),
   // v26b: поддержка OpenAI-compatible VibeCode AI Router.
   // Для VibeCode: AI_PROVIDER=vibe, AI_BASE_URL=https://vibecode.bitrix24.tech/v1, AI_MODEL=bitrix/bitrixgpt-5.5.
@@ -215,6 +218,9 @@ function normalizeAiResult(parsed, rawText) {
 
 function resolveAiProvider() {
   const provider = String(config.aiProvider || 'openai').toLowerCase().trim();
+  if (provider === 'disabled' || provider === 'none') {
+    return { provider: 'disabled', label: 'ИИ-маршрутизация не настроена', apiKey: '', baseUrl: '', authHeader: {} };
+  }
   const apiKey = process.env.AI_API_KEY || process.env.VIBE_API_KEY || process.env.OPENAI_API_KEY || '';
   if (provider === 'vibe' || provider === 'vibecode' || provider === 'bitrix') {
     return {
@@ -224,6 +230,9 @@ function resolveAiProvider() {
       baseUrl: (config.aiBaseUrl || process.env.VIBE_BASE_URL || 'https://vibecode.bitrix24.tech/v1').replace(/\/$/, ''),
       authHeader: { Authorization: `Bearer ${apiKey}` },
     };
+  }
+  if (String(process.env.OPENAI_ALLOW_PAID || 'false').toLowerCase() !== 'true') {
+    return { provider: 'disabled', label: 'Платный OpenAI отключён', apiKey: '', baseUrl: '', authHeader: {} };
   }
   return {
     provider: 'openai',

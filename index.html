@@ -1496,8 +1496,8 @@ function aiRenderScopeProfileChoice() {
   } else if(mode === 'sample_review') {
     box.innerHTML = '📎 Выбран путь с примером. Прикрепите человеческий пакет и дождитесь его разбора; до проверки такой профиль не считается утверждённым.';
   } else {
-    box.innerHTML = 'Для этой области ещё нет проверенного профиля. '
-      + '<button type="button" onclick="aiChooseScopeProfile(\'sample_review\')" style="margin-left:6px;border:1px solid #D4C4B8;border-radius:6px;background:#fff;color:#825345;padding:3px 7px;cursor:pointer;font:inherit">Загрузить пример</button>'
+    box.innerHTML = 'Для этой области ещё нет проверенного профиля. Можно загрузить ранее проверенный пакет этой же компании или сопоставимый пакет с той же областью работ. '
+      + '<button type="button" onclick="aiChooseScopeProfile(\'sample_review\')" style="margin-left:6px;border:1px solid #D4C4B8;border-radius:6px;background:#fff;color:#825345;padding:3px 7px;cursor:pointer;font:inherit">Загрузить пакет</button>'
       + '<button type="button" onclick="aiChooseScopeProfile(\'ai_draft\')" style="margin-left:4px;border:1px solid #C97B84;border-radius:6px;background:#8B4A5C;color:#fff;padding:3px 7px;cursor:pointer;font:inherit">Сформировать ИИ-черновик</button>';
   }
 }
@@ -3217,6 +3217,18 @@ function aiRenderCard(data) {
     });
   }
 
+  // Состав комиссии сохраняется отдельно: это явное подтверждение для
+  // приказов, а не скрытый побочный результат автоматического подбора ИТР.
+  const commission = aiCurrentData.iso_suot?.commission || [];
+  if(commission.length) {
+    html += '<div class="ai-sec">Комиссия для приказов</div><div>';
+    commission.forEach(person => {
+      const role = String(person.role || '').toLowerCase() === 'chair' ? 'Председатель' : 'Член комиссии';
+      html += `<div class="ai-df"><span class="ai-dl">${role}</span><span class="ai-dv">${igorEscape(person.fio || '—')}${person.position ? ' · ' + igorEscape(person.position) : ''}</span></div>`;
+    });
+    html += '</div>';
+  }
+
   // Рабочие профессии (для СУОТ — инструкции ОТ и карты рисков)
   const workers = aiCurrentData.workers||[];
   const workerLabels = [];
@@ -3939,9 +3951,12 @@ async function aiRetryCorrectionIfNeeded(originalText, parsed, beforeFingerprint
       'ТЕКУЩИЕ ДАННЫЕ КАРТОЧКИ: ' + JSON.stringify(aiCurrentData),
       'Верни JSON с РЕАЛЬНО изменённым data. Если эта правка относится к программной логике генератора/Word-шаблону и её нельзя применить через поля карточки, прямо напиши, что правка не применена. Не говори «исправил/готово».',
     ].join('\n\n');
+    const correctionContext = (Array.isArray(aiHistory) ? aiHistory.slice(-6) : []).concat([
+      {role:'user', content:retryPrompt}
+    ]);
     const retryResp = await fetch('/api/ai/chat', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({product: product || 'all', messages:[{role:'user',content:retryPrompt}]})
+      body: JSON.stringify({product: product || 'all', messages:correctionContext})
     });
     const retryJson = await retryResp.json();
     if(retryJson.success) {
@@ -3953,7 +3968,7 @@ async function aiRetryCorrectionIfNeeded(originalText, parsed, beforeFingerprint
 
   parsed = parsed || {};
   parsed.questions = Array.isArray(parsed.questions) ? parsed.questions : [];
-  parsed.message = '⚠️ Правка пока не применилась. Я не буду писать, что всё исправлено, пока изменение действительно не появится в новом пакете. Сформируйте пакет заново и проверьте результат.';
+  parsed.message = '⚠️ Не удалось применить правку к карточке: данные не изменились. Укажите конкретную строку или поле, которое нужно заменить; после применения изменение будет видно в карточке до формирования пакета.';
   return parsed;
 }
 
@@ -4873,7 +4888,7 @@ async function aiGenerate() {
   const scope = String(aiCurrentData.certification?.scope || '').trim();
   const profileMode = String(aiCurrentData.iso_suot?.scope_profile_mode || '');
   if(['iso','suot','iso_suot'].includes(product) && scope && !aiScopeProfileKind(scope) && profileMode !== 'ai_draft') {
-    aiAddMsg('ai', '⚠️ Для этой области нет проверенного профиля. Выберите выше «Загрузить пример» или «Сформировать ИИ-черновик».');
+    aiAddMsg('ai', '⚠️ Для этой области нет проверенного профиля. Загрузите ранее проверенный пакет этой же компании или сопоставимый пакет с той же областью работ, либо выберите ИИ-черновик.');
     aiRenderScopeProfileChoice();
     return;
   }
@@ -5053,6 +5068,12 @@ async function aiGenerate() {
             } else {
               aiAddMsg('ai', `✅ ИИгорь оформил <strong>${tr.fileCount} документов</strong>, но файл не удалось получить. Запустите формирование ещё раз.${warnBlock}`);
             }
+            btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
+          } else if(tr.status === 'awaiting_budget') {
+            clearInterval(poll);
+            clearInterval(interval);
+            progDiv.remove();
+            aiAddMsg('ai', '⏸️ ' + aiFriendlyError(tr.error||'Пакет сохранён в очереди: требуется согласованный бюджет платного резерва.'));
             btn.disabled = false; btn.textContent = '📦 Сформировать пакет';
           } else if(tr.status === 'error') {
             clearInterval(poll);

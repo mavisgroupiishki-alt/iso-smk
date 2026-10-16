@@ -67,6 +67,7 @@ context.aiCanonicalizeStaffWorkerFlags = value => value;
 context.aiNormalizeCompanyAttestation = () => {};
 context.aiApplySelectedRequestProfile = () => {};
 context.aiSyncRequestProfileControls = () => {};
+context.aiWorkerPickerHtml = () => '';
 context.aiSaveCurrentCompany = () => ({ catch() {} });
 context.aiValidateReadiness = () => ({ ready: false, warnings: [], missing: [] });
 context.igorEscape = value => String(value);

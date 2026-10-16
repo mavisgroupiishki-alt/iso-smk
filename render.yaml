@@ -15,6 +15,43 @@ services:
       # вернул пустой ответ. Ключ задаётся только в Render.
       - key: GEMINI_API_KEY
         sync: false
+      # Free-first AI routing. All credentials stay server-side in Render.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      # Disabled until the shared account ledger is connected. Independent
+      # deployments must not each assume the whole account free quota.
+      - key: CLOUDFLARE_FREE_DAILY_NEURONS
+        value: "0"
+      - key: CLOUDFLARE_REQUEST_NEURONS
+        sync: false
+      - key: AIAI_API_KEY
+        sync: false
+      # Paid reserve is fail-closed: these are deliberately unset by default.
+      # Set all four only after approving a real BYN budget and a conservative
+      # per-request reservation with the AIAI.BY tariff.
+      - key: AIAI_PAID_ENABLED
+        value: "false"
+      - key: AIAI_DAILY_BUDGET_BEL
+        sync: false
+      - key: AIAI_MONTHLY_BUDGET_BEL
+        sync: false
+      - key: AIAI_REQUEST_COST_BEL
+        sync: false
+      - key: AIAI_BASE_URL
+        sync: false
+      - key: AIAI_MODEL
+        sync: false
+      # Optional shared ledger path. Leave unset unless multiple services have
+      # a deliberately shared durable store; otherwise the local disk ledger
+      # reports its scope honestly as local.
+      - key: AI_SHARED_QUOTA_LEDGER_DIR
+        sync: false
       # Необязательный второй логин для уже созданного выделенного пространства.
       # Нужен, когда внутренний идентификатор учётной записи и согласованный
       # логин сотрудницы написаны в разных алфавитах.

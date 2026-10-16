@@ -8,11 +8,22 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests as req_lib
+from ai_router import AIProviderRouter, AIProviderError
 
 BASE_DIR = Path(__file__).parent.resolve()
 VIBE_URL = "https://vibecode.bitrix24.tech/v1/ai/chat/completions"
 VIBE_MODEL = "bitrix/bitrixgpt-5.5"
 _GENERATION_KNOWLEDGE_CONTEXT = ''
+_AI_ROUTER = None
+
+
+def _ai_router():
+    """One server-side path for every generated document fragment."""
+    global _AI_ROUTER
+    if _AI_ROUTER is None:
+        data_dir = Path(os.environ.get('AI_USAGE_DIR') or os.environ.get('IGOR_DATA_DIR') or (BASE_DIR / '_data'))
+        _AI_ROUTER = AIProviderRouter(data_dir / 'ai')
+    return _AI_ROUTER
 
 LIBS_PATH = BASE_DIR / 'libs.json'
 LIBS = json.loads(LIBS_PATH.read_text('utf-8')) if LIBS_PATH.exists() else {'di': {}, 'ri': {}}
@@ -158,38 +169,23 @@ def select_responsible(itr: list) -> dict:
 
 
 def vibe_call(messages, api_key, max_tokens=3000, retries=3):
-    import time
-    last_err = None
     effective_messages = list(messages or [])
     if _GENERATION_KNOWLEDGE_CONTEXT:
         effective_messages = [{
             "role": "system",
             "content": "АКТИВНЫЕ ПРАВИЛА БАЗЫ ЗНАНИЙ ИИГОРЯ. Новые правила перечислены первыми и имеют приоритет при конфликте. Применяй их к этому документу, если они относятся к выбранному продукту. Не выдумывай требования сверх правил.\n\n" + _GENERATION_KNOWLEDGE_CONTEXT
         }] + effective_messages
-    for attempt in range(retries):
-        try:
-            resp = req_lib.post(
-                VIBE_URL,
-                headers={"Content-Type": "application/json", "X-Api-Key": api_key},
-                json={"model": VIBE_MODEL, "max_tokens": max_tokens, "messages": effective_messages},
-                timeout=180
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = "".join(c.get("message", {}).get("content", "") for c in data.get("choices", []))
-            if text:
-                return text
-            last_err = "Empty response"
-            time.sleep(2)
-        except req_lib.exceptions.Timeout:
-            last_err = f"Timeout (attempt {attempt+1}/{retries})"
-            print(f"  ⚠️  {last_err}, retrying...")
-            time.sleep(3 * (attempt + 1))
-        except req_lib.exceptions.RequestException as e:
-            last_err = str(e)
-            print(f"  ⚠️  Request error: {e}, retrying...")
-            time.sleep(3 * (attempt + 1))
-    raise Exception(f"BitrixGPT failed after {retries} attempts: {last_err}")
+    try:
+        result = _ai_router().complete_text(
+            system='', messages=effective_messages, max_tokens=max_tokens,
+            task_type='document_generation', cache_ttl=86400,
+            legacy_vibe_key=str(api_key or ''),
+        )
+        return result.text
+    except AIProviderError as exc:
+        # Preserve a budget-exhaustion code so the persistent generation queue
+        # can hold work instead of pretending the package has failed.
+        raise
 
 
 def find_di_in_library(position: str):

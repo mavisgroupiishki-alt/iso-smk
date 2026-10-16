@@ -4,6 +4,7 @@ import sys,json,os,shutil,tempfile,base64,zipfile,re,subprocess,io,hmac,hashlib,
 import http.server,socketserver
 from pathlib import Path, PurePosixPath
 from datetime import datetime,timedelta,timezone
+from ai_router import AIProviderRouter, AIProviderError
 
 BASE_DIR = Path(__file__).parent.resolve()
 
@@ -63,6 +64,7 @@ def _resolve_data_dir():
     raise RuntimeError('Не удалось выбрать каталог для хранения данных')
 
 _DATA = _resolve_data_dir()
+AI_ROUTER = AIProviderRouter(Path(os.environ.get('AI_USAGE_DIR') or (_DATA / 'ai')))
 JOURNAL_DIR = _DATA/'journal'
 CO_DIR      = _DATA/'companies'
 OUT_DIR     = _DATA/'output'
@@ -1095,9 +1097,11 @@ def save_task(task_id, data):
     try:
         # zipB64 может быть очень большим (десятки МБ) — не пишем его в файл задачи на диск,
         # он нужен только в памяти TASKS для одноразовой отдачи фронту. Исходные
-        # данные очереди генерации тоже остаются в памяти: после перезапуска их
-        # нельзя безопасно продолжать без повторного запуска пользователем.
-        to_save = {k: v for k, v in data.items() if k not in ('zipB64', '_generation_payload')}
+    # Исходные данные обычно остаются только в памяти. Исключение — задача,
+    # приостановленная из-за лимита AIAI.BY: после явного обновления лимита
+    # её можно безопасно вернуть в очередь.
+        to_save = {k: v for k, v in data.items()
+                   if k != 'zipB64' and (k != '_generation_payload' or data.get('status') == 'awaiting_budget')}
         _atomic_write_text(
             TASKS_DIR / f'{task_id}.json',
             json.dumps(to_save, ensure_ascii=False)
@@ -1184,12 +1188,25 @@ def _run_generation_task(task_id):
             'warnings': result.get('warnings', []),
         })
         print(f"  ✅ Задача {task_id} завершена: {len(docs)} документов")
+    except AIProviderError as exc:
+        if str(exc) == 'paid_budget_exhausted':
+            task.update({
+                'status': 'awaiting_budget',
+                'kind': 'generation',
+                'error': 'Бюджет платного резерва исчерпан. Пакет сохранён в очереди и будет повторён после пополнения согласованного лимита.',
+            })
+            task['progress'] = (task.get('progress') or [])[-29:] + [
+                'Остановлено без списания: исчерпан согласованный бюджет AIAI.BY. Пакет сохранён в очереди.'
+            ]
+        else:
+            task.update({'status': 'error', 'error': 'Подходящие ИИ-провайдеры временно недоступны. Повторите формирование позже.'})
     except Exception as exc:
         import traceback
         traceback.print_exc()
         task.update({'status': 'error', 'error': str(exc)})
     finally:
-        task.pop('_generation_payload', None)
+        if task.get('status') != 'awaiting_budget':
+            task.pop('_generation_payload', None)
         TASKS[task_id] = task
         save_task(task_id, task)
         _prune_tasks()
@@ -1212,6 +1229,37 @@ def _recover_interrupted_generation_tasks():
                 save_task(task_file.stem, task)
     except OSError:
         pass
+
+
+def _resume_budget_generation_tasks():
+    """Retry only durable, budget-paused jobs after an operator updates limits.
+
+    A restart is the deliberate recovery signal: it normally follows a Render
+    environment update with a newly approved AIAI.BY limit.  The original
+    payload is retained only for this paused state, so no already-completed
+    browser request or Bitrix side effect is replayed here.
+    """
+    resumed = 0
+    try:
+        for task_file in TASKS_DIR.glob('*.json'):
+            task = load_task(task_file.stem)
+            if (not task or task.get('kind') != 'generation'
+                    or task.get('status') != 'awaiting_budget'
+                    or not isinstance(task.get('_generation_payload'), dict)):
+                continue
+            task['status'] = 'queued'
+            task['queued_at'] = task.get('queued_at') or datetime.now(timezone.utc).isoformat(timespec='microseconds')
+            task['progress'] = (task.get('progress') or [])[-29:] + [
+                'Повторно проверяю доступные модели и согласованный бюджет после обновления настроек.'
+            ]
+            TASKS[task_file.stem] = task
+            save_task(task_file.stem, task)
+            resumed += 1
+    except OSError:
+        return 0
+    if resumed:
+        start_next_generation_task()
+    return resumed
 
 
 def find_archive_task_by_upload_id(owner_user_id, client_upload_id):
@@ -1304,7 +1352,8 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
   какой документ/сведение нужно проверить и что сделать дальше.
 - Не отправляй пользователя «к разработчикам», не проси закрывать браузер/чистить кэш и не описывай внутреннюю
   работу системы. Технические подробности остаются только в журнале сервера.
-- Если правка не применилась: коротко скажи «Правка пока не применилась» и не утверждай, что всё исправлено.
+- Не утверждай, что правка применена, пока данные карточки действительно не изменены. Если сведений не хватает,
+  задай один конкретный вопрос о нужной строке или поле; не предлагай сформировать пакет вместо применения правки.
 - Ответ обычно 2–6 понятных предложений, без служебных названий и диагностической болтовни.
 
 ДАТЫ от даты выезда эксперта:
@@ -1529,6 +1578,11 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 - Меньше 3 чел. с ОТ для СУОТ = предупреждение
 
 Принимай правки: "исправь директора", "добавь объект", "поменяй дату" — обновляй данные.
+Для ISO/СУОТ при правке состава комиссии возвращай полный data.iso_suot.commission:
+каждый участник содержит fio, position и role (chair или member). Если новый
+участник не присутствует в staff, верни его и в staff с явной должностью.
+При добавлении заказчика возвращай objects с точным объектом и customer; не
+оставляй это изменение только в message.
 
 ОТВЕЧАЙ СТРОГО JSON без оберток json:
 {
@@ -1546,7 +1600,8 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
     "iso_suot": {
         "ot_certificates": [{"fio":"","number":"","date":"","organization":"","confidence":1.0,"needs_review":false}],
         "instructions": [{"title":"","profession":""}],
-        "responsible_persons": [{"fio":"","responsibility":""}]
+        "responsible_persons": [{"fio":"","responsibility":""}],
+        "commission": [{"fio":"","position":"","role":"chair|member"}]
     },
     "spk": {
         "activity_profile":"construction|metal_only|construction_metal|low_voltage_systems",
@@ -1616,8 +1671,9 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
 - Пиши обычным языком эксперта/оформителя. Никаких JSON, API, backend/frontend, hardcoded, prompt,
   внутренних названий полей, команд, кода, переменных, FORCE_*, Render/Environment и другой технической терминологии.
 - Не объясняй внутреннее устройство приложения и не придумывай технические причины.
-- Если правка не применилась, так и напиши: «Правка пока не применилась». Не говори «исправил», пока результат
-  реально не изменился. Дальше укажи только понятное действие: что проверить или сформировать заново.
+- Не говори «исправил», пока результат реально не изменился. Если данные для
+  правки неоднозначны, задай один конкретный вопрос о поле, которое нужно
+  изменить; не отправляй пользователя формировать пакет заново вместо правки.
 - Не отправляй пользователя к разработчикам и не проси закрывать браузер, чистить кэш и т.п.
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
@@ -1634,6 +1690,8 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
 7. ПРАВКИ ПОЛЬЗОВАТЕЛЯ ОБЯЗАНЫ МЕНЯТЬ JSON. Если запрос «исправь/замени/добавь/удали/убери/обнови»
    невозможно выразить изменением структурированных данных, прямо напиши, что правка НЕ применена.
    НИКОГДА не пиши «исправил», «готово», «учёл», если возвращаемый data фактически не изменён.
+   Для изменения состава комиссии верни полный data.iso_suot.commission с fio, position и role chair/member.
+   Для добавления заказчика верни объект в data.objects с полем customer, а не только текстовое подтверждение.
 8. Активные правила базы знаний имеют приоритет при конфликте. Правило обучения применяется к НОВЫМ анализам
    и генерациям после активации. Не говори «всё исправил» только потому, что правило сохранено: сообщай
    «правило активировано и будет проверено на следующем пакете».
@@ -1668,7 +1726,7 @@ AI_SYSTEM_ISO_SUOT_FAST = r"""Ты — ИИгорь, оформитель ISO 90
     "workers":["профессия"],
     "objects":[{"name":"","year":"","customer":""}],
     "suppliers":[{"name":"","type":""}],
-    "iso_suot":{"ot_certificates":[{"fio":"","number":"","date":"","organization":"","confidence":1.0,"needs_review":false}],"instructions":[],"responsible_persons":[]},
+    "iso_suot":{"ot_certificates":[{"fio":"","number":"","date":"","organization":"","confidence":1.0,"needs_review":false}],"instructions":[],"responsible_persons":[],"commission":[{"fio":"","position":"","role":"chair|member"}]},
     "source_documents":[{"filename":"","document_type":"","status":"read|error|needs_review","summary":"","needs_review":false,"review_reason":""}],
     "spk":{"premises":[{"address":"","area":"","ownership":"","document":""}],"technical_competence":{"number":"","date":"","valid_until":""},"ttk":[{"code":"","name":"","developer":"","valid_until":"","work_type":""}]},
     "review_items":[{"field":"","value":"","reason":"","confidence":0.0}],
@@ -1714,8 +1772,8 @@ def _humanize_user_visible_text(value):
     # If a response turned into a debugging monologue, replace it entirely.
     if len(matches) >= 2 or len(original) > 700:
         if any(k in low for k in ('исправ', 'правк', 'замен', 'обнов', 'не примен', 'добавил', 'сделал', 'учел', 'учёл')):
-            return ('Правка пока не применилась. Я не буду писать, что всё исправлено, пока изменение '
-                    'действительно не появится в новом пакете. Сформируйте пакет заново и проверьте результат.')
+            return ('Не удалось однозначно перенести правку в карточку. Укажите, какое поле или '
+                    'какую строку нужно изменить; после сохранения карточка покажет результат до формирования пакета.')
         if any(k in low for k in ('ошиб', 'не удалось', 'сбой')):
             return ('Не удалось выполнить действие. Попробуйте ещё раз. Если ошибка повторится, '
                     'сообщите ответственному за приложение.')
@@ -1975,10 +2033,7 @@ def _sanitize_ai_visible_response(raw_text, product="all"):
 
 
 def call_ai(messages, api_key, knowledge_text="", product="all"):
-    """Call BitrixGPT. ISO/SUOT uses a compact product-specific prompt and fewer
-    retries, which removes most of the avoidable waiting without changing document generation.
-    """
-    import time
+    """Use the compatible free-first provider chain for chat/card processing."""
     product = str(product or 'all')
     fast_iso = product in ('iso', 'suot', 'iso_suot')
     system_base = AI_SYSTEM_ISO_SUOT_FAST if fast_iso else AI_SYSTEM
@@ -1989,53 +2044,16 @@ def call_ai(messages, api_key, knowledge_text="", product="all"):
             + "\n=== КОНЕЦ ПРАВИЛ ==="
         )
     recent_messages = messages[-8 if fast_iso else -10:]
-    # A dedicated workspace can deliberately have no legacy Bitrix key.  OCR
-    # already uses Gemini there; without this branch the next chat request
-    # failed before it could turn a successfully read archive into a card.
-    if not api_key:
-        text = _gemini_text_call(system_base, recent_messages, max_tokens=3000, timeout=90)
-        if text:
-            return _sanitize_ai_visible_response(text, product)
-        raise RuntimeError('Резервная модель не ответила. Повторите отправку через минуту.')
-    # A chat reply is not allowed to hold a browser request for several
-    # successive minutes.  Large source archives are compacted below before
-    # they get here; two bounded attempts are enough to recover a short
-    # provider hiccup without making the application look frozen.
-    attempts = 2
-    timeout = 90 if fast_iso else 105
-    last_err = None
-    for attempt in range(attempts):
-        try:
-            resp = req_lib.post(
-                VIBE_URL,
-                headers={"Content-Type":"application/json","X-Api-Key":api_key},
-                json={"model":VIBE_MODEL,"max_tokens":3000,"messages":[
-                    {"role":"system","content":system_base},
-                    *recent_messages
-                ]},
-                timeout=timeout
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if "error" in data:
-                raise RuntimeError(data["error"])
-            text = "".join(c.get("message",{}).get("content","") for c in data.get("choices",[]))
-            if text:
-                return _sanitize_ai_visible_response(text, product)
-            last_err = "Пустой ответ от модели"
-            time.sleep(1)
-        except req_lib.exceptions.Timeout:
-            last_err = "Timeout"
-            print(f"  ⚠️  Таймаут чата (попытка {attempt+1}/{attempts}), повтор...")
-            time.sleep(2 * (attempt + 1))
-        except req_lib.exceptions.RequestException as e:
-            last_err = str(e)
-            print(f"  ⚠️  Ошибка запроса: {e}, повтор...")
-            time.sleep(2 * (attempt + 1))
-    text = _gemini_text_call(system_base, recent_messages, max_tokens=3000, timeout=90)
-    if text:
-        return _sanitize_ai_visible_response(text, product)
-    raise RuntimeError(f"BitrixGPT не ответил после {attempts} попыток: {last_err}.")
+    try:
+        result = AI_ROUTER.complete_text(
+            system=system_base, messages=recent_messages, max_tokens=3000,
+            task_type='archive_card_chat', cache_ttl=86400,
+            require_json=True,
+            legacy_vibe_key=str(api_key or ''),
+        )
+        return _sanitize_ai_visible_response(result.text, product)
+    except AIProviderError as exc:
+        raise RuntimeError('Подходящая ИИ-модель временно недоступна. Задание сохранено для повтора.') from exc
 
 
 # ── Дата-утилиты (без изменений) ─────────────────────────────
@@ -2323,6 +2341,10 @@ def _google_document_ocr(page_b64: str, timeout: int = 35) -> str:
     cannot answer.  That lets the primary reader retain its existing recovery
     behaviour without pretending that a second provider returned data.
     """
+    # Google Cloud Vision can be billable. It is retained only as an explicit
+    # emergency integration; the free-first router never selects it by itself.
+    if str(os.environ.get('GOOGLE_VISION_ALLOW_PAID') or '').lower() != 'true':
+        return ''
     api_key = str(os.environ.get('GOOGLE_VISION_API_KEY') or '').strip()
     if not api_key or not page_b64:
         return ''
@@ -2366,43 +2388,13 @@ def _gemini_document_ocr(page_b64: str, prompt: str, timeout: int = 35) -> str:
     has exactly the same behaviour as before. It receives a single prepared
     JPEG page, never the whole archive or any task history.
     """
-    api_key = str(os.environ.get('GEMINI_API_KEY') or '').strip()
-    if not api_key or not page_b64:
-        return ''
-    payload = {
-        'contents': [{
-            'parts': [
-                {'inline_data': {'mime_type': 'image/jpeg', 'data': page_b64}},
-                {'text': prompt},
-            ],
-        }],
-        'generationConfig': {
-            'temperature': 0,
-            'maxOutputTokens': 3500,
-        },
-    }
     try:
-        response = req_lib.post(
-            GEMINI_OCR_URL,
-            headers={'Content-Type': 'application/json', 'x-goog-api-key': api_key},
-            json=payload,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        candidates = response.json().get('candidates') or []
-        first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
-        parts = ((first.get('content') or {}).get('parts') or [])
-        text = '\n'.join(
-            str(part.get('text') or '').strip()
-            for part in parts if isinstance(part, dict) and part.get('text')
-        ).strip()
-        if not text:
-            print('  ⚠️ Резервное распознавание Gemini вернуло пустой ответ.')
-        return text
-    except req_lib.exceptions.RequestException as exc:
-        print(f'  ⚠️ Резервное распознавание Gemini не ответило ({type(exc).__name__}).')
-    except (TypeError, ValueError, KeyError) as exc:
-        print(f'  ⚠️ Резервное распознавание Gemini вернуло неполный ответ ({type(exc).__name__}).')
+        return AI_ROUTER.read_image(
+            image_b64=page_b64, prompt=prompt, max_tokens=3500,
+            task_type='document_ocr', cache_ttl=7 * 24 * 3600,
+        ).text
+    except AIProviderError as exc:
+        print(f'  ⚠️ Распознавание страницы временно недоступно ({type(exc).__name__}).')
     return ''
 
 
@@ -2415,57 +2407,22 @@ def _gemini_text_call(system_text: str, messages: list, max_tokens: int = 3000,
     roles so a dedicated service remains able to create a card and package
     after successfully reading an archive.
     """
-    api_key = str(os.environ.get('GEMINI_API_KEY') or '').strip()
-    if not api_key:
-        return ''
-    contents = []
-    for message in messages or []:
-        if not isinstance(message, dict):
-            continue
-        content = str(message.get('content') or '').strip()
-        if not content:
-            continue
-        role = 'model' if str(message.get('role') or '').lower() == 'assistant' else 'user'
-        contents.append({'role': role, 'parts': [{'text': content}]})
-    if not contents:
-        return ''
-    payload = {
-        'contents': contents,
-        'generationConfig': {'temperature': 0, 'maxOutputTokens': max_tokens},
-    }
-    if str(system_text or '').strip():
-        payload['systemInstruction'] = {'parts': [{'text': str(system_text)}]}
     try:
-        response = req_lib.post(
-            GEMINI_OCR_URL,
-            headers={'Content-Type': 'application/json', 'x-goog-api-key': api_key},
-            json=payload,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        candidates = response.json().get('candidates') or []
-        first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
-        parts = ((first.get('content') or {}).get('parts') or [])
-        text = '\n'.join(
-            str(part.get('text') or '').strip()
-            for part in parts if isinstance(part, dict) and part.get('text')
-        ).strip()
-        if not text:
-            print('  ⚠️ Резервная текстовая модель Gemini вернула пустой ответ.')
-        return text
-    except req_lib.exceptions.RequestException as exc:
-        print(f'  ⚠️ Резервная текстовая модель Gemini не ответила ({type(exc).__name__}).')
-    except (TypeError, ValueError, KeyError) as exc:
-        print(f'  ⚠️ Резервная текстовая модель Gemini вернула неполный ответ ({type(exc).__name__}).')
+        return AI_ROUTER.complete_text(
+            system=system_text, messages=messages, max_tokens=max_tokens,
+            task_type='archive_card_chat', cache_ttl=86400,
+        ).text
+    except AIProviderError as exc:
+        print(f'  ⚠️ Резервная текстовая модель временно недоступна ({type(exc).__name__}).')
     return ''
 
 
 def _reserve_document_ocr(page_b64: str, prompt: str, timeout: int = 35) -> str:
     """Use the configured reserve reader without exposing credentials in logs."""
-    text = _google_document_ocr(page_b64, timeout=timeout)
+    text = _gemini_document_ocr(page_b64, prompt=prompt, timeout=timeout)
     if text:
         return text
-    return _gemini_document_ocr(page_b64, prompt=prompt, timeout=timeout)
+    return _google_document_ocr(page_b64, timeout=timeout)
 
 
 def _has_reserve_document_ocr() -> bool:
@@ -3083,6 +3040,26 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
                 if is_spk_si_read else
                 "Сохраняй каждую запись трудовой книжки отдельно с точными датами; не придумывай день или месяц."
             )
+            # Remote vision always goes through the free-first router.  The
+            # legacy Vibe request below is retained temporarily as reference
+            # for its carefully tuned PDF batching, but this unconditional
+            # branch makes it unreachable in production and prevents a
+            # depleted paid/included Vibe quota from being consumed.
+            routed_pages = []
+            for page_b64 in batch:
+                try:
+                    routed_pages.append(AI_ROUTER.read_image(
+                        image_b64=page_b64,
+                        prompt=active_prompt + '\n\n' + page_note,
+                        max_tokens=2000 if is_spk_si_read else 3500,
+                        task_type='document_ocr', cache_ttl=7 * 24 * 3600,
+                        legacy_vibe_key=str(api_key or ''),
+                    ).text)
+                except AIProviderError:
+                    routed_pages.append('[Страница не прочитана: подходящий провайдер временно недоступен.]')
+            return batch_start, (
+                f"--- СТРАНИЦЫ {first_page}-{last_page} ---\n" + '\n\n'.join(routed_pages)
+            )
             # Phone scans can be stored in either sideways orientation. Keep
             # both recovery rotations: skipping one of them made some real
             # labour-book pages unreadable. Pages are now processed two at a
@@ -3303,6 +3280,14 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
 
     b64_data = _b64.b64encode(file_bytes).decode('utf-8')
     payload_mb = len(b64_data) / 1024 / 1024
+    try:
+        return AI_ROUTER.read_image(
+            image_b64=b64_data, prompt=active_prompt, mime_type=media_type,
+            max_tokens=3500, task_type='document_ocr', cache_ttl=7 * 24 * 3600,
+            legacy_vibe_key=str(api_key or ''),
+        ).text
+    except AIProviderError:
+        return '[Повторная попытка чтения требуется: подходящий провайдер временно недоступен.]'
     if not api_key:
         reserve_text = _reserve_document_ocr(
             b64_data, prompt=active_prompt, timeout=request_timeout(35)
@@ -3337,7 +3322,7 @@ def vision_extract(file_bytes, filename, api_key, media_type=None, prompt_overri
         text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
         print(f"  ✅ vision_extract({filename}): успех за {elapsed:.1f} сек, {len(text)} символов ответа")
         if not text:
-            print(f"  ⚠️ vision_extract({filename}): ПУСТОЙ content — сырой ответ API (первые 500 симв): {json.dumps(data)[:500]}")
+            print(f"  ⚠️ vision_extract({filename}): провайдер вернул пустой content")
         return text or '[vision: пустой ответ]'
     except req_lib.exceptions.Timeout:
         elapsed = _time.time() - t0
@@ -3625,26 +3610,14 @@ def _simple_ai_call(prompt, api_key, max_tokens=1500):
     требует отвечать строго JSON — для задач вроде сведения карточки человека это
     не подходит и всё сломает). Отдельная функция специально для таких служебных
     задач — не путать с call_ai (это для основного чата с Игорем)."""
-    if api_key:
-        try:
-            resp = req_lib.post(
-                VIBE_URL,
-                headers={"Content-Type": "application/json", "X-Api-Key": api_key},
-                json={"model": VIBE_MODEL, "max_tokens": max_tokens,
-                      "messages": [{"role": "user", "content": prompt}]},
-                timeout=90
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = "".join((c.get("message", {}).get("content") or "") for c in data.get("choices", []))
-            if text:
-                return text
-        except req_lib.exceptions.RequestException as exc:
-            print(f'  ⚠️ Основная текстовая модель не ответила ({type(exc).__name__}); пробую резервную.')
-    text = _gemini_text_call('', [{"role": "user", "content": prompt}], max_tokens=max_tokens, timeout=90)
-    if text:
-        return text
-    raise RuntimeError('Модель не вернула ответ при сведении данных.')
+    try:
+        return AI_ROUTER.complete_text(
+            system='', messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens,
+            task_type='archive_reconciliation', cache_ttl=7 * 24 * 3600,
+            legacy_vibe_key=str(api_key or ''),
+        ).text
+    except AIProviderError as exc:
+        raise RuntimeError('Модель не вернула ответ при сведении данных.') from exc
 
 
 def _group_blocks_by_person(texts):
@@ -4703,6 +4676,38 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
             company['director_fio'] = director_row['fio']
             company['director_position'] = director_row['position']
 
+    # The scope is a fact of the current package, not a UI default.  Reading it
+    # from a signed order prevents an old value in the browser (for example,
+    # another company\'s "монтаж конструкций") from blocking package generation.
+    scope_candidates = []
+    for _path, block in _archive_document_blocks(full_text):
+        body = str(block)
+        # python-docx may flatten paragraphs into one line, therefore a newline
+        # alone is not a valid delimiter here.  A signed order's heading ends
+        # immediately before «ПРИКАЗЫВАЮ», which is the strongest source.
+        direct = re.search(
+            r'\bВ\s+ОБЛАСТИ\s*[:—-]\s*(.+?)(?=\s+ПРИКАЗЫВАЮ\b|\s+ПРИКАЗ\s*№|$)',
+            body, re.I | re.S,
+        )
+        generic = None if direct else re.search(
+            r'Область\s+(?:применения\s+)?(?:СМК|СУОТ|деятельности)\s*[:—-]\s*(.+?)(?=\s*\.\s*\d+[.)]\s+|\s+Назначить\b|\s+Создать\b|\s+Контроль\b|$)',
+            body, re.I | re.S,
+        )
+        match = direct or generic
+        if match:
+            scope = _clean_iso_suot_source_value(match.group(1))
+            if scope and len(scope) <= 220 and not re.search(r'^(?:требует\s+уточнения|не\s+указан)', scope, re.I):
+                scope_candidates.append(scope)
+    # The same scope is normally repeated in several orders.  Prefer the most
+    # frequent compact wording instead of a longer narrative occurrence.
+    normalized_scopes = {}
+    for candidate in scope_candidates:
+        key = candidate.casefold().replace('ё', 'е')
+        normalized_scopes[key] = (normalized_scopes.get(key, (0, candidate))[0] + 1, candidate)
+    scope = max(normalized_scopes.values(), key=lambda item: (item[0], -len(item[1])), default=(0, ''))[1]
+    if scope:
+        company['scope'] = scope
+
     objects, suppliers = [], []
     object_seen, supplier_seen = set(), set()
     for path, block in _archive_document_blocks(full_text):
@@ -4713,6 +4718,27 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
                 name = _clean_iso_suot_source_value(match.group(1))
                 key = name.casefold().replace('ё', 'е')
                 if name and key not in object_seen:
+                    object_seen.add(key)
+                    objects.append({'name': name})
+        if ('удовлетворенност' in path_low or 'удовлетворённост' in path_low or 'заказчик' in path_low):
+            # The customer-satisfaction report stores each project in a table.
+            # Text extraction exposes that table as pipe-separated rows.
+            for row in re.finditer(r'^\s*([^\n|]{3,300})\s*\|\s*[^\n|]*\|\s*(?:[1-5]|[—-])\s*$', body, re.M):
+                name = _clean_iso_suot_source_value(row.group(1))
+                lowered = name.casefold().replace('ё', 'е')
+                if not name or any(marker in lowered for marker in ('объект / заказчик', 'количество рекламац', 'индекс удовлетвор', 'отсутствуют')):
+                    continue
+                key = name.casefold().replace('ё', 'е')
+                if key not in object_seen:
+                    object_seen.add(key)
+                    objects.append({'name': name})
+            # DOCX paragraph extraction can flatten the same table without
+            # pipes. In that representation the row follows the "Бальная
+            # оценка" header and precedes its score.
+            for row in re.finditer(r'Бальн\w*\s+оценк\w*\s+(.+?)\s+[—-]\s*[1-5](?=\s|$)', body, re.I | re.S):
+                name = _clean_iso_suot_source_value(row.group(1))
+                key = name.casefold().replace('ё', 'е')
+                if name and len(name) <= 300 and key not in object_seen:
                     object_seen.add(key)
                     objects.append({'name': name})
         if 'поставщик' in path_low:
@@ -4726,6 +4752,8 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
     data = {}
     if company:
         data['company'] = company
+    if scope:
+        data['certification'] = {'scope': scope}
     if staff:
         data['staff'] = staff
     if objects:
@@ -7785,6 +7813,7 @@ if __name__=='__main__':
     print(f'\n✅  ИСО/СМК Генератор: http://localhost:{PORT}')
     print(f'   Откройте в браузере | Ctrl+C для остановки\n')
     _recover_interrupted_generation_tasks()
+    _resume_budget_generation_tasks()
     _resume_pending_archive_task()
     class ThreadedServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address=True

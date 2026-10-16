@@ -275,7 +275,7 @@ def render_plan_audita(company: dict, director_fio: str, year: str, audit_dates:
     dates = audit_dates or ['__.__.' + year] * 7
     new_rows = []
     for i, (topic, date) in enumerate(zip(default_topics, dates), 1):
-        cell_values = [str(i), topic, [dir_init, ', Директор'], f"{date} г."]
+        cell_values = [str(i), topic, f"{dir_init}, Директор", f"{date} г."]
         new_rows.append(_build_row(template_row, cell_values))
     xml = _splice_rows(xml, rows[1:], new_rows)
 

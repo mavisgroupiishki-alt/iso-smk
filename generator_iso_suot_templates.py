@@ -1982,6 +1982,51 @@ def _unique_people(people) -> list[dict]:
     return out
 
 
+def _apply_explicit_commission(resp: dict, itr: list, iso_suot: dict | None) -> dict:
+    """Apply a user-confirmed commission without guessing staff substitutions.
+
+    A correction in the formatter UI is an explicit business fact.  It must
+    replace the automatic commission selection in the affected orders, while
+    the director and other operational responsibilities keep their own roles.
+    A person absent from the roster is used only when the user supplied both
+    their name and position; a partial model guess is discarded.
+    """
+    source = (iso_suot or {}).get('commission') if isinstance(iso_suot, dict) else None
+    if not isinstance(source, list):
+        return resp
+    staff_by_fio = {
+        _norm(person.get('fio')): person
+        for person in itr or []
+        if isinstance(person, dict) and _norm(person.get('fio'))
+    }
+    commission, chair = [], None
+    for row in source:
+        if not isinstance(row, dict):
+            continue
+        fio = str(row.get('fio') or '').strip()
+        if len(fio.split()) < 2:
+            continue
+        known = staff_by_fio.get(_norm(fio))
+        position = str(row.get('position') or (known or {}).get('position') or '').strip()
+        if not position:
+            continue
+        person = dict(known or {})
+        person.update({'fio': fio, 'position': position})
+        commission.append(person)
+        if str(row.get('role') or '').strip().casefold() in {'chair', 'председатель'}:
+            chair = person
+    commission = _unique_people(commission)
+    if not commission:
+        return resp
+    updated = dict(resp or {})
+    updated['auditors'] = commission
+    updated['risk_group'] = commission
+    updated['coord_council'] = commission
+    if chair:
+        updated['commission_chair'] = chair
+    return updated
+
+
 def _appointment_order_doc(company: dict, dates: dict, number: str, title: str,
                            clauses: list[str], acquainted: list[dict] | None = None,
                            scope: str = '', preamble: str = '') -> bytes:
@@ -2049,7 +2094,7 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
 
     if 'suot' in wanted_categories:
         ot_people = _unique_people(auditors)
-        lead = director or (ot_people[0] if ot_people else {})
+        lead = (resp.get('commission_chair') or director or (ot_people[0] if ot_people else {}))
         # Office roles may own records, but must not become a silent default for
         # electrical and fire-safety responsibility. Prefer the real manager of
         # the work area, then the director when that person is unavailable.
@@ -2316,6 +2361,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                                   periodika: bool = False,
                                   knowledge_text: str = '', knowledge_rules: list | None = None) -> dict:
     """Generate ISO/SUOT package in seconds using current card data only."""
+    resp = _apply_explicit_commission(resp if isinstance(resp, dict) else {}, itr, iso_suot)
     org = _clean_org_name(company)
     scope = str(company.get('scope') or '').strip()
     profile_request = str((iso_suot or {}).get('scope_profile_mode') or '').strip()

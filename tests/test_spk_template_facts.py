@@ -689,6 +689,23 @@ def test_spk_si_includes_copy_list_tools_without_inventing_verification():
     assert len(warnings) == 3
 
 
+def test_spk_si_does_not_present_invoice_or_contract_as_verification_certificate():
+    rows, warnings = _build_real_si_list({
+        'measurement_tools': [{'name': 'Нивелир', 'factory_number': '015613'}],
+        'verification_documents': [{
+            'tool': 'Нивелир', 'factory_number': '015613',
+            'number': 'Договор № 7986', 'date': '04.08.2026',
+        }],
+        'calibration_documents': [{
+            'tool': 'Нивелир', 'factory_number': '015613',
+            'number': 'СЧЕТ № 3940', 'date': '25.06.2026',
+        }],
+    })
+
+    assert rows[0]['verification'] == 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
+    assert len(warnings) == 1
+
+
 def test_spk_si_reads_the_actual_pererechen_sredstv_izmereniya_heading():
     source = '''
 Перечень средств измерения:
