@@ -3535,6 +3535,18 @@ function aiCompanyForSourceConfirmation(current, source) {
   return String(current?.company?.name || source?.company?.name || '').trim();
 }
 
+function aiSourceBatchCompany(current, files) {
+  const sources = [current || {}, ...(files || []).map(file => file.structured_data || {})];
+  for(let i = 0; i < sources.length; i++) {
+    if(sources[i]._source_company_conflict) return {conflict: true, name: ''};
+    for(let j = 0; j < i; j++) {
+      if(aiStructuredCompanyConflict(sources[i], sources[j])) return {conflict: true, name: ''};
+    }
+  }
+  const named = sources.find(source => String(source.company?.name || '').trim());
+  return {conflict: false, name: String(named?.company?.name || '').trim()};
+}
+
 function aiMergeStructuredSource(baseData, sourceData) {
   const base = JSON.parse(JSON.stringify(baseData || {}));
   const source = sourceData || {};
@@ -3671,8 +3683,10 @@ function aiMakeArchiveCardTransferMessage(sourceData) {
   return `В карточку автоматически перенесено из архива: ${fields.join(', ')}.`;
 }
 
-function aiCanFinishArchiveWithoutChat(text, sourceData) {
-  return !String(text || '').trim() && Object.keys(sourceData || {}).length > 0;
+function aiCanFinishArchiveWithoutChat(text, sourceData, files) {
+  const fields = aiArchiveCardTransferDescription(sourceData).filter(field => field !== 'название компании');
+  return !String(text || '').trim() && Array.isArray(files) && files.length > 0 &&
+    files.every(file => /\.(?:zip|rar)$/i.test(file.name)) && fields.length > 0;
 }
 
 // Ищет сохранённую компанию по части названия среди сохранённых на сервере (для запросов вида "загрузи ОмиТрейд")
@@ -4090,10 +4104,16 @@ async function aiSend() {
   );
 
   // Показываем сообщение пользователя
-  const fileNames = aiAttachedFiles.map(f=>f.name).join(', ');
+  const submittedFiles = aiAttachedFiles.slice();
+  const fileNames = submittedFiles.map(f=>f.name).join(', ');
   const displayText = text + (fileNames ? (text ? '\n📎 ' : '📎 ') + fileNames : '');
   aiAddMsg('user', displayText);
   ta.value = ''; ta.style.height = '';
+  const restoreDraft = () => { if(!ta.value.trim()) ta.value = text; };
+  const clearSubmittedFiles = () => {
+    aiAttachedFiles = aiAttachedFiles.filter(file => !submittedFiles.includes(file));
+    aiRenderFileList();
+  };
 
   // Start the real background task directly.  Only its completed task result
   // may display a download link; an ordinary AI reply cannot claim a package.
@@ -4147,13 +4167,13 @@ async function aiSend() {
   let filesContent = '';
   let authoritativeSourceData = {};
   let archiveCardTransferMessage = '';
-  if(aiAttachedFiles.length > 0) {
-    const total = aiAttachedFiles.length;
+  if(submittedFiles.length > 0) {
+    const total = submittedFiles.length;
     const BATCH = 2;
     const fileData = [];
     const typingMsg = document.getElementById('ai-messages').lastElementChild;
     for(let i = 0; i < total; i += BATCH) {
-      const batch = aiAttachedFiles.slice(i, i + BATCH);
+      const batch = submittedFiles.slice(i, i + BATCH);
       // ZIP/RAR create their own detailed progress card. Showing the browser
       // attachment count (always "1 of 1" for one archive) above it was both
       // misleading and looked like the reader had stopped.
@@ -4166,8 +4186,6 @@ async function aiSend() {
       const lastProgress = msgs2.lastElementChild;
       if(lastProgress && lastProgress.textContent.includes('Читаю файлы')) lastProgress.remove();
     }
-    aiAttachedFiles = [];
-    aiRenderFileList();
     // Удаляем сообщение "Читаю файлы"
     const msgs = document.getElementById('ai-messages');
     const last = msgs.lastElementChild;
@@ -4179,6 +4197,7 @@ async function aiSend() {
       // endpoint. It caused a second unrelated error after a failed upload and
       // made it look as though the file had been submitted to analysis.
       aiRemoveTyping();
+      restoreDraft();
       aiAddMsg('ai', `Файл не внесён в карточку: ${unreadFiles.map(file => `«${file.name}»`).join(', ')}. Повторите загрузку после сообщения об ошибке.`);
       aiLoading = false;
       document.getElementById('ai-send-btn').disabled = false;
@@ -4188,8 +4207,18 @@ async function aiSend() {
     filesContent = fileData.map(f =>
       `\n===== ФАЙЛ: ${f.name} =====\n${f.content}\n`
     ).join('\n');
-    // A neighbouring requisites file does not establish an anonymous
-    // employee's employer. Require confirmation before the card or model sees it.
+    // A requisites file can identify the batch, but it does not by itself
+    // prove that anonymous staff belong to that company: ask per file.
+    const batchCompany = aiSourceBatchCompany(aiCurrentData, fileData);
+    if(batchCompany.conflict) {
+      aiRemoveTyping();
+      restoreDraft();
+      aiAddMsg('ai', '⚠️ Документы содержат разные компании. Данные не перенесены; загрузите документы одной компании отдельно.');
+      aiLoading = false;
+      document.getElementById('ai-send-btn').disabled = false;
+      return;
+    }
+    let confirmedBatchCompany = batchCompany.name;
     for(const file of fileData) {
       const source = file.structured_data || {};
       const isoFile = ['iso', 'suot', 'iso_suot'].includes(archiveProductHint);
@@ -4197,14 +4226,19 @@ async function aiSend() {
       if(!source._source_company_unverified && !(isoFile && !hasVerifiedId)) continue;
       if(source._source_company_conflict || aiStructuredCompanyConflict(aiCurrentData, source)) {
         aiRemoveTyping();
+        restoreDraft();
         aiAddMsg('ai', '⚠️ Документы содержат разные компании. Данные не перенесены; загрузите документы одной компании отдельно.');
         aiLoading = false;
         document.getElementById('ai-send-btn').disabled = false;
         return;
       }
-      const company = aiCompanyForSourceConfirmation(aiCurrentData, source);
+      if(!confirmedBatchCompany) {
+        confirmedBatchCompany = String(prompt('Не удалось определить организацию по документам. Укажите название компании, которой они принадлежат:') || '').trim();
+      }
+      const company = aiCompanyForSourceConfirmation(aiCurrentData, source) || confirmedBatchCompany;
       if(!company) {
         aiRemoveTyping();
+        restoreDraft();
         aiAddMsg('ai', '⚠️ Не удалось определить организацию. Сначала укажите название компании, затем загрузите документы ещё раз.');
         aiLoading = false;
         document.getElementById('ai-send-btn').disabled = false;
@@ -4212,6 +4246,7 @@ async function aiSend() {
       }
       if(!confirm('В файле «' + file.name + '» не удалось однозначно установить принадлежность данных. Подтверждаете, что они относятся к компании «' + company + '»?')) {
         aiRemoveTyping();
+        restoreDraft();
         aiAddMsg('ai', '⚠️ Принадлежность данных не подтверждена. Данные не перенесены; проверьте документы и укажите организацию.');
         aiLoading = false;
         document.getElementById('ai-send-btn').disabled = false;
@@ -4220,8 +4255,12 @@ async function aiSend() {
       delete source._source_company_unverified;
     }
     authoritativeSourceData = aiCombineStructuredSources(fileData.map(f => f.structured_data));
+    if(confirmedBatchCompany && !authoritativeSourceData.company?.name) {
+      authoritativeSourceData.company = {...(authoritativeSourceData.company || {}), name: confirmedBatchCompany};
+    }
     if(authoritativeSourceData._source_company_conflict || aiStructuredCompanyConflict(aiCurrentData, authoritativeSourceData)) {
       aiRemoveTyping();
+      restoreDraft();
       aiAddMsg('ai', '⚠️ Не удалось надёжно установить, что кадровые данные относятся к этой компании, либо обнаружены разные компании. Данные не перенесены, чтобы не смешать карточки. Проверьте файлы и загрузите документы одной компании с указанием её названия отдельно.');
       aiLoading = false;
       document.getElementById('ai-send-btn').disabled = false;
@@ -4248,8 +4287,10 @@ async function aiSend() {
       aiRemoveTyping();
       knowledgeSourceFilename = fileNames || '';
       await knowledgeCreateDraftFromChat(text, filesContent);
+      clearSubmittedFiles();
     } catch(e) {
       aiRemoveTyping();
+      restoreDraft();
       aiAddMsg('ai', '❌ ' + aiFriendlyError(e.message));
     }
     aiLoading = false;
@@ -4260,7 +4301,7 @@ async function aiSend() {
   // A plain archive upload already has deterministic data from the reader.
   // Do not ask the chat model to repeat a long staff list: a token-limited
   // response used to arrive as incomplete JSON and prevented card transfer.
-  if(aiCanFinishArchiveWithoutChat(text, authoritativeSourceData)) {
+  if(aiCanFinishArchiveWithoutChat(text, authoritativeSourceData, submittedFiles)) {
     const parsed = {
       message: archiveCardTransferMessage || 'Данные из архива перенесены в карточку.',
       questions: [],
@@ -4269,6 +4310,7 @@ async function aiSend() {
     aiHistory.push({role:'user', content:'ЗАГРУЖЕН АРХИВ: ' + (fileNames || 'файлы')});
     aiHistory.push({role:'assistant', content:JSON.stringify(parsed)});
     aiAddMsg('ai', parsed.message, parsed.questions);
+    clearSubmittedFiles();
     aiLoading = false;
     document.getElementById('ai-send-btn').disabled = false;
     return;
@@ -4317,6 +4359,24 @@ async function aiSend() {
 
     let parsed = aiPreventFalseGenerationClaim(aiParseResponse(result.text));
 
+    if(parsed.data && (parsed.data._source_company_conflict
+        || aiStructuredCompanyConflict(aiCurrentData, parsed.data)
+        || aiStructuredCompanyConflict(authoritativeSourceData, parsed.data))) {
+      throw new Error('ИИ вернул сведения другой организации. Ответ не внесён в карточку; проверьте данные и повторите запрос.');
+    }
+    if(filesContent && ['iso', 'suot', 'iso_suot'].includes(archiveProductHint) && Array.isArray(parsed.data?.staff)) {
+      const confirmed = new Map(aiCardStaffRows(aiCurrentData.staff).map(row => [aiNormIdentity(row.fio || row.name || row.full_name), row]));
+      const needsReview = parsed.data.staff.some(row => {
+        const person = confirmed.get(aiNormIdentity(row?.fio || row?.name || row?.full_name));
+        return !person || (row.position && aiNormIdentity(row.position) !== aiNormIdentity(person.position));
+      });
+      // Personnel from the documents has already been merged deterministically.
+      // A model response cannot prove a new person or modify an existing role.
+      parsed.data.staff = [];
+      if(needsReview) {
+        parsed.message = 'Часть сведений о сотрудниках не удалось подтвердить по исходным данным. Они не внесены в карточку; проверьте штатное расписание и добавьте их вручную.';
+      }
+    }
     if(parsed.data || Object.keys(authoritativeSourceData).length) {
       let dataForCard = Object.keys(authoritativeSourceData).length
         ? aiMergeStructuredSource(parsed.data || {}, authoritativeSourceData)
@@ -4354,10 +4414,13 @@ async function aiSend() {
       ? `${explicitStaffMessage}\n\n${parsed.message || result.text}`
       : (parsed.message || result.text);
     aiAddMsg('ai', message, parsed.questions);
+    clearSubmittedFiles();
 
   } catch(e) {
     aiRemoveTyping();
-    aiAddMsg('ai', '❌ ' + aiFriendlyError(e.message));
+    restoreDraft();
+    const transferred = archiveCardTransferMessage ? `\n${archiveCardTransferMessage}` : '';
+    aiAddMsg('ai', '❌ ' + aiFriendlyError(e.message) + transferred);
   }
 
   aiLoading = false;
@@ -4422,9 +4485,10 @@ async function aiReadFile(file, productHint = '') {
     fetch(endpoint, {method:'POST', body: formData})
       .then(response => aiReadJsonResponse(response, 'file'))
       .then(data => {
+        if(data.success === false) throw new Error(data.error || 'Файл не прочитан.');
         if(isWord && data.needs_visual_ocr) {
           aiReadArchiveAsync(file, productHint).then(resolve).catch(err => resolve({
-            name: file.name, content: '[Не удалось прочитать сканы внутри Word-документа.]'
+            name: file.name, content: '[Не удалось прочитать сканы внутри Word-документа.]', read_failed: true
           }));
           return;
         }
@@ -4437,7 +4501,8 @@ async function aiReadFile(file, productHint = '') {
       })
       .catch(err => resolve({
         name: file.name,
-        content: '[Не удалось прочитать файл: он не был передан на обработку.]'
+        content: '[Не удалось прочитать файл: он не был передан на обработку.]',
+        read_failed: true
       }));
   });
 }

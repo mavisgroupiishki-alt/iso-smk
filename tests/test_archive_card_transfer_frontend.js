@@ -64,11 +64,15 @@ if (datesOnly !== 'В карточку автоматически перенес
   throw new Error('dates-only archive must not be described as a fully updated card');
 }
 
-if (!context.aiCanFinishArchiveWithoutChat('', { staff: [{}] })) {
+if (!context.aiCanFinishArchiveWithoutChat('', { staff: [{}] }, [{name: 'архив.rar'}])) {
   throw new Error('an upload with deterministic source data must not wait for a chat reply');
 }
-if (context.aiCanFinishArchiveWithoutChat('добавь объект', { staff: [{}] })) {
+if (context.aiCanFinishArchiveWithoutChat('добавь объект', { staff: [{}] }, [{name: 'архив.rar'}])) {
   throw new Error('a user correction still needs the chat');
+}
+if (context.aiCanFinishArchiveWithoutChat('', {company: {name: 'Альфа'}}, [{name: 'архив.rar'}]) ||
+    context.aiCanFinishArchiveWithoutChat('', {staff: [{}]}, [{name: 'штат.xlsx'}])) {
+  throw new Error('name-only or non-archive upload must continue analysis');
 }
 const sourceStatus = context.aiArchiveSourceStatusHtml({
   'Старые/Штат.xlsx': {state: 'read_local'},

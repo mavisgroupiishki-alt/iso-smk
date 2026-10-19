@@ -30,7 +30,7 @@ const names = [
   'aiCloneForStorage', 'aiHasMeaningfulValue', 'aiDeepMergeDefined',
   'aiNormIdentity', 'aiIsOfficialStaffRow', 'aiOfficialStaffRows',
   'aiSourceStaffRows',
-  'aiMergeEntityArray', 'aiStructuredCompanyConflict', 'aiMergeStructuredSource', 'aiCompanyForSourceConfirmation',
+  'aiMergeEntityArray', 'aiStructuredCompanyConflict', 'aiMergeStructuredSource', 'aiCompanyForSourceConfirmation', 'aiSourceBatchCompany',
 ];
 const context = {};
 vm.createContext(context);
@@ -39,6 +39,17 @@ vm.runInContext(names.map(extractFunction).join('\n\n'), context);
 if (context.aiCompanyForSourceConfirmation({}, {}) !== '') throw new Error('unknown company must not be confirmed');
 if (context.aiCompanyForSourceConfirmation({company: {name: 'Альфа'}}, {}) !== 'Альфа') throw new Error('selected company missing');
 if (context.aiCompanyForSourceConfirmation({}, {company: {name: 'Бета'}}) !== 'Бета') throw new Error('source company missing');
+
+const identity = context.aiSourceBatchCompany({}, [
+  {structured_data: {_source_company_unverified: true, staff: [{fio: 'Иванов Иван Иванович'}]}},
+  {structured_data: {company: {name: 'Альфа', form: 'ООО', unp: '123456789'}}},
+]);
+if (identity.conflict || identity.name !== 'Альфа') throw new Error('later requisites must identify the batch');
+if (!context.aiSourceBatchCompany({}, [
+  {structured_data: {company: {name: 'Альфа', unp: '123456789'}}},
+  {structured_data: {company: {name: 'Бета', unp: '987654321'}}},
+]).conflict) throw new Error('different companies must not be confirmed as one batch');
+if (context.aiSourceBatchCompany({}, [{structured_data: {staff: [{fio: 'Иванов Иван Иванович'}]}}]).name) throw new Error('anonymous batch must not invent a company');
 
 const result = context.aiMergeStructuredSource(
   {staff: [{fio: 'Рощин Александр Викторович', position: 'Главный инженер'}]},
