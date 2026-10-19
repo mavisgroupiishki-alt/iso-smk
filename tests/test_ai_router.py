@@ -24,6 +24,47 @@ class FakeResponse:
 
 
 class AIRouterTests(unittest.TestCase):
+    def test_aiai_priority_is_explicit_and_keeps_audio_groq_first(self):
+        router = self.router({'AIAI_PREFERRED': 'true'}, lambda *_args, **_kwargs: None)
+        self.assertEqual(router._text_candidates()[0].provider, 'aiai')
+        self.assertEqual(router._vision_candidates()[0].provider, 'aiai')
+        self.assertEqual(router._audio_candidates()[0].provider, 'groq')
+        self.assertEqual(self.router({}, lambda *_args, **_kwargs: None)._text_candidates()[0].provider, 'gemini')
+
+    def test_aiai_unlimited_requires_explicit_opt_in_and_records_unknown_cost(self):
+        env = {'AIAI_PREFERRED': 'true', 'AIAI_PAID_ENABLED': 'true',
+               'AIAI_UNLIMITED': 'true', 'AIAI_API_KEY': 'test',
+               'AIAI_BASE_URL': 'https://example.invalid/v1', 'AIAI_MODEL': 'test-model'}
+        def post(*_args, **_kwargs):
+            return FakeResponse({'choices': [{'message': {'content': 'Проверка'}}],
+                                 'usage': {'prompt_tokens': 4, 'completion_tokens': 2}})
+        router = self.router(env, post)
+        result = router.complete_text(system='', messages=[{'role': 'user', 'content': 'Тест'}])
+        self.assertEqual(result.provider, 'aiai')
+        self.assertIsNone(result.cost)
+        self.assertFalse(self.router({**env, 'AIAI_PAID_ENABLED': 'false'}, post)._aiai_enabled())
+
+    def test_fenced_json_is_validated_and_delivered_as_json(self):
+        router = self.router({'GEMINI_API_KEY': 'test'}, lambda *_args, **_kwargs: FakeResponse(
+            {'candidates': [{'content': {'parts': [{'text': '```json\n{"company":"Тест"}\n```'}]}}]}))
+        result = router.complete_text(system='', messages=[{'role': 'user', 'content': 'тест'}],
+                                      require_json=True, required_fields=('company',))
+        self.assertEqual(json.loads(result.text), {'company': 'Тест'})
+
+    def test_preferred_aiai_uses_only_mocked_api_and_budget_guard(self):
+        calls = []
+        def post(url, **kwargs):
+            calls.append(url)
+            return FakeResponse({'choices': [{'message': {'content': 'тестовый ответ'}}]})
+        env = {'AIAI_PREFERRED': 'true', 'AIAI_PAID_ENABLED': 'true',
+               'AIAI_API_KEY': 'test', 'AIAI_BASE_URL': 'https://example.invalid/v1',
+               'AIAI_MODEL': 'test-model', 'AIAI_DAILY_BUDGET_BEL': '1',
+               'AIAI_MONTHLY_BUDGET_BEL': '2', 'AIAI_REQUEST_COST_BEL': '0.1'}
+        router = self.router(env, post)
+        result = router.complete_text(system='', messages=[{'role': 'user', 'content': 'пример'}])
+        self.assertEqual(result.provider, 'aiai')
+        self.assertEqual(calls, ['https://example.invalid/v1/chat/completions'])
+
     def router(self, env, post, at="2026-10-16T12:00:00+00:00"):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

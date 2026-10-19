@@ -10,9 +10,10 @@ import base64
 import hashlib
 import json
 import os
+import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -170,7 +171,11 @@ class AIProviderRouter:
         ]
         if self._vibe_allowed():
             candidates.append(Candidate("vibecode", self.env.get("VIBE_MODEL", "bitrix/bitrixgpt-5.5")))
-        candidates.append(Candidate("aiai", self.env.get("AIAI_MODEL", "")))
+        paid = Candidate("aiai", self.env.get("AIAI_MODEL", ""))
+        if str(self.env.get("AIAI_PREFERRED", "")).lower() == "true":
+            candidates.insert(0, paid)
+        else:
+            candidates.append(paid)
         return candidates
 
     def _vision_candidates(self) -> list[Candidate]:
@@ -185,7 +190,11 @@ class AIProviderRouter:
         candidates.append(Candidate("cloudflare", self.env.get("CLOUDFLARE_VISION_MODEL", "@cf/meta/llama-3.2-11b-vision-instruct")))
         if self._vibe_allowed():
             candidates.append(Candidate("vibecode", self.env.get("VIBE_VISION_MODEL", "bitrix/bitrixgpt-5.5-thinking")))
-        candidates.append(Candidate("aiai", self.env.get("AIAI_VISION_MODEL", self.env.get("AIAI_MODEL", ""))))
+        paid = Candidate("aiai", self.env.get("AIAI_VISION_MODEL", self.env.get("AIAI_MODEL", "")))
+        if str(self.env.get("AIAI_PREFERRED", "")).lower() == "true":
+            candidates.insert(0, paid)
+        else:
+            candidates.append(paid)
         return candidates
 
     def _audio_candidates(self) -> list[Candidate]:
@@ -216,7 +225,9 @@ class AIProviderRouter:
                 continue
             try:
                 result = self._call(candidate, kind, payload, legacy_vibe_key)
-                self._validate(result.text, require_json=require_json, required_fields=required_fields)
+                valid_text = self._validate(result.text, require_json=require_json, required_fields=required_fields)
+                if valid_text != result.text:
+                    result = replace(result, text=valid_text)
                 self._save_cache(cache_key, result)
                 self._record(candidate, task_type, "success", usage=result.usage, cost=result.cost,
                              switch_reason=failures[-1] if failures else "")
@@ -326,9 +337,10 @@ class AIProviderRouter:
     def _call_aiai(self, candidate: Candidate, kind: str, payload: dict[str, Any]) -> AIResult:
         if not self._aiai_enabled():
             raise AIProviderError("paid_budget_not_configured")
-        reserved_cost = self._configured_aiai_price()
-        if reserved_cost is None or not self._within_aiai_budget(reserved_cost):
-            raise AIProviderError("paid_budget_exhausted")
+        if not self._aiai_unlimited():
+            reserved_cost = self._configured_aiai_price()
+            if reserved_cost is None or not self._within_aiai_budget(reserved_cost):
+                raise AIProviderError("paid_budget_exhausted")
         key = self._secret("AIAI_API_KEY")
         base_url = self._required("AIAI_BASE_URL").rstrip("/")
         if kind == "audio":
@@ -380,13 +392,15 @@ class AIProviderRouter:
             return False
 
     def _aiai_enabled(self) -> bool:
-        return (
-            str(self.env.get("AIAI_PAID_ENABLED", "")).lower() == "true"
-            and bool(self.env.get("AIAI_API_KEY")) and bool(self.env.get("AIAI_BASE_URL"))
-            and _as_float(self.env.get("AIAI_DAILY_BUDGET_BEL")) not in (None, 0)
-            and _as_float(self.env.get("AIAI_MONTHLY_BUDGET_BEL")) not in (None, 0)
-            and self._configured_aiai_price() is not None
-        )
+        configured = (str(self.env.get("AIAI_PAID_ENABLED", "")).lower() == "true"
+                      and bool(self.env.get("AIAI_API_KEY")) and bool(self.env.get("AIAI_BASE_URL")))
+        budgeted = (_as_float(self.env.get("AIAI_DAILY_BUDGET_BEL")) not in (None, 0)
+                    and _as_float(self.env.get("AIAI_MONTHLY_BUDGET_BEL")) not in (None, 0)
+                    and self._configured_aiai_price() is not None)
+        return bool(configured and (self._aiai_unlimited() or budgeted))
+
+    def _aiai_unlimited(self) -> bool:
+        return str(self.env.get("AIAI_UNLIMITED", "")).strip().lower() == "true"
 
     def _configured_aiai_price(self) -> Optional[float]:
         fixed = _as_float(self.env.get("AIAI_REQUEST_COST_BEL"))
@@ -447,6 +461,8 @@ class AIProviderRouter:
             return True
 
     def _aiai_cost(self, usage: dict[str, Any] | None) -> Optional[float]:
+        if self._aiai_unlimited():
+            return None  # A reservation estimate is not the provider's actual charge.
         fixed = _as_float(self.env.get("AIAI_REQUEST_COST_BEL"))
         if fixed is not None and fixed > 0:
             return fixed
@@ -474,11 +490,15 @@ class AIProviderRouter:
                     continue
         return day_total + request_cost <= daily and month_total + request_cost <= monthly
 
-    def _validate(self, text: str, *, require_json: bool, required_fields: tuple[str, ...]) -> None:
+    def _validate(self, text: str, *, require_json: bool, required_fields: tuple[str, ...]) -> str:
         if len(str(text or "").strip()) < 2:
             raise AIProviderError("quality_empty")
         if not require_json:
-            return
+            return text
+        text = str(text).strip()
+        fenced = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            text = fenced.group(1).strip()
         try:
             data = json.loads(text)
         except (TypeError, ValueError) as exc:
@@ -486,6 +506,7 @@ class AIProviderRouter:
         for field in required_fields:
             if not isinstance(data, dict) or not data.get(field):
                 raise AIProviderError("quality_missing_required_field")
+        return text
 
     # ------------------------------ state --------------------------------
     def _cache_key(self, kind: str, task_type: str, payload: dict[str, Any], require_json: bool, fields: tuple[str, ...]) -> str:

@@ -2061,7 +2061,7 @@ def call_ai(messages, api_key, knowledge_text="", product="all"):
         )
         return _sanitize_ai_visible_response(result.text, product)
     except AIProviderError as exc:
-        raise RuntimeError('Подходящая ИИ-модель временно недоступна. Задание сохранено для повтора.') from exc
+        raise RuntimeError('Подходящая ИИ-модель временно недоступна. Сообщение не обработано; повторите его позже.') from exc
 
 
 # ── Дата-утилиты (без изменений) ─────────────────────────────
@@ -2437,6 +2437,7 @@ def _has_reserve_document_ocr() -> bool:
     return bool(
         str(os.environ.get('GOOGLE_VISION_API_KEY') or '').strip()
         or str(os.environ.get('GEMINI_API_KEY') or '').strip()
+        or (AI_ROUTER._aiai_enabled() and str(os.environ.get('AIAI_VISION_MODEL') or os.environ.get('AIAI_MODEL') or '').strip())
     )
 
 

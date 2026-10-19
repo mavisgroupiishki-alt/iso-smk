@@ -26,6 +26,23 @@ class Response:
 
 
 class ProviderIntegrationTests(unittest.TestCase):
+    def test_ocr_allows_explicitly_configured_aiai_without_legacy_keys(self):
+        env = {'AIAI_PAID_ENABLED': 'true', 'AIAI_UNLIMITED': 'true', 'AIAI_API_KEY': 'test',
+               'AIAI_BASE_URL': 'https://example.invalid/v1', 'AIAI_VISION_MODEL': 'vision-test'}
+        with tempfile.TemporaryDirectory() as temp, patch.dict(server.os.environ, env, clear=True):
+            router = AIProviderRouter(Path(temp), environ=server.os.environ)
+            with patch.object(server, 'AI_ROUTER', router):
+                self.assertTrue(server._has_reserve_document_ocr())
+                with patch.dict(server.os.environ, {'AIAI_PAID_ENABLED': 'false'}):
+                    self.assertFalse(server._has_reserve_document_ocr())
+
+    def test_unavailable_chat_does_not_claim_it_was_queued(self):
+        with patch.object(server.AI_ROUTER, 'complete_text', side_effect=AIProviderError('providers_exhausted')):
+            with self.assertRaises(RuntimeError) as error:
+                server.call_ai([{'role': 'user', 'content': 'тест'}], '', product='iso')
+        self.assertNotIn('сохранено', str(error.exception).lower())
+        self.assertIn('повтор', str(error.exception).lower())
+
     def build_router(self, temp, payload):
         env = {"GEMINI_API_KEY": "test-key"}
         return AIProviderRouter(
