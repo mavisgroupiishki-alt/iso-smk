@@ -3165,14 +3165,14 @@ function aiRenderCard(data) {
   // Флаги
   (aiCurrentData.flags||[]).forEach(f => {
     const cls = f.type==='error'?'ai-flag-err':f.type==='warning'?'ai-flag-warn':'ai-flag-ok';
-    html += `<div class="${cls}">${f.text}</div>`;
+    html += `<div class="${cls}">${igorEscape(f.text || '')}</div>`;
   });
 
   // Сведения, которые ИИ/распознавание пометили для ручной проверки.
   (aiCurrentData.review_items||[]).forEach(item => {
-    const field = item.field ? `<b>${item.field}:</b> ` : '';
-    const value = item.value || 'НЕ ЗАПОЛНЕНО';
-    const reason = item.reason ? ` — ${item.reason}` : '';
+    const field = item.field ? `<b>${igorEscape(item.field)}:</b> ` : '';
+    const value = igorEscape(item.value || 'НЕ ЗАПОЛНЕНО');
+    const reason = item.reason ? ` — ${igorEscape(item.reason)}` : '';
     html += `<div class="ai-flag-warn">🟨 ${field}${value}${reason}</div>`;
   });
 
@@ -3181,7 +3181,7 @@ function aiRenderCard(data) {
   const cF = [['Название',c.name],['Форма',c.form],['УНП',c.unp],['Город',c.city],['Директор',c.director_fio],['Должность',c.director_position]].filter(([,v])=>v);
   if(cF.length) {
     html += '<div class="ai-sec">Компания</div><div>';
-    cF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
+    cF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${igorEscape(v)}</span></div>`);
     html += '</div>';
   }
 
@@ -3190,7 +3190,7 @@ function aiRenderCard(data) {
   const certF = [['Стандарт',cert.standard],['Область',cert.scope],['Орган',cert.body]].filter(([,v])=>v);
   if(certF.length) {
     html += '<div class="ai-sec">Сертификация</div><div>';
-    certF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
+    certF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${igorEscape(v)}</span></div>`);
     html += '</div>';
   }
 
@@ -3199,7 +3199,7 @@ function aiRenderCard(data) {
   const dtF = [['Дата документов',dt.document_date],['Аудит',dt.audit_date],['Разработка',dt.development_date],['Внедрение',dt.implementation_date]].filter(([,v])=>v);
   if(dtF.length) {
     html += '<div class="ai-sec">Даты</div><div>';
-    dtF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${v}</span></div>`);
+    dtF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${igorEscape(v)}</span></div>`);
     html += '</div>';
   }
 
@@ -3213,7 +3213,7 @@ function aiRenderCard(data) {
     itrStaff.forEach(p => {
       const otBadge = p.ot_certificate ? (' · 🛡' + (p.ot_certificate_date && p.ot_certificate_date!=='undefined' ? ' '+p.ot_certificate_date : '')) : '';
       const roleBadge = p.role ? (' · '+(rl[p.role]||p.role)) : '';
-      html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#8B4A5C;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${(p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase()}</div><div><div class="ai-pname">${p.fio||''}</div><div class="ai-prole">${p.position||''}${roleBadge}${otBadge}</div></div></div>`;
+      html += `<div class="ai-person"><div style="width:22px;height:22px;border-radius:50%;background:#8B4A5C;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0">${igorEscape((p.fio||'').split(' ').map(x=>x[0]||'').join('').slice(0,2).toUpperCase())}</div><div><div class="ai-pname">${igorEscape(p.fio||'')}</div><div class="ai-prole">${igorEscape(p.position||'')}${igorEscape(roleBadge)}${igorEscape(otBadge)}</div></div></div>`;
     });
   }
 
@@ -3366,7 +3366,7 @@ function aiRenderCard(data) {
   const objs = aiCurrentData.objects||[];
   if(objs.length) {
     html += '<div class="ai-sec">Объекты</div><div>';
-    objs.forEach((o,i) => html += `<div class="ai-df"><span class="ai-dl">${i+1}. ${o.year||''}</span><span class="ai-dv">${o.name}${o.customer?' ('+o.customer+')':''}</span></div>`);
+    objs.forEach((o,i) => html += `<div class="ai-df"><span class="ai-dl">${i+1}. ${aiEscapeHtml(o.year||'')}</span><span class="ai-dv">${aiEscapeHtml(o.name)}${o.customer?' ('+aiEscapeHtml(o.customer)+')':''}</span></div>`);
     html += '</div>';
   }
 
@@ -3374,7 +3374,7 @@ function aiRenderCard(data) {
   const sups = aiCurrentData.suppliers||[];
   if(sups.length) {
     html += '<div class="ai-sec">Поставщики</div><div>';
-    sups.forEach((s,i) => html += `<div class="ai-df"><span class="ai-dl">${i+1}.</span><span class="ai-dv">${s.name}${s.type?' · '+s.type:''}</span></div>`);
+    sups.forEach((s,i) => html += `<div class="ai-df"><span class="ai-dl">${i+1}.</span><span class="ai-dv">${aiEscapeHtml(s.name)}${s.type?' · '+aiEscapeHtml(s.type):''}</span></div>`);
     html += '</div>';
   }
 
@@ -3522,9 +3522,30 @@ function aiMergeItrRecords(baseList, patchList, sourceAuthoritative=false) {
   return order.map(key => map.get(key));
 }
 
+function aiStructuredCompanyConflict(baseData, sourceData) {
+  const a = baseData?.company || {}, b = sourceData?.company || {};
+  const unpA = String(a.unp || '').replace(/\D/g, ''), unpB = String(b.unp || '').replace(/\D/g, '');
+  if(unpA && unpB) return unpA !== unpB;
+  const nameA = aiNormIdentity(a.name), nameB = aiNormIdentity(b.name);
+  const formA = aiNormIdentity(a.form), formB = aiNormIdentity(b.form);
+  return !!(nameA && nameB && (nameA !== nameB || (formA && formB && formA !== formB)));
+}
+
+function aiCompanyForSourceConfirmation(current, source) {
+  return String(current?.company?.name || source?.company?.name || '').trim();
+}
+
 function aiMergeStructuredSource(baseData, sourceData) {
   const base = JSON.parse(JSON.stringify(baseData || {}));
   const source = sourceData || {};
+  if(source._source_company_unverified) {
+    base._source_company_unverified = true;
+    return base;
+  }
+  if(source._source_company_conflict || aiStructuredCompanyConflict(base, source)) {
+    base._source_company_conflict = true;
+    return base;
+  }
   ['company','certification','dates'].forEach(section => {
     if(!source[section]) return;
     base[section] = {...(base[section] || {})};
@@ -3535,6 +3556,45 @@ function aiMergeStructuredSource(baseData, sourceData) {
   if(Array.isArray(source.staff) && source.staff.length) {
     base.staff = aiMergeEntityArray(aiOfficialStaffRows(base.staff), aiSourceStaffRows(source.staff),
       row => aiNormIdentity(row?.fio || row?.name || row?.full_name));
+  }
+  if(Array.isArray(source.objects) && source.objects.length) {
+    base.objects = aiMergeEntityArray(base.objects, source.objects,
+      row => aiNormIdentity(typeof row === 'string' ? row : (row?.name || row?.object_name || row?.address)));
+  }
+  if(Array.isArray(source.suppliers) && source.suppliers.length) {
+    base.suppliers = aiMergeEntityArray(base.suppliers, source.suppliers,
+      row => aiNormIdentity(typeof row === 'string' ? row : (row?.name || row?.supplier)));
+  }
+  if(Array.isArray(source.iso_suot?.satisfaction_customers) && source.iso_suot.satisfaction_customers.length) {
+    base.iso_suot = {...(base.iso_suot || {})};
+    base.iso_suot.satisfaction_customers = aiMergeEntityArray(
+      base.iso_suot.satisfaction_customers, source.iso_suot.satisfaction_customers,
+      row => [row?.name, row?.complaints, row?.score].map(aiNormIdentity).join('|'));
+  }
+  if(source.iso_suot?.policy_evidence) {
+    base.iso_suot = {...(base.iso_suot || {})};
+    const incoming = source.iso_suot.policy_evidence;
+    const prior = base.iso_suot.policy_evidence;
+    if(!prior) {
+      base.iso_suot.policy_evidence = aiCloneForStorage(incoming);
+    } else {
+      const merged = aiCloneForStorage(prior);
+      const conflict = merged.date_conflict || incoming.date_conflict || (merged.approval_date && incoming.approval_date && merged.approval_date !== incoming.approval_date);
+      merged.approval_date = conflict ? '' : (merged.approval_date || incoming.approval_date || '');
+      merged.date_conflict = !!conflict;
+      const byName = new Map((merged.familiarizations || []).map(row => [aiNormIdentity(row?.fio), row]));
+      (incoming.familiarizations || []).forEach(row => {
+        const key = aiNormIdentity(row?.fio);
+        if(!key) return;
+        const old = byName.get(key);
+        if(!old) byName.set(key, aiCloneForStorage(row));
+        else if(old.date_conflict || row.date_conflict || (old.date && row.date && old.date !== row.date)) {
+          byName.set(key, {...old, date: '', date_conflict: true});
+        } else if(!old.date && row.date) byName.set(key, {...old, date: row.date});
+      });
+      merged.familiarizations = [...byName.values()];
+      base.iso_suot.policy_evidence = merged;
+    }
   }
   if(source.company_attestation) {
     const sca = source.company_attestation;
@@ -4128,13 +4188,55 @@ async function aiSend() {
     filesContent = fileData.map(f =>
       `\n===== ФАЙЛ: ${f.name} =====\n${f.content}\n`
     ).join('\n');
+    // A neighbouring requisites file does not establish an anonymous
+    // employee's employer. Require confirmation before the card or model sees it.
+    for(const file of fileData) {
+      const source = file.structured_data || {};
+      const isoFile = ['iso', 'suot', 'iso_suot'].includes(archiveProductHint);
+      const hasVerifiedId = !!String(source.company?.unp || '').replace(/\D/g, '');
+      if(!source._source_company_unverified && !(isoFile && !hasVerifiedId)) continue;
+      if(source._source_company_conflict || aiStructuredCompanyConflict(aiCurrentData, source)) {
+        aiRemoveTyping();
+        aiAddMsg('ai', '⚠️ Документы содержат разные компании. Данные не перенесены; загрузите документы одной компании отдельно.');
+        aiLoading = false;
+        document.getElementById('ai-send-btn').disabled = false;
+        return;
+      }
+      const company = aiCompanyForSourceConfirmation(aiCurrentData, source);
+      if(!company) {
+        aiRemoveTyping();
+        aiAddMsg('ai', '⚠️ Не удалось определить организацию. Сначала укажите название компании, затем загрузите документы ещё раз.');
+        aiLoading = false;
+        document.getElementById('ai-send-btn').disabled = false;
+        return;
+      }
+      if(!confirm('В файле «' + file.name + '» не удалось однозначно установить принадлежность данных. Подтверждаете, что они относятся к компании «' + company + '»?')) {
+        aiRemoveTyping();
+        aiAddMsg('ai', '⚠️ Принадлежность данных не подтверждена. Данные не перенесены; проверьте документы и укажите организацию.');
+        aiLoading = false;
+        document.getElementById('ai-send-btn').disabled = false;
+        return;
+      }
+      delete source._source_company_unverified;
+    }
     authoritativeSourceData = aiCombineStructuredSources(fileData.map(f => f.structured_data));
+    if(authoritativeSourceData._source_company_conflict || aiStructuredCompanyConflict(aiCurrentData, authoritativeSourceData)) {
+      aiRemoveTyping();
+      aiAddMsg('ai', '⚠️ Не удалось надёжно установить, что кадровые данные относятся к этой компании, либо обнаружены разные компании. Данные не перенесены, чтобы не смешать карточки. Проверьте файлы и загрузите документы одной компании с указанием её названия отдельно.');
+      aiLoading = false;
+      document.getElementById('ai-send-btn').disabled = false;
+      return;
+    }
     if(Object.keys(authoritativeSourceData).length) {
       // Completed Forms 1–5 are copied directly from Word tables and have priority
       // over model guesses. This prevents loss of experience, inserts and attestations.
       aiCurrentData = aiMergeStructuredSource(aiCurrentData, authoritativeSourceData);
       aiRenderCardFromCurrent();
       archiveCardTransferMessage = aiMakeArchiveCardTransferMessage(authoritativeSourceData);
+      const policyEvidence = aiCurrentData.iso_suot?.policy_evidence;
+      if(policyEvidence?.date_conflict || (policyEvidence?.familiarizations || []).some(row => row.date_conflict)) {
+        aiAddMsg('ai', '⚠️ В загруженных документах обнаружены разные даты политики или ознакомления сотрудников. Спорные даты оставлены на уточнение: проверьте исходные документы перед формированием пакета.');
+      }
     }
   }
 
@@ -4316,6 +4418,7 @@ async function aiReadFile(file, productHint = '') {
   return new Promise((resolve) => {
     const formData = new FormData();
     formData.append('file', uploadFile);
+    formData.append('product', productHint || aiCurrentData?.certification?.standard || '');
     fetch(endpoint, {method:'POST', body: formData})
       .then(response => aiReadJsonResponse(response, 'file'))
       .then(data => {

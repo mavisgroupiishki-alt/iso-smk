@@ -1127,6 +1127,15 @@ def _generated_archive_entry_name(doc):
     return path.as_posix()
 
 
+def _generation_zip_name(company_name, timestamp, task_id):
+    safe_org = re.sub(r'[^\w\-]', '_', str(company_name or ''))
+    safe_task = re.sub(r'[^a-zA-Z0-9_-]', '_', str(task_id or ''))
+    if not safe_task:
+        raise ValueError('Missing generation task identifier')
+    safe_org = safe_org.encode('utf-8')[:180].decode('utf-8', 'ignore')
+    return f'{safe_org}_{timestamp}_{safe_task}.zip'
+
+
 def _run_generation_task(task_id):
     """Build one document package from an already accepted queued task."""
     task = TASKS.get(task_id)
@@ -1161,9 +1170,8 @@ def _run_generation_task(task_id):
         if result.get('error') or not docs:
             raise RuntimeError(result.get('error') or 'Генератор не вернул ни одного документа.')
         org_name = ai_data.get('company', {}).get('name', '')
-        safe_org = re.sub(r'[^\w\-]', '_', org_name)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        zip_path = str(OUT_DIR / f'{safe_org}_{timestamp}.zip')
+        zip_path = str(OUT_DIR / _generation_zip_name(org_name, timestamp, task_id))
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as archive:
             for doc in [*docs, *extra_files]:
                 archive.writestr(_generated_archive_entry_name(doc), doc['bytes'])
@@ -4432,8 +4440,118 @@ def _archive_file_output_needs_retry(text):
 
 
 def _archive_document_blocks(result_text):
-    return re.findall(r'^---\s*(.+?)\s*---(?:\s*⚠️[^\n]*)?\n(.*?)(?=\n\n---|\n\n===|\Z)',
+    return re.findall(r'^---[ \t]*(.+?)[ \t]*---(?:[ \t]*⚠️[^\n]*)?\n(.*?)(?=\n+(?:---|===)|\Z)',
                       str(result_text or ''), flags=re.M | re.S)
+
+
+def _iso_suot_safe_docx(file_bytes: bytes) -> bool:
+    """Bound the expanded DOCX before reading untrusted Word structures."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+            infos = archive.infolist()
+            return (len(infos) <= 3000 and
+                    sum(info.file_size for info in infos) <= 32 * 1024 * 1024 and
+                    any(info.filename == 'word/document.xml' for info in infos) and
+                    not any(info.flag_bits & 1 for info in infos))
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return False
+
+
+def _iso_suot_source_owner(owners: list, paragraphs: list) -> dict:
+    if len(owners) != 1:
+        return {}
+    owner = dict(owners[0])
+    unps = set()
+    for paragraph in paragraphs:
+        unps.update(re.findall(r'\bУНП\s*[:№-]?\s*(\d{9})\b', str(paragraph), re.I))
+    if len(unps) == 1:
+        owner['unp'] = next(iter(unps))
+    elif len(unps) > 1:
+        owner['unp_conflict'] = True
+    return owner
+
+
+def _iso_suot_satisfaction_source(file_bytes: bytes, filename: str) -> dict:
+    """Read actual customer rows without mistaking rating legends for records."""
+    if ('удовлетворенност' not in str(filename).casefold().replace('ё', 'е')
+            or not str(filename).casefold().endswith('.docx') or not _iso_suot_safe_docx(file_bytes)):
+        return {}
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(file_bytes))
+        before = [p.text for p in doc.paragraphs]
+        for table in doc.tables:
+            if not table.rows:
+                continue
+            header = [re.sub(r'\s+', ' ', c.text).casefold().replace('ё', 'е') for c in table.rows[0].cells]
+            if len(header) >= 3 and 'заказчик' in header[0] and 'рекламац' in header[1] and 'оценк' in header[2]:
+                owners = _iso_suot_company_name_candidates('--- подтверждение.docx ---\n' + '\n'.join(before))
+                rows = []
+                for row in table.rows[1:]:
+                    name = _clean_iso_suot_source_value(row.cells[0].text)
+                    if name and len(name) <= 300:
+                        rows.append({'name': name,
+                                     'complaints': _clean_iso_suot_source_value(row.cells[1].text),
+                                     'score': _clean_iso_suot_source_value(row.cells[2].text)})
+                return {'company': _iso_suot_source_owner(owners, before), 'customers': rows}
+            before.extend(c.text for row in table.rows for c in row.cells)
+    except Exception:
+        return {}
+    return {}
+
+
+def _iso_suot_policy_source(file_bytes: bytes, filename: str) -> dict:
+    """Extract dated policy evidence, never infer a signature or a date."""
+    if ('политик' not in str(filename).casefold() or not str(filename).casefold().endswith('.docx')
+            or not _iso_suot_safe_docx(file_bytes)):
+        return {}
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(file_bytes))
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        owners = _iso_suot_company_name_candidates('--- политика.docx ---\n' + '\n'.join(paragraphs))
+        if len(owners) != 1:
+            return {}
+        dates = set()
+        for paragraph in paragraphs:
+            if 'директор' in paragraph.casefold():
+                dates.update(re.findall(r'\b\d{2}\.\d{2}\.\d{4}\b', paragraph))
+        familiarizations = {}
+        for table in doc.tables:
+            if not table.rows or len(table.columns) != 3 or 'фио' not in table.rows[0].cells[0].text.casefold():
+                continue
+            for row in table.rows[1:]:
+                fio = _clean_iso_suot_source_value(row.cells[0].text)
+                date = _clean_iso_suot_source_value(row.cells[2].text)
+                if fio:
+                    key = re.sub(r'\s+', ' ', fio.casefold().replace('ё', 'е')).strip()
+                    item = familiarizations.setdefault(key, {'fio': fio, 'dates': set()})
+                    if date:
+                        item['dates'].add(date)
+            break
+        return {'company': _iso_suot_source_owner(owners, paragraphs), 'approval_date': next(iter(dates)) if len(dates) == 1 else '',
+                'date_conflict': len(dates) > 1,
+                'familiarizations': [{'fio': item['fio'],
+                                      'date': next(iter(item['dates'])) if len(item['dates']) == 1 else '',
+                                      'date_conflict': len(item['dates']) > 1}
+                                     for item in familiarizations.values()]}
+    except Exception:
+        return {}
+
+
+def _iso_suot_single_doc_data(file_bytes: bytes, filename: str) -> dict:
+    satisfaction = _iso_suot_satisfaction_source(file_bytes, filename)
+    policy = _iso_suot_policy_source(file_bytes, filename)
+    source = satisfaction or policy
+    owner = source.get('company') if source else None
+    if not owner:
+        return {}
+    fields = {}
+    if satisfaction.get('customers'):
+        fields['satisfaction_customers'] = satisfaction['customers']
+    if policy:
+        fields['policy_evidence'] = {key: policy[key] for key in ('approval_date', 'date_conflict', 'familiarizations')}
+    return {'company': owner, 'iso_suot': fields} if fields else {}
 
 
 _WORKER_POSITION_STEMS = (
@@ -4530,8 +4648,13 @@ def _iso_suot_company_name_candidates(result_text: str) -> list:
             client_bonus = 40 if any(marker in before for marker in (
                 'заказчик', 'клиент', 'покупатель', 'организация-заказчик',
             )) else 0
+            # In an approved report, the organisation in the approval block
+            # is the document owner, not one of the customers evaluated below.
+            approval_bonus = 100 if re.search(
+                r'утверждаю\s+директор[^«»"]{0,80}$', before, re.I,
+            ) else 0
             score, count = candidates.get(key, (0, 0, name))[:2]
-            candidates[key] = (score + 1 + source_bonus + client_bonus, count + 1, name)
+            candidates[key] = (score + 1 + source_bonus + client_bonus + approval_bonus, count + 1, name)
     if not candidates:
         return []
     ordered = sorted(
@@ -4564,6 +4687,31 @@ def _iso_suot_company_context(result_text: str, company_name: str) -> str:
     if not matches:
         return str(result_text or '')
     return max(matches, key=lambda item: item[0])[1]
+
+
+def _iso_suot_is_staff_source(path: str, content: str = '') -> bool:
+    name = str(path).casefold().replace('ё', 'е').rsplit('/', 1)[-1]
+    if any(word in name for word in ('поставщик', 'заказчик', 'клиент')):
+        return False
+    if any(word in name for word in ('штат', 'сотрудник', 'персонал', 'кадр', 'список', 'работник', 'работающ', 'приказ о приеме')):
+        return True
+    return any('фио' in line.casefold() and 'должност' in line.casefold()
+               for line in str(content or '').splitlines())
+
+
+def _iso_suot_staff_table_text(data: bytes, filename: str) -> str:
+    """Keep Word table cell boundaries for deterministic personnel extraction."""
+    if not filename.casefold().endswith('.docx') or not _iso_suot_safe_docx(data):
+        return ''
+    try:
+        from docx import Document
+        document = Document(io.BytesIO(data))
+        rows = [' | '.join(cell.text.replace('\n', ' ') for cell in row.cells)
+                for table in document.tables for row in table.rows]
+        text = '\n'.join(rows)
+        return text if _iso_suot_is_staff_source(filename, text) else ''
+    except Exception:
+        return ''
 
 
 def _iso_suot_source_staff(result_text: str) -> list:
@@ -4605,10 +4753,7 @@ def _iso_suot_source_staff(result_text: str) -> list:
         re.M,
     )
     for path, block in _archive_document_blocks(result_text):
-        path_low = str(path).casefold().replace('ё', 'е')
-        if not any(marker in path_low for marker in (
-            'штат', 'сотрудник', 'персонал', 'кадр', 'список', 'приказ о приеме', 'приказ о приёме',
-        )):
+        if not _iso_suot_is_staff_source(path, block):
             continue
         lines = str(block).splitlines()
         for index, line in enumerate(lines):
@@ -4642,8 +4787,42 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
     made the browser depend on a later, optional chat response to fill the card.
     """
     full_text = str(result_text or '')
-    company = {}
+    # Staffing files can be combined only after their employers are identified.
+    # Multiple explicitly named employers are a hard stop, not a reason to pick
+    # the most frequent name and merge everybody into that company.
     candidates = _iso_suot_company_name_candidates(full_text)
+    selected = candidates[0] if candidates else {}
+    selected_key = (str(selected.get('form') or '').casefold(), str(selected.get('name') or '').casefold().replace('ё', 'е'))
+    def owner_status(path, block):
+        owners = _iso_suot_company_name_candidates(f'--- {path} ---\n{block}')
+        identities = {(item['form'].casefold(), item['name'].casefold().replace('ё', 'е')) for item in owners}
+        if not identities:
+            return 'unknown'
+        if selected_key not in identities:
+            return 'foreign'
+        return 'verified' if len(identities) == 1 else 'ambiguous'
+    employers = set()
+    employer_unps = set()
+    unverified_staff = False
+    for path, block in _archive_document_blocks(full_text):
+        if not _iso_suot_is_staff_source(path, block):
+            continue
+        owners = _iso_suot_company_name_candidates(f'--- {path} ---\n{block}')
+        # A neighbouring requisites file does not prove who employs these people.
+        if not owners:
+            unverified_staff = True
+        identified = _iso_suot_source_owner(owners, str(block).splitlines())
+        if identified.get('unp_conflict'):
+            return {'_source_company_conflict': True}
+        if identified.get('unp'):
+            employer_unps.add(identified['unp'])
+        else:
+            unverified_staff = True
+        for owner in owners:
+            employers.add((owner['form'].casefold(), owner['name'].casefold().replace('ё', 'е')))
+    if len(employers) > 1 or len(employer_unps) > 1 or (employers and selected_key not in employers):
+        return {'_source_company_conflict': True}
+    company = {}
     if candidates:
         company.update(candidates[0])
     company_context = _iso_suot_company_context(full_text, company.get('name'))
@@ -4651,6 +4830,22 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
     unp = re.search(r'\bУНП\s*[:№]?\s*(\d{7,12})\b', company_context, re.I)
     if unp:
         company['unp'] = unp.group(1)
+        if employer_unps and company['unp'] not in employer_unps:
+            return {'_source_company_conflict': True}
+    elif employers:
+        unverified_staff = True
+    for path, block in _archive_document_blocks(full_text):
+        owners = _iso_suot_company_name_candidates(f'--- {path} ---\n{block}')
+        identity = _iso_suot_source_owner(owners, str(block).splitlines())
+        # A supplier's own requisites identify the counterparty, not the owner
+        # of the uploaded document. They require confirmation, not a hard stop.
+        supplier_source = 'поставщик' in str(path).casefold()
+        if supplier_source:
+            unverified_staff = True
+        elif identity.get('unp') and company.get('unp') and identity['unp'] != company['unp']:
+            return {'_source_company_conflict': True}
+        elif identity.get('unp_conflict') or not identity.get('unp') or not company.get('unp'):
+            unverified_staff = True
     address = re.search(r'(?:Юридическ(?:ий|ого)\s+)?адрес\s*[:—-]\s*([^\n]{5,220})', company_context, re.I)
     if address:
         company['address'] = _clean_iso_suot_source_value(address.group(1))
@@ -4661,10 +4856,16 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
     if email:
         company['email'] = email.group(0)
 
-    director = re.search(
-        r'(?:директор|руководитель)\s*[:—-]\s*'
-        r'([А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2})\b', full_text, re.I,
-    )
+    director = None
+    for path, block in _archive_document_blocks(full_text):
+        if owner_status(path, block) != 'verified':
+            continue
+        director = re.search(
+            r'(?:директор|руководитель)\s*[:—-]\s*'
+            r'([А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){2})\b', str(block), re.I,
+        )
+        if director:
+            break
     if director:
         company['director_fio'] = _clean_iso_suot_source_value(director.group(1))
         company['director_position'] = 'Директор'
@@ -4682,6 +4883,9 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
     scope_candidates = []
     for _path, block in _archive_document_blocks(full_text):
         body = str(block)
+        source_identity = owner_status(_path, block)
+        if source_identity == 'foreign':
+            continue
         # python-docx may flatten paragraphs into one line, therefore a newline
         # alone is not a valid delimiter here.  A signed order's heading ends
         # immediately before «ПРИКАЗЫВАЮ», which is the strongest source.
@@ -4695,6 +4899,8 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
         )
         match = direct or generic
         if match:
+            if source_identity != 'verified':
+                unverified_staff = True
             scope = _clean_iso_suot_source_value(match.group(1))
             if scope and len(scope) <= 220 and not re.search(r'^(?:требует\s+уточнения|не\s+указан)', scope, re.I):
                 scope_candidates.append(scope)
@@ -4713,6 +4919,11 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
     for path, block in _archive_document_blocks(full_text):
         path_low = str(path).casefold().replace('ё', 'е')
         body = str(block)
+        source_identity = owner_status(path, block)
+        if source_identity == 'foreign' and 'поставщик' not in path_low:
+            continue
+        if source_identity != 'verified' and any(marker in path_low for marker in ('объект', 'поставщик', 'удовлетворенност', 'заказчик')):
+            unverified_staff = True
         if 'объект' in path_low:
             for match in re.finditer(r'(?:(?:перечень\s+)?объект(?:ов)?|наименование объекта)\s*[:—-]\s*([^\n]{3,300})', body, re.I):
                 name = _clean_iso_suot_source_value(match.group(1))
@@ -4750,6 +4961,8 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
                     suppliers.append({'name': name})
 
     data = {}
+    if unverified_staff:
+        data['_source_company_unverified'] = True
     if company:
         data['company'] = company
     if scope:
@@ -6293,6 +6506,10 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         if entry[1] in resumed_scan_names
     ]
     structured_fragments = []
+    satisfaction_sources = []
+    policy_sources = []
+    nested_source_conflict = False
+    nested_source_unverified = False
     # A compact receipt for the interface.  Keep names, state and page number
     # only; recognized document contents stay in ``text``/checkpoints and are
     # never duplicated into an API status response.
@@ -6357,8 +6574,19 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                         deadline_cb=deadline_cb, deadline_at=deadline_at,
                     )
                     nested_text = str(nested.get('text') or '')
+                    nested_data = nested.get('structured_data') or {}
+                    if nested_data.get('_source_company_conflict'):
+                        nested_source_conflict = True
+                    if nested_data.get('_source_company_unverified'):
+                        nested_source_unverified = True
+                    nested_owner = nested_data.get('company') or {}
+                    nested_iso = nested_data.get('iso_suot') or {}
+                    if nested_owner and nested_iso.get('satisfaction_customers'):
+                        satisfaction_sources.append({'company': nested_owner, 'customers': nested_iso['satisfaction_customers']})
+                    if nested_owner and nested_iso.get('policy_evidence'):
+                        policy_sources.append({'company': nested_owner, **nested_iso['policy_evidence']})
                     prefix = f"--- {folder + '/' if folder else ''}{short} (вложенный архив) ---"
-                    texts.append(prefix + "\n" + (nested_text or '[Вложенный архив не дал читаемого текста]'))
+                    texts.append(prefix + "\n\n" + (nested_text or '[Вложенный архив не дал читаемого текста]'))
                     set_source_status(fixed_name, 'read_local')
                     continue
                 if parse_company_attestation_docx and short.lower().endswith('.docx'):
@@ -6368,7 +6596,17 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                             structured_fragments.append(structured)
                     except Exception as parse_error:
                         print(f"  ⚠️ Не удалось структурно разобрать {short}: {parse_error}")
+                if str(product) in ('iso', 'iso_suot') and len(data) <= TEXT_INNER_LIMIT:
+                    source = _iso_suot_satisfaction_source(data, short)
+                    if source:
+                        satisfaction_sources.append(source)
+                    policy = _iso_suot_policy_source(data, short)
+                    if policy:
+                        policy_sources.append(policy)
                 txt = extract_text_from_file(data, short)
+                staff_tables = _iso_suot_staff_table_text(data, short) if str(product) in ('iso', 'suot', 'iso_suot') else ''
+                if staff_tables:
+                    txt = (txt or '') + '\n' + staff_tables
                 embedded_count = _embedded_docx_image_count(data, short)
                 # A Word file can contain a short caption plus twenty scanned
                 # pages.  The caption is not a substitute for the scans; read
@@ -6744,6 +6982,59 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         # otherwise they survive only in ``text`` and appear in the card only
         # after a second, unrelated user message reaches the model.
         iso_suot_card_data = _iso_suot_archive_card_data(final_text)
+        if nested_source_conflict or iso_suot_card_data.get('_source_company_conflict'):
+            structured_data['_source_company_conflict'] = True
+        if nested_source_unverified or iso_suot_card_data.get('_source_company_unverified'):
+            structured_data['_source_company_unverified'] = True
+        company_data = iso_suot_card_data.get('company') or {}
+        company_name = str(company_data.get('name') or '').casefold().replace('ё', 'е').strip()
+        company_form = str(company_data.get('form') or '').casefold().strip()
+        company_unp = str(company_data.get('unp') or '').strip()
+        named_sources = [source for source in satisfaction_sources + policy_sources
+                         if str((source.get('company') or {}).get('name') or '').casefold().replace('ё', 'е').strip() == company_name
+                         and str((source.get('company') or {}).get('form') or '').casefold().strip() == company_form]
+        source_unps = {str(source['company'].get('unp')) for source in named_sources if source['company'].get('unp')}
+        ambiguous_identity = len(source_unps) > 1 or any(source['company'].get('unp_conflict') for source in named_sources)
+        if ambiguous_identity:
+            structured_data['_source_company_conflict'] = True
+        def same_company(source):
+            owner = source.get('company') or {}
+            source_unp = str(owner.get('unp') or '').strip()
+            return bool(not ambiguous_identity and company_name and company_form and
+                        not (company_unp and source_unp and company_unp != source_unp) and
+                        str(owner.get('name') or '').casefold().replace('ё', 'е').strip() == company_name and
+                        str(owner.get('form') or '').casefold().strip() == company_form)
+        customers, seen_customers = [], set()
+        for source in satisfaction_sources:
+            if not same_company(source):
+                continue
+            for row in source.get('customers') or []:
+                key = tuple(str(row.get(field) or '').casefold().replace('ё', 'е').strip()
+                            for field in ('name', 'complaints', 'score'))
+                if key[0] and key not in seen_customers:
+                    customers.append(row)
+                    seen_customers.add(key)
+        if customers:
+            structured_data.setdefault('iso_suot', {})['satisfaction_customers'] = customers
+        matching_policies = [source for source in policy_sources if same_company(source)]
+        if matching_policies:
+            approval_dates = {source['approval_date'] for source in matching_policies if source.get('approval_date')}
+            people = {}
+            for source in matching_policies:
+                for row in source.get('familiarizations') or []:
+                    key = str(row.get('fio') or '').casefold().replace('ё', 'е').strip()
+                    if key:
+                        item = people.setdefault(key, {'fio': row['fio'], 'dates': set(), 'date_conflict': False})
+                        item['date_conflict'] = item['date_conflict'] or bool(row.get('date_conflict'))
+                        if row.get('date'):
+                            item['dates'].add(row['date'])
+            structured_data.setdefault('iso_suot', {})['policy_evidence'] = {
+                'approval_date': next(iter(approval_dates)) if len(approval_dates) == 1 and not any(p.get('date_conflict') for p in matching_policies) else '',
+                'date_conflict': len(approval_dates) > 1 or any(p.get('date_conflict') for p in matching_policies),
+                'familiarizations': [{'fio': item['fio'], 'date': next(iter(item['dates'])) if len(item['dates']) == 1 and not item['date_conflict'] else '',
+                                      'date_conflict': len(item['dates']) > 1 or item['date_conflict']}
+                                     for item in people.values()],
+            }
         for section in ('company', 'certification', 'dates'):
             incoming = iso_suot_card_data.get(section)
             if incoming:
@@ -7476,6 +7767,11 @@ class H(http.server.BaseHTTPRequestHandler):
                     self._json({'success':False,'error':'Нет boundary в запросе'},400); return
                 # Разбиваем по boundary
                 parts = body.split(b'--' + boundary)
+                source_product = ''
+                for part in parts:
+                    if b'name="product"' in part and b'\r\n\r\n' in part:
+                        source_product = part.split(b'\r\n\r\n', 1)[1].strip(b'\r\n-').decode('utf-8', 'replace')
+                        break
                 filename = None
                 file_bytes = None
                 for part in parts:
@@ -7535,6 +7831,18 @@ class H(http.server.BaseHTTPRequestHandler):
                             structured_data = merge_company_attestation_sources([fragment])
                     except Exception as parse_error:
                         print(f"  ⚠️ Структурный разбор {filename} не удался: {parse_error}")
+                iso_doc = _iso_suot_single_doc_data(file_bytes, filename)
+                if iso_doc and not structured_data.get('company'):
+                    structured_data.update(iso_doc)
+                tables = _iso_suot_staff_table_text(file_bytes, filename) if source_product in ('iso', 'suot', 'iso_suot') else ''
+                if source_product in ('iso', 'suot', 'iso_suot') and _iso_suot_is_staff_source(filename, f'{text}\n{tables}'):
+                    staff_source = _iso_suot_archive_card_data(f'--- {filename} ---\n{text}\n{tables}')
+                    for flag in ('_source_company_conflict', '_source_company_unverified'):
+                        if staff_source.get(flag):
+                            structured_data[flag] = True
+                    for key in ('company', 'staff'):
+                        if staff_source.get(key):
+                            structured_data[key] = staff_source[key]
                 embedded_scan_count = _embedded_docx_image_count(file_bytes, filename)
                 # Ordinary Word files must return immediately.  A Word document
                 # that only contains pasted scans is handed back to the visual

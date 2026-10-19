@@ -203,7 +203,7 @@ _PERIODIKA_TEMPLATE_KEYS = {
         'smk_doc_4.docx',   # validation schedule (only when welding applies)
         'smk_doc_5.docx',   # quality goals
         'smk_doc_14.docx',  # customer satisfaction with current objects
-        'smk_doc_15.docx',  # construction process report
+        'smk_doc_7.docx',   # document nomenclature
     'smk_doc_16.docx',  # annual measurement-tools calibration schedule
     'smk_doc_22.docx',  # opportunities plan
     'smk_doc_24.docx',  # management review report
@@ -492,7 +492,8 @@ def _ensure_scope_in_report(data: bytes, scope: str) -> bytes:
     return _doc_bytes(doc)
 
 
-def _ensure_satisfaction_objects(data: bytes, objects: list | None) -> bytes:
+def _ensure_satisfaction_objects(data: bytes, objects: list | None,
+                                 previous_customers: list | None = None) -> bytes:
     """Put the supplied project names into the customer-satisfaction report.
 
     The source template has a generic customer table.  Reusing or guessing its
@@ -502,6 +503,13 @@ def _ensure_satisfaction_objects(data: bytes, objects: list | None) -> bytes:
     """
     rows = []
     seen = set()
+    for item in previous_customers or []:
+        name = str(item.get('name') or '').strip() if isinstance(item, dict) else ''
+        key = tuple(_norm(str(item.get(field) or '')) for field in ('name', 'complaints', 'score')) if isinstance(item, dict) else ()
+        if name and key not in seen:
+            seen.add(key)
+            rows.append((name, '', str(item.get('complaints') or ''), str(item.get('score') or '')))
+    seen = {_norm(row[0]) for row in rows}
     for item in objects or []:
         if not isinstance(item, dict):
             continue
@@ -509,13 +517,11 @@ def _ensure_satisfaction_objects(data: bytes, objects: list | None) -> bytes:
         if not name:
             continue
         key = (name, str(item.get('customer') or '').strip())
-        if key in seen:
+        identity = _norm(name)
+        if identity in seen:
             continue
-        seen.add(key)
-        rows.append((name, key[1] or 'ТРЕБУЕТ УТОЧНЕНИЯ'))
-
-    if not rows:
-        return data
+        seen.add(identity)
+        rows.append((name, key[1] or 'ТРЕБУЕТ УТОЧНЕНИЯ', '', ''))
 
     doc = Document(io.BytesIO(data))
     table = next(
@@ -541,11 +547,11 @@ def _ensure_satisfaction_objects(data: bytes, objects: list | None) -> bytes:
         for row in list(table.rows[1:]):
             row._tr.getparent().remove(row._tr)
 
-    for name, customer in rows:
+    for name, customer, complaints, score in rows:
         cells = table.add_row().cells
-        cells[0].text = f'{name}\n{customer}'
-        cells[1].text = '—'
-        cells[2].text = '5'
+        cells[0].text = f'{name}\n{customer}' if customer else name
+        cells[1].text = complaints
+        cells[2].text = score
     return _doc_bytes(doc)
 
 
@@ -734,8 +740,9 @@ def _replace_staff_signature_rows(doc: Document, people: list, date: str) -> Non
         cells[2].text = date
 
 
-def _iso_policy_doc(template_data: bytes, itr: list, dates: dict) -> bytes:
-    """Keep the complete approved policy instead of replacing it with a draft."""
+def _iso_policy_doc(template_data: bytes, itr: list, dates: dict, periodika: bool = False,
+                    evidence: dict | None = None) -> bytes:
+    """Render the policy template; historical dates require the original policy."""
     doc = Document(io.BytesIO(template_data))
     # The source policy has dozens of legacy empty paragraphs before its
     # familiarisation sheet. With a shorter current scope this leaves an almost
@@ -751,7 +758,45 @@ def _iso_policy_doc(template_data: bytes, itr: list, dates: dict) -> bytes:
         # The signature list is its own sheet in the approved policy. Keep it
         # together instead of leaving one employee alone on a third page.
         heading.paragraph_format.page_break_before = True
-    _replace_staff_signature_rows(doc, itr, str(dates.get('document') or dates.get('policy') or ''))
+    if periodika:
+        # The source template is not the organisation's signed policy.  Its
+        # generated date cannot be presented as the original approval date.
+        evidence = evidence if isinstance(evidence, dict) else {}
+        def valid_date(value):
+            try:
+                return datetime.strptime(str(value), '%d.%m.%Y')
+            except (TypeError, ValueError):
+                return None
+        approval = str(evidence.get('approval_date') or '')
+        approval_date = valid_date(approval)
+        for paragraph in doc.paragraphs:
+            updated = re.sub(r'\b\d{2}\.\d{2}\.\d{4}\b',
+                             approval if approval_date else 'ТРЕБУЕТ УТОЧНЕНИЯ', paragraph.text)
+            if updated != paragraph.text:
+                _set_text(paragraph, updated)
+    policy_people = list(itr or [])
+    if periodika:
+        present = {_norm(person.get('fio')) for person in policy_people if person.get('fio')}
+        for row in evidence.get('familiarizations', []):
+            if isinstance(row, dict) and row.get('fio') and _norm(row['fio']) not in present:
+                policy_people.append({'fio': row['fio']})
+                present.add(_norm(row['fio']))
+    _replace_staff_signature_rows(doc, policy_people, '' if periodika else str(dates.get('document') or dates.get('policy') or ''))
+    if periodika:
+        familiarizations = {_norm(row.get('fio')): row for row in evidence.get('familiarizations', []) if isinstance(row, dict) and row.get('fio')}
+        table = next((t for t in doc.tables if len(t.columns) == 3 and t.rows
+                      and 'фио' in t.rows[0].cells[0].text.lower()), None)
+        if table is not None:
+            for row, person in zip(table.rows[1:], policy_people):
+                previous = familiarizations.get(_norm(person.get('fio')))
+                if previous is not None:
+                    value = previous.get('date') or ''
+                    row.cells[2].text = value if valid_date(value) else ''
+                else:
+                    hired = str(person.get('hire_date') or '')
+                    hired_date = valid_date(hired)
+                    if person.get('is_new_employee') is True and hired_date and approval_date and hired_date > approval_date:
+                        row.cells[2].text = hired
     return _doc_bytes(doc)
 
 
@@ -1002,7 +1047,8 @@ def _different_auditor(audited: dict, auditors: list[dict], index: int,
 
 
 def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
-                       template_data: bytes | None = None, profile: dict | None = None) -> bytes:
+                       template_data: bytes | None = None, profile: dict | None = None,
+                       periodika: bool = False) -> bytes:
     if standard == 'iso' and template_data:
         doc = Document(io.BytesIO(template_data))
         period_year = str(dates.get('year') or '')
@@ -1025,7 +1071,7 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
                 auditor = _different_auditor(person, auditors, index, itr)
                 log = journal.add_row().cells
                 values = [
-                    str(dates.get('document') or dates.get('audit') or ''),
+                    '' if periodika else str(dates.get('document') or dates.get('audit') or ''),
                     _person_order_label(person),
                     _role_audit_points_iso(person.get('position', '')),
                     '—', '—', '—', '—', _person_order_label(auditor), '—',
@@ -1064,6 +1110,16 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
         ]
         for i, value in enumerate(values): row[i].text = value
     _make_audit_program_table_readable(doc, table)
+    return _doc_bytes(doc)
+
+
+def _empty_calibration_schedule(data: bytes) -> bytes:
+    """Remove sample-company instruments while retaining the original table format."""
+    doc = Document(io.BytesIO(data))
+    if doc.tables:
+        for row in doc.tables[0].rows[5:]:
+            for cell in row.cells:
+                cell.text = ''
     return _doc_bytes(doc)
 
 
@@ -1921,7 +1977,7 @@ def _supplier_card_doc(company: dict, supplier: dict, comparison_supplier: dict 
     while len(table.rows) < 5:
         table.add_row()
     comparison = table.rows[4].cells
-    comparison_values = ['2', comparison_name or 'ТРЕБУЕТ УТОЧНЕНИЯ', '', '', '', '', '', '', '', '', '', '+']
+    comparison_values = ['2', comparison_name or 'ТРЕБУЕТ УТОЧНЕНИЯ', '', '', '', '', '', '', '', '', '', '+' if comparison_name else '']
     for i, value in enumerate(comparison_values):
         comparison[i].text = value
 
@@ -2470,6 +2526,14 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             'Область работ не сопоставлена с проверенным профилем: пакет сформирован как ИИ-черновик. '
             'Проверьте профильные НПА/ТНПА, риски и инструкции перед применением.'
         )
+    if periodika and 'iso' in wanted_categories:
+        warnings.extend([
+            'Даты фактически проведённых внутренних аудитов в журнале не заполнены: внесите их по подтверждённым записям и сверьте с программой.',
+            'График поверки оставлен пустым: заполните его только по подтверждённым сведениям о средствах измерений и поверке.',
+            'Для сохранения исторических данных проверьте исходную политику, прежние объекты и документы прошлых лет: их автоматическое сохранение пока не подтверждено.',
+            'Сводный отчёт, состав комиссии, приказы и комплект прошлых лет требуют сверки с исходными документами; автоматическая актуализация не подтверждена.',
+            'Сравнительный поставщик автоматически не найден: укажите конкурента для того же товара и подтвердите сведения.',
+        ])
     extra = _date_map(dates)
     total = len(filtered_keys) + 12 + len(itr or []) + len(workers_rows)
     done = 0
@@ -2502,7 +2566,9 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             if key == 'suot_root_16.docx':
                 data = _ensure_scope_in_report(data, scope)
             if key == 'smk_doc_14.docx':
-                data = _ensure_satisfaction_objects(data, objects)
+                data = _ensure_satisfaction_objects(data, objects, (iso_suot or {}).get('satisfaction_customers'))
+            if key == 'smk_doc_16.docx' and periodika:
+                data = _empty_calibration_schedule(data)
             if key == 'smk_doc_15.docx':
                 data = _replace_process_object_count(data, objects)
             if key in {'smk_doc_5.docx', 'smk_doc_22.docx'}:
@@ -2521,7 +2587,8 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             company=render_company, scope_text=scope, dates=dates,
         )
         docs.append({'name': f'{org} - 1 Политика в области качества.docx',
-                     'bytes': _iso_policy_doc(policy_template, itr, dates)})
+                     'bytes': _iso_policy_doc(policy_template, _unique_people(list(itr or []) + list(workers or [])),
+                                              dates, periodika, (iso_suot or {}).get('policy_evidence'))})
         if not periodika:
             # These two ISO appendices are present in the approved manual
             # package (for example, «ЛиссНБК») but had no source templates in
@@ -2566,7 +2633,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             company=render_company, scope_text=scope, dates=dates,
         )
         docs.append({'name': f'{org} - 4.1 Программа внутренних аудитов СМК.docx',
-                     'bytes': _audit_program_doc(company, itr, dates, 'iso', audit_template, profile)})
+                     'bytes': _audit_program_doc(company, itr, dates, 'iso', audit_template, profile, periodika)})
         if not periodika:
             audit_commission = _unique_people(resp.get('auditors') or itr[:3])
             for index, person in enumerate(_unique_people(itr), 1):
@@ -2589,8 +2656,9 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         if not supplier_rows:
             supplier_rows = [{'name':'ТРЕБУЕТ УТОЧНЕНИЯ','type':'ТРЕБУЕТ УТОЧНЕНИЯ'}]
         for idx, supplier in enumerate(supplier_rows, 1):
-            comparison = next((item for item in supplier_rows if item is not supplier
-                               and str(item.get('name') or '').strip()), None)
+            comparison = supplier.get('comparison_supplier')
+            if not isinstance(comparison, dict):
+                comparison = None
             prog(f'Карточка оценки поставщика: {supplier.get("name") or idx}')
             docs.append({'name': f'{org} - Карточка оценки поставщика {idx}.docx',
                          'bytes': _supplier_card_doc(company, supplier, comparison, dates, idx)})
@@ -2698,25 +2766,26 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             prog(order_doc['name'][:50])
             docs.append(order_doc)
 
-    # Profile and provenance live in every generated ZIP.  They make it
-    # inspectable why these texts were used and prevent an AI draft from being
-    # mistaken for an approved human-profile package.
-    prog('Профиль области работ и источники проверки')
-    docs.append({
-        'name': f'{org} - 0 Профиль области работ.docx',
-        'bytes': _scope_profile_doc(company, profile, dates),
-        'archive_path': f'Служебная информация/{org} - 0 Профиль области работ.docx',
-    })
-    docs.append({
-        'name': f'{org} - 0 Реестр официальных источников.docx',
-        'bytes': _official_sources_doc(company, profile, dates),
-        'archive_path': f'Служебная информация/{org} - 0 Реестр официальных источников.docx',
-    })
-    extra_files = [{
-        'name': f'{org} - 0 Отчет происхождения профиля.json',
-        'bytes': _json.dumps(scope_profile_provenance(scope, profile), ensure_ascii=False, indent=2).encode('utf-8'),
-        'archive_path': f'Служебная информация/{org} - 0 Отчет происхождения профиля.json',
-    }]
+    # Initial packages retain provenance; periodic packages report review
+    # requirements as warnings instead of adding a service-information folder.
+    extra_files = []
+    if not periodika:
+        prog('Профиль области работ и источники проверки')
+        docs.append({
+            'name': f'{org} - 0 Профиль области работ.docx',
+            'bytes': _scope_profile_doc(company, profile, dates),
+            'archive_path': f'Служебная информация/{org} - 0 Профиль области работ.docx',
+        })
+        docs.append({
+            'name': f'{org} - 0 Реестр официальных источников.docx',
+            'bytes': _official_sources_doc(company, profile, dates),
+            'archive_path': f'Служебная информация/{org} - 0 Реестр официальных источников.docx',
+        })
+        extra_files = [{
+            'name': f'{org} - 0 Отчет происхождения профиля.json',
+            'bytes': _json.dumps(scope_profile_provenance(scope, profile), ensure_ascii=False, indent=2).encode('utf-8'),
+            'archive_path': f'Служебная информация/{org} - 0 Отчет происхождения профиля.json',
+        }]
 
     # A legacy detailed order and a newer dynamic order can otherwise appear side by
     # side. Collapse them before the final package is returned.
@@ -2737,7 +2806,10 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
 
     for doc in docs:
         name = str(doc.get('name') or 'Документ.docx').replace('\\', '/').split('/')[-1]
-        doc['archive_path'] = str(doc.get('archive_path') or f'{_archive_folder_for_document(name)}/{name}')
+        if periodika:
+            doc['archive_path'] = f'Карточки поставщиков/{name}' if 'Карточка оценки поставщика' in name else name
+        else:
+            doc['archive_path'] = str(doc.get('archive_path') or f'{_archive_folder_for_document(name)}/{name}')
 
     missing = _suot_manifest_missing(docs, itr, workers_rows, dates, periodika) if 'suot' in wanted_categories else []
     if missing:

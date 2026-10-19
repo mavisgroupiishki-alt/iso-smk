@@ -650,7 +650,9 @@ def test_iso_uses_explicit_document_date_and_preserves_approved_forms():
     assert 'Журнал регистрации внутренних аудитов' in audits
     assert 'на 2026 год' in audits
     assert 'ООО «Первый поставщик»' in supplier
-    assert 'ООО «Второй поставщик»' in supplier
+    # A different supplier is not automatically a competitor for this product.
+    assert 'ООО «Второй поставщик»' not in supplier
+    assert 'ТРЕБУЕТ УТОЧНЕНИЯ' in supplier
     assert 'за 2025 год' in report
     assert 'В ОБЛАСТИ:' not in report
     assert 'Производитель работ' not in goals
