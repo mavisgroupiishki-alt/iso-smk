@@ -7988,7 +7988,7 @@ class H(http.server.BaseHTTPRequestHandler):
             elif p=='/api/ai/chat':
                 req=json.loads(body)
                 api_key=os.environ.get('VIBE_API_KEY','')
-                if not api_key and not str(os.environ.get('GEMINI_API_KEY') or '').strip():
+                if not api_key and not str(os.environ.get('GEMINI_API_KEY') or '').strip() and not AI_ROUTER._aiai_enabled():
                     self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
                 messages=req.get('messages',[])
                 product_scope = str(req.get('product') or 'all')
