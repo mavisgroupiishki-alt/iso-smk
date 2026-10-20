@@ -30,11 +30,13 @@ const names = [
   'aiCloneForStorage', 'aiHasMeaningfulValue', 'aiDeepMergeDefined',
   'aiNormIdentity', 'aiIsOfficialStaffRow', 'aiOfficialStaffRows',
   'aiSourceStaffRows',
-  'aiMergeEntityArray', 'aiStructuredCompanyConflict', 'aiMergeStructuredSource', 'aiCompanyForSourceConfirmation', 'aiSourceBatchCompany',
+  'aiMergeEntityArray', 'aiNormCompanyIdentity', 'aiStructuredCompanyConflict', 'aiMergeStructuredSource', 'aiCompanyForSourceConfirmation', 'aiSourceBatchCompany',
 ];
 const context = {};
 vm.createContext(context);
 vm.runInContext(names.map(extractFunction).join('\n\n'), context);
+
+if (context.aiStructuredCompanyConflict({company: {name: 'АГС-монтаж'}}, {company: {name: 'АГC-монтаж'}})) throw new Error('Latin C should not split a Cyrillic company name');
 
 if (context.aiCompanyForSourceConfirmation({}, {}) !== '') throw new Error('unknown company must not be confirmed');
 if (context.aiCompanyForSourceConfirmation({company: {name: 'Альфа'}}, {}) !== 'Альфа') throw new Error('selected company missing');

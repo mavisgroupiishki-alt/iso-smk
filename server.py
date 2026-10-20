@@ -4611,6 +4611,14 @@ def _clean_iso_suot_source_value(value: str) -> str:
     return re.sub(r'\s+', ' ', str(value or '')).strip(' \t\r\n,;:.')
 
 
+def _iso_suot_company_identity(value: str) -> str:
+    """Compare mixed-script OCR lookalikes without changing stored names."""
+    normalized = str(value or '').casefold().replace('ё', 'е')
+    lookalikes = str.maketrans('abcehkmoptxy', 'авсенкмортху')
+    return re.sub(r'[a-zа-я]+', lambda match: match.group().translate(lookalikes)
+                  if re.search(r'[а-я]', match.group()) else match.group(), normalized)
+
+
 def _iso_suot_company_name_candidates(result_text: str) -> list:
     """Find the organisation named repeatedly in ISO/SUOT source documents.
 
@@ -4639,7 +4647,7 @@ def _iso_suot_company_name_candidates(result_text: str) -> list:
             form = _ISO_SUOT_LEGAL_FORMS.get(match.group('form').casefold(), '')
             if not name or not form:
                 continue
-            key = (form, name.casefold().replace('ё', 'е'))
+            key = (form, _iso_suot_company_identity(name))
             if key in seen_in_block:
                 continue
             seen_in_block.add(key)
@@ -4793,10 +4801,10 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
     # the most frequent name and merge everybody into that company.
     candidates = _iso_suot_company_name_candidates(full_text)
     selected = candidates[0] if candidates else {}
-    selected_key = (str(selected.get('form') or '').casefold(), str(selected.get('name') or '').casefold().replace('ё', 'е'))
+    selected_key = (str(selected.get('form') or '').casefold(), _iso_suot_company_identity(selected.get('name')))
     def owner_status(path, block):
         owners = _iso_suot_company_name_candidates(f'--- {path} ---\n{block}')
-        identities = {(item['form'].casefold(), item['name'].casefold().replace('ё', 'е')) for item in owners}
+        identities = {(item['form'].casefold(), _iso_suot_company_identity(item['name'])) for item in owners}
         if not identities:
             return 'unknown'
         if selected_key not in identities:
@@ -4820,7 +4828,7 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
         else:
             unverified_staff = True
         for owner in owners:
-            employers.add((owner['form'].casefold(), owner['name'].casefold().replace('ё', 'е')))
+            employers.add((owner['form'].casefold(), _iso_suot_company_identity(owner['name'])))
     if len(employers) > 1 or len(employer_unps) > 1 or (employers and selected_key not in employers):
         return {'_source_company_conflict': True}
     company = {}

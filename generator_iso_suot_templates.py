@@ -686,6 +686,32 @@ def _rewrite_management_audit_summary(data: bytes, itr: list, dates: dict) -> by
     return _doc_bytes(doc)
 
 
+def _periodika_management_report(data: bytes) -> bytes:
+    """Do not present the initial-package template as historical evidence."""
+    doc = Document(io.BytesIO(data))
+    development_block = False
+    for paragraph in doc.paragraphs:
+        text = paragraph.text
+        normalized = _norm(text)
+        if re.match(r'^2\s+изменения\b', normalized):
+            development_block = False
+        if 'анализ смк ранее не проводился' in normalized:
+            _set_text(paragraph, '1.1 ТРЕБУЕТ УТОЧНЕНИЯ: статус действий по итогам предыдущего анализа руководства.')
+        elif 'разработаны и внедрены следующие стандарты' in normalized:
+            _set_text(paragraph, 'ТРЕБУЕТ УТОЧНЕНИЯ: изменения документов СМК в отчётном периоде по предыдущим материалам.')
+            development_block = True
+        elif 'ранее анализ сильных и слабых сторон организации не проводился' in normalized:
+            _set_text(paragraph, 'ТРЕБУЕТ УТОЧНЕНИЯ: изменения внешних и внутренних факторов по данным предыдущего анализа.')
+            development_block = False
+        elif development_block and (re.match(r'^[-–—\s]*стп\s+смк\b', normalized)
+                                    or normalized.startswith('разработана политика')
+                                    or normalized.startswith('определены цели в области качества')):
+            _set_text(paragraph, 'ТРЕБУЕТ УТОЧНЕНИЯ: документ и изменения в отчётном периоде.')
+        elif development_block and text.strip():
+            development_block = False
+    return _doc_bytes(doc)
+
+
 def _management_responsibles(itr: list) -> str:
     director = next((p for p in itr or [] if 'директор' in _norm(p.get('position'))
                      and 'замест' not in _norm(p.get('position'))), None)
@@ -2563,6 +2589,8 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 data = _normalize_suot_template_facts(data, key, dates, resp)
             if key == 'smk_doc_24.docx':
                 data = _rewrite_management_audit_summary(data, itr, dates)
+                if periodika:
+                    data = _periodika_management_report(data)
             if key == 'suot_root_16.docx':
                 data = _ensure_scope_in_report(data, scope)
             if key == 'smk_doc_14.docx':

@@ -203,6 +203,36 @@ def test_two_employers_in_staffing_documents_stop_automatic_transfer():
     assert not result.get('staff')
 
 
+def test_mixed_script_company_name_is_not_a_different_employer():
+    text = ('--- штат_а.docx ---\nООО «АГС-монтаж» УНП 123456789\nИванов Иван Иванович | Директор\n\n'
+            '--- штат_б.docx ---\nООО «АГC-монтаж» УНП 123456789\nПетров Петр Петрович | Инженер')
+    assert not server._iso_suot_archive_card_data(text).get('_source_company_conflict')
+
+
+def test_periodika_management_report_does_not_claim_initial_development():
+    from docx import Document
+    from io import BytesIO
+    import generator_iso_suot_templates as generator
+    document = Document()
+    for line in ('1.1 Анализ СМК ранее не проводился.',
+                 '- разработаны и внедрены следующие стандарты организации:',
+                 '- СТП СМК 02-2026 Управление рисками;',
+                 'Разработана Политика в области качества;',
+                 'Определены Цели в области качества на 2026г.',
+                 'Сведения о результатах деятельности организации.',
+                 'Ранее анализ сильных и слабых сторон организации не проводился. Данные анализа приведены в таблице 1:'):
+        document.add_paragraph(line)
+    payload = BytesIO()
+    document.save(payload)
+    result = Document(BytesIO(generator._periodika_management_report(payload.getvalue())))
+    content = '\n'.join(p.text for p in result.paragraphs)
+    assert 'ранее не проводился' not in content
+    assert 'разработаны и внедрены' not in content
+    assert 'СТП СМК 02-2026' not in content
+    assert 'Сведения о результатах деятельности организации.' in content
+    assert 'ТРЕБУЕТ УТОЧНЕНИЯ' in content
+
+
 def test_same_name_distinct_unp_in_staffing_stops_transfer():
     text = ('--- штат_а.docx ---\nООО «Тест» УНП 123456789\nИванов Иван Иванович | Директор\n\n'
             '--- штат_б.docx ---\nООО «Тест» УНП 987654321\nПетров Петр Петрович | Инженер')

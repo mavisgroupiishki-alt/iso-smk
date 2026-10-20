@@ -51,12 +51,58 @@ const path = require('path');
         : {name: file.name, content: 'реквизиты', structured_data: {company: {name: 'Альфа', unp: '123456789'}}};
     });
     await page.evaluate(() => {
-      aiCurrentData = {company: {name: 'Чужая', unp: '987654321'}, certification: {standard: 'iso'}};
+      aiCurrentData = {company: {name: 'Чужая', unp: '987654321'}, certification: {standard: 'iso'}, staff: [{fio: 'Свой Сотрудник', position: 'Директор'}]};
       aiAttachedFiles = [{name: 'счет.docx'}];
+      aiPostChatWithRetry = async () => ({success: true, text: JSON.stringify({message: 'Готово', data: {objects: [{name: 'Чужой объект'}]}})});
     });
     await page.evaluate(() => aiSend());
-    const conflict = await page.evaluate(() => ({card: aiCurrentData, files: aiAttachedFiles.length}));
-    if (conflict.card.company?.name !== 'Чужая' || conflict.files !== 1) throw new Error('conflicting company must be refused and file retained');
+    const conflict = await page.evaluate(() => ({card: aiCurrentData, files: aiAttachedFiles.length, message: document.getElementById('ai-messages').textContent}));
+    if (conflict.files !== 0 || conflict.message.includes('Документы содержат разные компании')) throw new Error('ISO upload was blocked on company mismatch');
+    if (conflict.card.company?.name !== 'Чужая' || conflict.card.staff?.length !== 1 || conflict.card.objects?.length) throw new Error('conflicting source polluted the company card: ' + JSON.stringify(conflict.card));
+    await page.evaluate(() => {
+      aiCurrentData = {company: {name: 'АГС-монтаж'}, certification: {standard: 'iso'}, staff: [{fio: 'Свой Сотрудник', position: 'Директор'}]};
+      aiAttachedFiles = [{name: 'архив.rar'}];
+      aiReadFile = async file => ({name: file.name, content: 'Исходный текст архива', structured_data: {_source_company_conflict: true, company: {name: 'АГС-монтаж'}, staff: [{fio: 'Чужой Сотрудник', position: 'Директор'}]}});
+      window.modelReceivedArchive = false;
+      window.conflictedCalls = 0;
+      aiPostChatWithRetry = async payload => {
+        window.conflictedCalls++;
+        window.modelReceivedArchive = payload.messages.some(message => message.content.includes('Исходный текст архива'));
+        return {success: true, text: JSON.stringify({message: 'Готово', data: {objects: [{name: 'Чужой объект'}]}})};
+      };
+      document.getElementById('ai-input').value = 'добавь объект';
+    });
+    await page.evaluate(() => aiSend());
+    if (!(await page.evaluate(() => window.modelReceivedArchive))) throw new Error('conflicted archive text was not sent for analysis');
+    const conflictedArchiveCard = await page.evaluate(() => aiCurrentData);
+    if (conflictedArchiveCard.staff?.length !== 1 || conflictedArchiveCard.staff[0].fio !== 'Свой Сотрудник' || conflictedArchiveCard.objects?.length) throw new Error('conflicted archive polluted the company card');
+    if (await page.evaluate(() => window.conflictedCalls !== 1 || aiHistory.some(message => message.content.includes('Исходный текст архива')))) throw new Error('conflict text persisted or correction retry was called');
+    await page.evaluate(() => {
+      aiCurrentData = {company: {name: 'Альфа', unp: '123456789'}, certification: {standard: 'iso'}};
+      aiAttachedFiles = [{name: 'реквизиты.docx'}];
+      aiReadFile = async file => ({name: file.name, content: 'ЧУЖОЙ ТЕКСТ ТОЛЬКО ИИ', structured_data: {company: {name: 'Альфа', unp: '123456789'}, staff: [{fio: 'Чужой Сотрудник', position: 'Директор'}]}});
+      window.modelOnlyConflictCalls = 0;
+      aiPostChatWithRetry = async () => {
+        window.modelOnlyConflictCalls++;
+        return {success: true, text: JSON.stringify({message: 'Готово', data: {company: {name: 'Бета', unp: '987654321'}, objects: [{name: 'Чужой объект'}]}})};
+      };
+      document.getElementById('ai-input').value = 'исправь объект';
+    });
+    await page.evaluate(() => aiSend());
+    if (await page.evaluate(() => window.modelOnlyConflictCalls !== 1 || aiCurrentData.objects?.length || aiCurrentData.staff?.length || aiHistory.some(message => message.content.includes('ЧУЖОЙ ТЕКСТ ТОЛЬКО ИИ')))) throw new Error('model-only conflict bypassed protection');
+    await page.evaluate(() => {
+      aiCurrentData = {company: {name: 'Альфа', unp: '123456789'}, certification: {standard: 'iso'}};
+      aiAttachedFiles = [{name: 'реквизиты.docx'}];
+      aiReadFile = async file => ({name: file.name, content: 'реквизиты', structured_data: {company: {name: 'Альфа', unp: '123456789'}}});
+      window.uploadCorrectionCalls = 0;
+      aiPostChatWithRetry = async () => {
+        window.uploadCorrectionCalls++;
+        return {success: true, text: JSON.stringify({message: 'Готово', data: {}})};
+      };
+      document.getElementById('ai-input').value = 'исправь объект';
+    });
+    await page.evaluate(() => aiSend());
+    if (await page.evaluate(() => window.uploadCorrectionCalls !== 1)) throw new Error('upload correction bypassed validation via retry');
     await page.evaluate(() => {
       aiCurrentData = {company: {name: 'Альфа', unp: '123456789'}, certification: {standard: 'iso'}};
       aiAttachedFiles = [];

@@ -513,6 +513,12 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
           </div>
         </div>
         <div class="ai-mode-help">Новый пакет — для первичного оформления. Периодика / ИК — только для обновления ранее оформленного пакета.</div>
+        <div id="ai-previous-package-control" style="display:none;margin-top:8px">
+          <label class="ai-file-action raw">📁 Загрузить предыдущий пакет
+            <input id="ai-previous-package-input" type="file" accept=".zip,.rar" style="display:none" onchange="aiHandlePreviousPackage(this)">
+          </label>
+          <span class="ai-input-help">Прошлые документы — источник для ИК; изменения прикрепляйте отдельно. Оригиналы пока не копируются в новый архив.</span>
+        </div>
         <div id="ai-scope-profile-choice" style="display:none;margin-top:8px;padding:8px 10px;border:1px solid #E8B39F;border-radius:8px;background:#FFF8F0;font-size:11px;color:#825345"></div>
       </section>
 
@@ -1553,6 +1559,8 @@ function aiSyncRequestProfileControls() {
   document.querySelectorAll('[data-package-mode]').forEach(button => {
     button.classList.toggle('active', button.dataset.packageMode === aiSelectedPackageMode);
   });
+  const previousPackage = document.getElementById('ai-previous-package-control');
+  if(previousPackage) previousPackage.style.display = aiSelectedPackageMode === 'periodika' ? '' : 'none';
   const scope = document.getElementById('ai-request-scope');
   if(scope && document.activeElement !== scope) scope.value = cert.scope || '';
   aiRenderScopeProfileChoice();
@@ -3522,11 +3530,18 @@ function aiMergeItrRecords(baseList, patchList, sourceAuthoritative=false) {
   return order.map(key => map.get(key));
 }
 
+function aiNormCompanyIdentity(value) {
+  const normalized = aiNormIdentity(value);
+  const lookalikes = {a:'а', b:'в', c:'с', e:'е', h:'н', k:'к', m:'м', o:'о', p:'р', t:'т', x:'х', y:'у'};
+  return normalized.replace(/[a-zа-я]+/g, word => /[а-я]/.test(word)
+    ? word.replace(/[abcehkmoptxy]/g, char => lookalikes[char]) : word);
+}
+
 function aiStructuredCompanyConflict(baseData, sourceData) {
   const a = baseData?.company || {}, b = sourceData?.company || {};
   const unpA = String(a.unp || '').replace(/\D/g, ''), unpB = String(b.unp || '').replace(/\D/g, '');
   if(unpA && unpB) return unpA !== unpB;
-  const nameA = aiNormIdentity(a.name), nameB = aiNormIdentity(b.name);
+  const nameA = aiNormCompanyIdentity(a.name), nameB = aiNormCompanyIdentity(b.name);
   const formA = aiNormIdentity(a.form), formB = aiNormIdentity(b.form);
   return !!(nameA && nameB && (nameA !== nameB || (formA && formB && formA !== formB)));
 }
@@ -3535,28 +3550,35 @@ function aiCompanyForSourceConfirmation(current, source) {
   return String(current?.company?.name || source?.company?.name || '').trim();
 }
 
-function aiSourceBatchCompany(current, files) {
+function aiSourceBatchCompany(current, files, allowUnverified = false) {
   const sources = [current || {}, ...(files || []).map(file => file.structured_data || {})];
   for(let i = 0; i < sources.length; i++) {
-    if(sources[i]._source_company_conflict) return {conflict: true, name: ''};
+    if(!allowUnverified && sources[i]._source_company_conflict) return {conflict: true, name: ''};
     for(let j = 0; j < i; j++) {
-      if(aiStructuredCompanyConflict(sources[i], sources[j])) return {conflict: true, name: ''};
+      if(!allowUnverified && aiStructuredCompanyConflict(sources[i], sources[j])) return {conflict: true, name: ''};
     }
   }
   const named = sources.find(source => String(source.company?.name || '').trim());
   return {conflict: false, name: String(named?.company?.name || '').trim()};
 }
 
-function aiMergeStructuredSource(baseData, sourceData) {
+function aiMergeStructuredSource(baseData, sourceData, allowUnverified = false) {
   const base = JSON.parse(JSON.stringify(baseData || {}));
-  const source = sourceData || {};
-  if(source._source_company_unverified) {
+  const source = {...(sourceData || {})};
+  if(!allowUnverified && source._source_company_unverified) {
     base._source_company_unverified = true;
     return base;
   }
-  if(source._source_company_conflict || aiStructuredCompanyConflict(base, source)) {
+  if(!allowUnverified && (source._source_company_conflict || aiStructuredCompanyConflict(base, source))) {
     base._source_company_conflict = true;
     return base;
+  }
+  if(allowUnverified) {
+    // The user explicitly chose this card and uploaded the files. Keep its
+    // identity and do not merge a demonstrably conflicting source into it.
+    // The raw file still goes to analysis so this does not block the upload.
+    if(source._source_company_conflict || aiStructuredCompanyConflict(base, source)) return base;
+    delete source._source_company_unverified;
   }
   ['company','certification','dates'].forEach(section => {
     if(!source[section]) return;
@@ -3651,8 +3673,8 @@ function aiMergeStructuredSource(baseData, sourceData) {
   return base;
 }
 
-function aiCombineStructuredSources(parts) {
-  return (parts || []).filter(Boolean).reduce((acc, part) => aiMergeStructuredSource(acc, part), {});
+function aiCombineStructuredSources(parts, allowUnverified = false) {
+  return (parts || []).filter(Boolean).reduce((acc, part) => aiMergeStructuredSource(acc, part, allowUnverified), {});
 }
 
 function aiArchiveCardTransferDescription(sourceData) {
@@ -3826,6 +3848,8 @@ function aiBuildArchivePeriodikaContext(text, filesContent) {
   return `ЭТО ПЕРИОДИКА: ${label}. НАЙДЕНЫ РАНЕЕ СОХРАНЁННЫЕ ДАННЫЕ КОМПАНИИ ИЗ ЗАГРУЖЕННОГО ПРЕДЫДУЩЕГО ПАКЕТА. `
     + `Это периодика ${label}: используй загруженный пакет как базу карточки, извлеки из него реквизиты, `
     + 'область, штат, рабочие профессии, объекты, поставщиков и сведения по охране труда. '
+    + 'Это исторический источник, а не вновь сформированный пакет. Не утверждай, что новый пакет создан. '
+    + 'Исторические штат, даты и состав комиссии не считай текущими без подтверждения; отдельно переданные текущие документы имеют приоритет. '
     + 'Не создавай пустую новую компанию и не теряй сведения из пакета. '
     + 'Дату выезда и данные, которые могли измениться за период, уточни только если пользователь их не указал.\n\n';
 }
@@ -4105,6 +4129,11 @@ async function aiSend() {
 
   // Показываем сообщение пользователя
   const submittedFiles = aiAttachedFiles.slice();
+  const previousFiles = new Set(submittedFiles.filter(file => aiPreviousPackageFiles.has(file)));
+  if(previousFiles.size && aiSelectedPackageMode !== 'periodika') {
+    aiAddMsg('ai', 'Для загрузки предыдущего пакета выберите «Периодика / ИК» или удалите его из вложений.');
+    return;
+  }
   const fileNames = submittedFiles.map(f=>f.name).join(', ');
   const displayText = text + (fileNames ? (text ? '\n📎 ' : '📎 ') + fileNames : '');
   aiAddMsg('user', displayText);
@@ -4167,6 +4196,17 @@ async function aiSend() {
   let filesContent = '';
   let authoritativeSourceData = {};
   let archiveCardTransferMessage = '';
+  let archiveIdentityNeedsReview = false;
+  let pendingStructuredSource = false;
+  function commitStructuredSource(allowIsoUpload) {
+    aiCurrentData = aiMergeStructuredSource(aiCurrentData, authoritativeSourceData, allowIsoUpload);
+    aiRenderCardFromCurrent();
+    archiveCardTransferMessage = aiMakeArchiveCardTransferMessage(authoritativeSourceData);
+    const policyEvidence = aiCurrentData.iso_suot?.policy_evidence;
+    if(policyEvidence?.date_conflict || (policyEvidence?.familiarizations || []).some(row => row.date_conflict)) {
+      aiAddMsg('ai', '⚠️ В загруженных документах обнаружены разные даты политики или ознакомления сотрудников. Спорные даты оставлены на уточнение: проверьте исходные документы перед формированием пакета.');
+    }
+  }
   if(submittedFiles.length > 0) {
     const total = submittedFiles.length;
     const BATCH = 2;
@@ -4204,12 +4244,14 @@ async function aiSend() {
       return;
     }
 
-    filesContent = fileData.map(f =>
-      `\n===== ФАЙЛ: ${f.name} =====\n${f.content}\n`
+    filesContent = fileData.map((f, index) =>
+      `\n===== ${previousFiles.has(submittedFiles[index]) ? 'ПРЕДЫДУЩИЙ ПАКЕТ' : 'ТЕКУЩИЙ ИСХОДНЫЙ ФАЙЛ'}: ${f.name} =====\n${f.content}\n`
     ).join('\n');
     // A requisites file can identify the batch, but it does not by itself
     // prove that anonymous staff belong to that company: ask per file.
-    const batchCompany = aiSourceBatchCompany(aiCurrentData, fileData);
+    const allowIsoUpload = ['iso', 'suot', 'iso_suot'].includes(archiveProductHint);
+    if(allowIsoUpload) archiveIdentityNeedsReview = aiSourceBatchCompany(aiCurrentData, fileData).conflict;
+    const batchCompany = aiSourceBatchCompany(aiCurrentData, fileData, allowIsoUpload);
     if(batchCompany.conflict) {
       aiRemoveTyping();
       restoreDraft();
@@ -4223,8 +4265,12 @@ async function aiSend() {
       const source = file.structured_data || {};
       const isoFile = ['iso', 'suot', 'iso_suot'].includes(archiveProductHint);
       const hasVerifiedId = !!String(source.company?.unp || '').replace(/\D/g, '');
+      if(isoFile && source._source_company_conflict) {
+        // Analyse the raw text, but do not merge a source with conflicting identities.
+        continue;
+      }
       if(!source._source_company_unverified && !(isoFile && !hasVerifiedId)) continue;
-      if(source._source_company_conflict || aiStructuredCompanyConflict(aiCurrentData, source)) {
+      if(!isoFile && (source._source_company_conflict || aiStructuredCompanyConflict(aiCurrentData, source))) {
         aiRemoveTyping();
         restoreDraft();
         aiAddMsg('ai', '⚠️ Документы содержат разные компании. Данные не перенесены; загрузите документы одной компании отдельно.');
@@ -4254,11 +4300,32 @@ async function aiSend() {
       }
       delete source._source_company_unverified;
     }
-    authoritativeSourceData = aiCombineStructuredSources(fileData.map(f => f.structured_data));
-    if(confirmedBatchCompany && !authoritativeSourceData.company?.name) {
+    const sourceParts = fileData.map((file, index) => {
+      const previous = previousFiles.has(submittedFiles[index]);
+      const source = {...(file.structured_data || {})};
+      if(previous) {
+        // Prior staff and audit dates are historical, not proof of the current state.
+        delete source.staff;
+        delete source.workers;
+        delete source.dates;
+        if(source.company) {
+          source.company = {...source.company};
+          delete source.company.director_fio;
+          delete source.company.director_position;
+          delete source.company.scope;
+        }
+        if(source.certification) {
+          source.certification = {...source.certification};
+          delete source.certification.audit_date;
+        }
+      }
+      return {previous, source};
+    }).sort((a, b) => Number(b.previous) - Number(a.previous));
+    authoritativeSourceData = archiveIdentityNeedsReview ? {} : aiCombineStructuredSources(sourceParts.map(part => part.source), allowIsoUpload);
+    if(!archiveIdentityNeedsReview && confirmedBatchCompany && !authoritativeSourceData.company?.name) {
       authoritativeSourceData.company = {...(authoritativeSourceData.company || {}), name: confirmedBatchCompany};
     }
-    if(authoritativeSourceData._source_company_conflict || aiStructuredCompanyConflict(aiCurrentData, authoritativeSourceData)) {
+    if(!allowIsoUpload && (authoritativeSourceData._source_company_conflict || aiStructuredCompanyConflict(aiCurrentData, authoritativeSourceData))) {
       aiRemoveTyping();
       restoreDraft();
       aiAddMsg('ai', '⚠️ Не удалось надёжно установить, что кадровые данные относятся к этой компании, либо обнаружены разные компании. Данные не перенесены, чтобы не смешать карточки. Проверьте файлы и загрузите документы одной компании с указанием её названия отдельно.');
@@ -4269,13 +4336,8 @@ async function aiSend() {
     if(Object.keys(authoritativeSourceData).length) {
       // Completed Forms 1–5 are copied directly from Word tables and have priority
       // over model guesses. This prevents loss of experience, inserts and attestations.
-      aiCurrentData = aiMergeStructuredSource(aiCurrentData, authoritativeSourceData);
-      aiRenderCardFromCurrent();
-      archiveCardTransferMessage = aiMakeArchiveCardTransferMessage(authoritativeSourceData);
-      const policyEvidence = aiCurrentData.iso_suot?.policy_evidence;
-      if(policyEvidence?.date_conflict || (policyEvidence?.familiarizations || []).some(row => row.date_conflict)) {
-        aiAddMsg('ai', '⚠️ В загруженных документах обнаружены разные даты политики или ознакомления сотрудников. Спорные даты оставлены на уточнение: проверьте исходные документы перед формированием пакета.');
-      }
+      if(!allowIsoUpload || aiCanFinishArchiveWithoutChat(text, authoritativeSourceData, submittedFiles)) commitStructuredSource(allowIsoUpload);
+      else pendingStructuredSource = true;
     }
   }
 
@@ -4301,9 +4363,10 @@ async function aiSend() {
   // A plain archive upload already has deterministic data from the reader.
   // Do not ask the chat model to repeat a long staff list: a token-limited
   // response used to arrive as incomplete JSON and prevented card transfer.
-  if(aiCanFinishArchiveWithoutChat(text, authoritativeSourceData, submittedFiles)) {
+  if(!archiveIdentityNeedsReview && aiCanFinishArchiveWithoutChat(text, authoritativeSourceData, submittedFiles)) {
     const parsed = {
-      message: archiveCardTransferMessage || 'Данные из архива перенесены в карточку.',
+      message: (archiveCardTransferMessage || 'Данные из архива перенесены в карточку.') +
+        (previousFiles.size ? ' Прошлый штат, рабочие профессии и даты не считаются текущими: загрузите актуальные сведения и проверьте карточку.' : ''),
       questions: [],
     };
     aiRemoveTyping();
@@ -4320,7 +4383,8 @@ async function aiSend() {
   // структурированные данные не поменяются, интерфейс это обнаружит и не соврёт пользователю.
   const explicitStaff = aiExtractExplicitStaffFromText(text);
   let explicitStaffMessage = '';
-  if(explicitStaff.length) {
+  function applyExplicitStaff() {
+    if(!explicitStaff.length) return;
     const beforeKeys = new Set(aiCardStaffRows(aiCurrentData.staff).map(row => aiNormalizeFioKey(row.fio)));
     aiRenderCard({staff: explicitStaff});
     const added = explicitStaff.filter(row => !beforeKeys.has(aiNormalizeFioKey(row.fio)));
@@ -4328,11 +4392,13 @@ async function aiSend() {
       ? `В карточку добавлены сотрудники: ${added.map(row => row.fio).join(', ')}.`
       : 'Данные перечисленных сотрудников обновлены в карточке.';
   }
+  const deferExplicitStaff = !!filesContent && ['iso', 'suot', 'iso_suot'].includes(archiveProductHint);
+  if(!deferExplicitStaff && !archiveIdentityNeedsReview) applyExplicitStaff();
   const correctionBeforeFingerprint = aiCardFingerprint(aiCurrentData);
   const correctionRequested = aiIsCorrectionIntent(text);
 
   // Собираем контент для ИИ
-  const archivePeriodikaContext = aiBuildArchivePeriodikaContext(text, filesContent);
+  const archivePeriodikaContext = aiBuildArchivePeriodikaContext(text, previousFiles.size ? filesContent : '');
   let content = '';
   if(savedCompanyContext) content += savedCompanyContext;
   if(archivePeriodikaContext) content += archivePeriodikaContext;
@@ -4347,11 +4413,14 @@ async function aiSend() {
   }
   content += text ? 'ЗАПРОС: ' + text : 'Проанализируй файлы и заполни карточку компании.';
 
-  aiHistory.push({role:'user', content});
+  aiHistory.push({role:'user', content: archiveIdentityNeedsReview
+    ? 'Загружены документы с неподтверждённой принадлежностью; данные не перенесены.' : content});
 
   try {
+    const requestHistory = aiHistory.slice(-10);
+    if(archiveIdentityNeedsReview) requestHistory[requestHistory.length - 1] = {role:'user', content};
     const result = await aiPostChatWithRetry({
-      messages: aiHistory.slice(-10), product: archiveProductHint
+      messages: requestHistory, product: archiveProductHint
     });
     aiRemoveTyping();
 
@@ -4359,10 +4428,39 @@ async function aiSend() {
 
     let parsed = aiPreventFalseGenerationClaim(aiParseResponse(result.text));
 
-    if(parsed.data && (parsed.data._source_company_conflict
+    const allowIsoUpload = !!filesContent && ['iso', 'suot', 'iso_suot'].includes(archiveProductHint);
+    if(archiveIdentityNeedsReview) {
+      // A model response may omit the company name. Never merge any part of
+      // a batch whose ownership is known to be in conflict.
+      parsed.data = {};
+      parsed.questions = [];
+      parsed.message = 'Документы прочитаны, но данные не перенесены: проверьте, одной ли организации принадлежат файлы и карточка.';
+    }
+    if(!allowIsoUpload && parsed.data && (parsed.data._source_company_conflict
         || aiStructuredCompanyConflict(aiCurrentData, parsed.data)
         || aiStructuredCompanyConflict(authoritativeSourceData, parsed.data))) {
       throw new Error('ИИ вернул сведения другой организации. Ответ не внесён в карточку; проверьте данные и повторите запрос.');
+    }
+    if(allowIsoUpload && parsed.data && (parsed.data._source_company_conflict || aiStructuredCompanyConflict(aiCurrentData, parsed.data) || aiStructuredCompanyConflict(authoritativeSourceData, parsed.data))) {
+      archiveIdentityNeedsReview = true;
+      aiHistory[aiHistory.length - 1] = {role:'user', content:'Загружены документы с неподтверждённой принадлежностью; часть данных не перенесена.'};
+      parsed.data = {};
+      parsed.questions = [];
+      parsed.message = 'Документ прочитан, но часть данных не перенесена: проверьте реквизиты компании в карточке и исходных файлах.';
+    }
+    if(pendingStructuredSource && !archiveIdentityNeedsReview) commitStructuredSource(true);
+    if(deferExplicitStaff && !archiveIdentityNeedsReview) applyExplicitStaff();
+    if(previousFiles.size && parsed.data) {
+      // A model cannot prove that a value in an old package is still current.
+      // Current-document values are merged separately from deterministic source data.
+      delete parsed.data.dates;
+      delete parsed.data.workers;
+      if(parsed.data.company) {
+        delete parsed.data.company.director_fio;
+        delete parsed.data.company.director_position;
+        delete parsed.data.company.scope;
+      }
+      if(parsed.data.certification) delete parsed.data.certification.audit_date;
     }
     if(filesContent && ['iso', 'suot', 'iso_suot'].includes(archiveProductHint) && Array.isArray(parsed.data?.staff)) {
       const confirmed = new Map(aiCardStaffRows(aiCurrentData.staff).map(row => [aiNormIdentity(row.fio || row.name || row.full_name), row]));
@@ -4377,9 +4475,9 @@ async function aiSend() {
         parsed.message = 'Часть сведений о сотрудниках не удалось подтвердить по исходным данным. Они не внесены в карточку; проверьте штатное расписание и добавьте их вручную.';
       }
     }
-    if(parsed.data || Object.keys(authoritativeSourceData).length) {
+    if(!archiveIdentityNeedsReview && (parsed.data || Object.keys(authoritativeSourceData).length)) {
       let dataForCard = Object.keys(authoritativeSourceData).length
-        ? aiMergeStructuredSource(parsed.data || {}, authoritativeSourceData)
+        ? aiMergeStructuredSource(parsed.data || {}, authoritativeSourceData, allowIsoUpload)
         : parsed.data;
       dataForCard = aiApplyRequestedPackageMode(dataForCard, text);
       aiRenderCard(dataForCard);
@@ -4390,7 +4488,7 @@ async function aiSend() {
       aiApplySelectedRequestProfile(aiCurrentData);
       aiRenderCardFromCurrent();
     }
-    if(correctionRequested) {
+    if(correctionRequested && !archiveIdentityNeedsReview && !deferExplicitStaff) {
       parsed = await aiRetryCorrectionIfNeeded(
         text, parsed, correctionBeforeFingerprint,
         aiCurrentData?.certification?.standard || 'all'
@@ -4407,6 +4505,11 @@ async function aiSend() {
         /данные\s+карточки\s+обновлены\.?/i,
         archiveCardTransferMessage,
       );
+    }
+    if(archiveIdentityNeedsReview) {
+      parsed.message = `${parsed.message || 'Документы прочитаны.'}\nПроверьте реквизиты и персонал: часть данных требует проверки и могла не попасть в карточку.`;
+    } else if(previousFiles.size) {
+      parsed.message = `${parsed.message || 'Предыдущий пакет прочитан.'}\nПрошлый штат, рабочие профессии и даты не считаются текущими. Даже если вы приложили актуальные документы, проверьте в карточке директора, сотрудников, профессии и даты: часть этих сведений может потребовать повторного ввода.`;
     }
     const cleanHistoryPayload = JSON.stringify(parsed);
     aiHistory.push({role:'assistant', content: cleanHistoryPayload});
@@ -4428,20 +4531,29 @@ async function aiSend() {
 }
 
 let aiAttachedFiles = [];
+const aiPreviousPackageFiles = new WeakSet();
 
-function aiHandleFiles(files) {
+function aiHandleFiles(files, previousPackage = false) {
   Array.from(files).forEach(f => {
-    if(!aiAttachedFiles.find(a => a.name === f.name)) aiAttachedFiles.push(f);
+    const existing = aiAttachedFiles.find(a => a.name === f.name && aiPreviousPackageFiles.has(a) === previousPackage);
+    if(!existing) aiAttachedFiles.push(f);
+    if(previousPackage) aiPreviousPackageFiles.add(existing || f);
   });
   document.getElementById('ai-file-input').value = '';
   aiRenderFileList();
+}
+
+function aiHandlePreviousPackage(input) {
+  if(aiSelectedPackageMode !== 'periodika') return;
+  aiHandleFiles(input.files, true);
+  input.value = '';
 }
 
 function aiRenderFileList() {
   const box = document.getElementById('ai-file-list');
   box.innerHTML = aiAttachedFiles.map((f,i) => `
     <div style="display:flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;background:#F3E3E6;border:0.5px solid #C3A8A0;font-size:10.5px;color:#A56B75">
-      📄 ${f.name}
+      📄 ${aiPreviousPackageFiles.has(f) ? 'Предыдущий пакет: ' : ''}${aiEscapeHtml(f.name)}
       <span onclick="aiRemoveFile(${i})" style="cursor:pointer;opacity:.7;margin-left:2px">✕</span>
     </div>`).join('');
 }
