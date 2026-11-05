@@ -31,6 +31,7 @@ const names = [
   'aiNormIdentity', 'aiIsOfficialStaffRow', 'aiOfficialStaffRows',
   'aiSourceStaffRows',
   'aiMergeEntityArray', 'aiNormCompanyIdentity', 'aiStructuredCompanyConflict', 'aiMergeStructuredSource', 'aiCompanyForSourceConfirmation', 'aiSourceBatchCompany',
+  'aiPrepareIsoSourcesForSelectedCompany',
 ];
 const context = {};
 vm.createContext(context);
@@ -41,6 +42,26 @@ if (context.aiStructuredCompanyConflict({company: {name: 'АГС-монтаж'}}
 if (context.aiCompanyForSourceConfirmation({}, {}) !== '') throw new Error('unknown company must not be confirmed');
 if (context.aiCompanyForSourceConfirmation({company: {name: 'Альфа'}}, {}) !== 'Альфа') throw new Error('selected company missing');
 if (context.aiCompanyForSourceConfirmation({}, {company: {name: 'Бета'}}) !== 'Бета') throw new Error('source company missing');
+
+// A selected card is an explicit user choice.  A supplier's own legal entity
+// must never turn the whole ISO/SUOT upload into a "different companies"
+// rejection or replace the customer company in the card.
+const selectedCompany = {company: {name: 'Нова Констракт', form: 'ООО', unp: '591050579'}};
+const selectedSources = context.aiPrepareIsoSourcesForSelectedCompany(selectedCompany, [
+  {company: {name: 'Лакокраска', form: 'ООО', unp: '190000001'},
+   suppliers: [{name: 'ООО «Лакокраска»'}],
+   staff: [{fio: 'Иванов Иван Иванович', position: 'Маляр'}]},
+]);
+if (context.aiSourceBatchCompany(selectedCompany, selectedSources, true).conflict) {
+  throw new Error('supplier legal entity must not reject a selected ISO/SUOT company card');
+}
+const selectedMerged = context.aiMergeStructuredSource(selectedCompany, selectedSources[0], true);
+if (selectedMerged.company.name !== 'Нова Констракт' || selectedMerged.company.unp !== '591050579') {
+  throw new Error('supplier requisites replaced the selected company card');
+}
+if (selectedMerged.suppliers[0].name !== 'ООО «Лакокраска»' || selectedMerged.staff[0].fio !== 'Иванов Иван Иванович') {
+  throw new Error('selected ISO/SUOT upload did not transfer supplier and staff data');
+}
 
 const identity = context.aiSourceBatchCompany({}, [
   {structured_data: {_source_company_unverified: true, staff: [{fio: 'Иванов Иван Иванович'}]}},

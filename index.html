@@ -3566,6 +3566,24 @@ function aiSourceBatchCompany(current, files, allowUnverified = false) {
   return {conflict: false, name: String(named?.company?.name || '').trim()};
 }
 
+function aiPrepareIsoSourcesForSelectedCompany(current, sources) {
+  const target = current?.company || {};
+  if(!String(target.name || '').trim()) return (sources || []).map(source => aiCloneForStorage(source || {}));
+  return (sources || []).map(value => {
+    const source = aiCloneForStorage(value || {});
+    // A selected card is the operator's explicit statement of the document
+    // owner. Supplier/customer details commonly name another legal entity.
+    // They are useful source data, but must not replace or block the selected
+    // company card.  Keep those collections and discard only the foreign
+    // company identity from the individual source.
+    if(source._source_company_conflict || aiStructuredCompanyConflict(current, source)) {
+      delete source.company;
+      delete source._source_company_conflict;
+    }
+    return source;
+  });
+}
+
 function aiMergeStructuredSource(baseData, sourceData, allowUnverified = false) {
   const base = JSON.parse(JSON.stringify(baseData || {}));
   const source = {...(sourceData || {})};
@@ -4262,8 +4280,16 @@ async function aiSend() {
     // A requisites file can identify the batch, but it does not by itself
     // prove that anonymous staff belong to that company: ask per file.
     const allowIsoUpload = ['iso', 'suot', 'iso_suot'].includes(archiveProductHint);
-    if(allowIsoUpload) archiveIdentityNeedsReview = aiSourceBatchCompany(aiCurrentData, fileData).conflict;
-    const batchCompany = aiSourceBatchCompany(aiCurrentData, fileData, allowIsoUpload);
+    // For a selected ISO/SUOT card, a supplier's legal entity is not a reason
+    // to reject the entire upload.  Preserve the selected company identity and
+    // still use staff, object and supplier facts from every source document.
+    const structuredFileData = allowIsoUpload
+      ? fileData.map(file => ({...file, structured_data: aiPrepareIsoSourcesForSelectedCompany(
+          aiCurrentData, [file.structured_data || {}]
+        )[0]}))
+      : fileData;
+    if(allowIsoUpload) archiveIdentityNeedsReview = aiSourceBatchCompany(aiCurrentData, structuredFileData).conflict;
+    const batchCompany = aiSourceBatchCompany(aiCurrentData, structuredFileData, allowIsoUpload);
     if(batchCompany.conflict) {
       aiRemoveTyping();
       restoreDraft();
@@ -4273,7 +4299,7 @@ async function aiSend() {
       return;
     }
     let confirmedBatchCompany = batchCompany.name;
-    for(const file of fileData) {
+    for(const file of structuredFileData) {
       const source = file.structured_data || {};
       const isoFile = ['iso', 'suot', 'iso_suot'].includes(archiveProductHint);
       const hasVerifiedId = !!String(source.company?.unp || '').replace(/\D/g, '');
@@ -4312,7 +4338,7 @@ async function aiSend() {
       }
       delete source._source_company_unverified;
     }
-    const sourceParts = fileData.map((file, index) => {
+    const sourceParts = structuredFileData.map((file, index) => {
       const previous = previousFiles.has(submittedFiles[index]);
       const source = {...(file.structured_data || {})};
       if(previous) {
@@ -4441,6 +4467,9 @@ async function aiSend() {
     let parsed = aiPreventFalseGenerationClaim(aiParseResponse(result.text));
 
     const allowIsoUpload = !!filesContent && ['iso', 'suot', 'iso_suot'].includes(archiveProductHint);
+    if(allowIsoUpload && parsed.data && aiCurrentData?.company?.name) {
+      parsed.data = aiPrepareIsoSourcesForSelectedCompany(aiCurrentData, [parsed.data])[0];
+    }
     if(archiveIdentityNeedsReview) {
       // A model response may omit the company name. Never merge any part of
       // a batch whose ownership is known to be in conflict.
