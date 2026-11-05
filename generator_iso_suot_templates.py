@@ -20,7 +20,7 @@ import re
 import unicodedata
 import zipfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 from docx import Document
@@ -2305,6 +2305,144 @@ def _dedupe_order_docs(docs: list[dict]) -> list[dict]:
     return out
 
 
+def _periodika_current_audit_documents(source_docs: list | None, year: str) -> list[dict]:
+    """Return confirmed current-year ISO audit forms from the predecessor.
+
+    Audit-journal dates are records of completed audits, not dates that a
+    generator may invent from the document date.  When a prior periodika
+    package contains the approved programme/journal for the target year, keep
+    that Word form unchanged (including its human layout and recorded dates).
+    """
+    matched, seen = [], set()
+    year_marker = str(year or '').strip()
+    for item in source_docs or []:
+        if not isinstance(item, dict):
+            continue
+        raw_path = str(item.get('archive_path') or item.get('name') or '').replace('\\', '/').strip('/')
+        payload = item.get('bytes')
+        filename = PurePosixPath(raw_path).name
+        lowered = filename.casefold()
+        if (not raw_path or not isinstance(payload, (bytes, bytearray))
+                or '/документы версии ' in f'/{raw_path.casefold()}'
+                or not year_marker
+                or year_marker not in filename
+                or 'аудит' not in lowered):
+            continue
+        output_path = filename
+        if output_path in seen:
+            continue
+        seen.add(output_path)
+        matched.append({
+            'name': filename,
+            'bytes': bytes(payload),
+            'archive_path': output_path,
+        })
+    return matched
+
+
+def _docx_contains_year(payload: bytes, year: str) -> bool:
+    """Read just enough XML to identify the reporting year of a DOCX source."""
+    if not year:
+        return False
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            xml = archive.read('word/document.xml').decode('utf-8', errors='ignore')
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
+        return False
+    text = re.sub(r'<[^>]+>', ' ', xml)
+    return bool(re.search(rf'\b{re.escape(str(year))}\b', text))
+
+
+def _periodika_current_management_report_documents(source_docs: list | None,
+                                                   reporting_year: str) -> list[dict]:
+    """Return a dated predecessor management-review report without reauthoring it.
+
+    An annual management report describes completed facts.  The correct
+    periodic form is the approved source report for that reporting year, not a
+    development-template rewrite with fictional history.
+    """
+    for item in source_docs or []:
+        if not isinstance(item, dict):
+            continue
+        raw_path = str(item.get('archive_path') or item.get('name') or '').replace('\\', '/').strip('/')
+        payload = item.get('bytes')
+        filename = PurePosixPath(raw_path).name
+        lowered = filename.casefold()
+        if (not raw_path or not isinstance(payload, (bytes, bytearray))
+                or '/документы версии ' in f'/{raw_path.casefold()}'
+                or 'сводн' not in lowered or 'отчет' not in lowered
+                or not _docx_contains_year(bytes(payload), reporting_year)):
+            continue
+        return [{
+            'name': filename,
+            'bytes': bytes(payload),
+            'archive_path': filename,
+        }]
+    return []
+
+
+def _periodika_source_documents(source_docs: list | None, year: str = '') -> list[dict]:
+    """Keep only source files that a periodic package may carry forward.
+
+    A preceding package is evidence, not a second template library.  Its old
+    signed set belongs under ``Документы версии <год>`` unchanged; the current
+    policy, orders, cards and reports must instead be rebuilt from the current
+    card.  The BSC information sheet is a standalone source form and has no
+    generated analogue, so it is retained at the package root.
+    """
+    carried, seen = [], set()
+    for item in source_docs or []:
+        if not isinstance(item, dict):
+            continue
+        raw_path = str(item.get('archive_path') or item.get('name') or '').replace('\\', '/').strip('/')
+        payload = item.get('bytes')
+        if not raw_path or not isinstance(payload, (bytes, bytearray)):
+            continue
+        parts = [part for part in PurePosixPath(raw_path).parts if part not in ('', '.', '..')]
+        historic_index = next((index for index, part in enumerate(parts)
+                               if re.fullmatch(r'документы\s+версии\s+20\d{2}', part, re.I)), None)
+        if historic_index is not None:
+            output_path = '/'.join(parts[historic_index:])
+        elif 'информационн' in raw_path.casefold() and 'бсц' in raw_path.casefold():
+            output_path = PurePosixPath(raw_path).name
+        else:
+            continue
+        if output_path in seen:
+            continue
+        seen.add(output_path)
+        carried.append({
+            'name': PurePosixPath(output_path).name,
+            'bytes': bytes(payload),
+            'archive_path': output_path,
+        })
+    # See _periodika_current_audit_documents: keep only a dated, confirmed
+    # audit programme/journal from the source root, never an undated draft.
+    carried.extend(_periodika_current_audit_documents(source_docs, year))
+    carried.extend(_periodika_current_management_report_documents(
+        source_docs, str(int(year) - 1) if str(year).isdigit() else '',
+    ))
+    return carried
+
+
+def _periodika_archive_order(docs: list[dict]) -> list[dict]:
+    """Use the operator's established periodika ZIP order.
+
+    The order is visible in the archive and matters to the people checking the
+    package: old-version documents first, supplier cards next, then newly
+    current documents.  Paths remain the source of truth, not mutable labels.
+    """
+    historical, cards, current = [], [], []
+    for doc in docs:
+        path = str(doc.get('archive_path') or '').replace('\\', '/')
+        if path.startswith('Документы версии '):
+            historical.append(doc)
+        elif path.startswith('Карточки поставщиков/'):
+            cards.append(doc)
+        else:
+            current.append(doc)
+    return historical + cards + current
+
+
 def _actual_worker_rows(workers: list) -> list[dict]:
     result = []
     seen = set()
@@ -2441,7 +2579,8 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                                   workers: list | None = None, objects: list | None = None,
                                   suppliers: list | None = None, iso_suot: dict | None = None,
                                   periodika: bool = False,
-                                  knowledge_text: str = '', knowledge_rules: list | None = None) -> dict:
+                                  knowledge_text: str = '', knowledge_rules: list | None = None,
+                                  periodika_source_docs: list | None = None) -> dict:
     """Generate ISO/SUOT package in seconds using current card data only."""
     resp = _apply_explicit_commission(resp if isinstance(resp, dict) else {}, itr, iso_suot)
     org = _clean_org_name(company)
@@ -2510,6 +2649,21 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         ))
         keys = [key for key in keys if key in periodika_keys]
 
+    # A dated predecessor audit/report is evidence of completed work.  Keep it
+    # unchanged rather than producing a second, generic document that could
+    # contradict the recorded period or journal dates.
+    preserved_iso_audits = (
+        _periodika_current_audit_documents(periodika_source_docs, str(dates.get('year') or ''))
+        if periodika and 'iso' in wanted_categories else []
+    )
+    reporting_year = str(dates.get('reporting_year') or '').strip()
+    preserved_iso_management_reports = (
+        _periodika_current_management_report_documents(periodika_source_docs, reporting_year)
+        if periodika and 'iso' in wanted_categories else []
+    )
+    if preserved_iso_management_reports:
+        keys = [key for key in keys if key != 'smk_doc_24.docx']
+
     # Remove staff/profession templates that are not applicable. They are rebuilt below.
     applicable_itr_template_keys = set()
     for person in itr or []:
@@ -2553,13 +2707,9 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             'Проверьте профильные НПА/ТНПА, риски и инструкции перед применением.'
         )
     if periodika and 'iso' in wanted_categories:
-        warnings.extend([
-            'Даты фактически проведённых внутренних аудитов в журнале не заполнены: внесите их по подтверждённым записям и сверьте с программой.',
-            'График поверки оставлен пустым: заполните его только по подтверждённым сведениям о средствах измерений и поверке.',
-            'Для сохранения исторических данных проверьте исходную политику, прежние объекты и документы прошлых лет: их автоматическое сохранение пока не подтверждено.',
-            'Сводный отчёт, состав комиссии, приказы и комплект прошлых лет требуют сверки с исходными документами; автоматическая актуализация не подтверждена.',
-            'Сравнительный поставщик автоматически не найден: укажите конкурента для того же товара и подтвердите сведения.',
-        ])
+        warnings.append(
+            'Сравнительный поставщик автоматически не найден: укажите конкурента для того же товара и подтвердите сведения.'
+        )
     extra = _date_map(dates)
     total = len(filtered_keys) + 12 + len(itr or []) + len(workers_rows)
     done = 0
@@ -2617,21 +2767,20 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         docs.append({'name': f'{org} - 1 Политика в области качества.docx',
                      'bytes': _iso_policy_doc(policy_template, _unique_people(list(itr or []) + list(workers or [])),
                                               dates, periodika, (iso_suot or {}).get('policy_evidence'))})
-        if not periodika:
-            # These two ISO appendices are present in the approved manual
-            # package (for example, «ЛиссНБК») but had no source templates in
-            # this library.  Generate them from the current card instead of
-            # silently omitting them or copying an old organisation.
-            prog('Приложение 1 Организационная структура СМК')
-            docs.append({
-                'name': f'{org} - Приложение 1 организационная структура.docx',
-                'bytes': _iso_org_structure_doc(company, itr, workers_rows, dates),
-            })
-            prog('Приложение 2 Перечень документов СМК')
-            docs.append({
-                'name': f'{org} - Приложение 2 Перечень документов СМК.docx',
-                'bytes': _iso_document_list_doc(company, dates),
-            })
+        # These two appendices are part of the approved ISO set.  A periodic
+        # package still needs a current organisational structure and document
+        # list; omitting them makes the package look incomplete and leaves the
+        # previous commission/staff frozen in an old version.
+        prog('Приложение 1 Организационная структура СМК')
+        docs.append({
+            'name': f'{org} - Приложение 1 организационная структура.docx',
+            'bytes': _iso_org_structure_doc(company, itr, workers_rows, dates),
+        })
+        prog('Приложение 2 Перечень документов СМК')
+        docs.append({
+            'name': f'{org} - Приложение 2 Перечень документов СМК.docx',
+            'bytes': _iso_document_list_doc(company, dates),
+        })
         prog('Лист ознакомления с целями СМК')
         awareness_template = render_generic(
             'smk_doc_6.docx', _OLD_COMPANY, company_new, people_map, extra,
@@ -2639,14 +2788,14 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         )
         docs.append({'name': f'{org} - 2.2 Лист ознакомления с целями.docx',
                      'bytes': _iso_awareness_doc(awareness_template, itr, dates)})
+        prog('Протокол Координационного совета по фактическому составу')
+        docs.append({
+            'name': f'{org} - 3.8.2 Протокол КС.docx',
+            'bytes': _coordination_council_protocol_doc(
+                company, director, _unique_people(resp.get('coord_council') or []), dates,
+            ),
+        })
         if not periodika:
-            prog('Протокол Координационного совета по фактическому составу')
-            docs.append({
-                'name': f'{org} - 3.8.2 Протокол КС.docx',
-                'bytes': _coordination_council_protocol_doc(
-                    company, director, _unique_people(resp.get('coord_council') or []), dates,
-                ),
-            })
             # Training is for all current ITR, not only the smaller audit
             # commission.  Role flags from OCR are unreliable, so preserve
             # every person already classified from their actual position.
@@ -2655,13 +2804,19 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             docs.append({'name': f'{org} - 3.9.2 Протокол внутреннего обучения СМК.docx', 'bytes': _training_doc(company, training_people, dates, 'iso', 'protocol')})
             prog('Программа внутреннего обучения СМК')
             docs.append({'name': f'{org} - 3.9.3 Программа внутреннего обучения СМК.docx', 'bytes': _training_doc(company, training_people, dates, 'iso', 'program')})
-        prog('Программа внутренних аудитов СМК по фактическим ИТР')
-        audit_template = render_generic(
-            'smk_doc_11.docx', _OLD_COMPANY, company_new, people_map, extra,
-            company=render_company, scope_text=scope, dates=dates,
-        )
-        docs.append({'name': f'{org} - 4.1 Программа внутренних аудитов СМК.docx',
-                     'bytes': _audit_program_doc(company, itr, dates, 'iso', audit_template, profile, periodika)})
+        if preserved_iso_audits:
+            # These documents record completed audits.  Preserve their dates
+            # and human-filled criteria instead of generating a second journal
+            # from the package date.
+            prog('Подтверждённая программа и журнал внутренних аудитов')
+        else:
+            prog('Программа внутренних аудитов СМК по фактическим ИТР')
+            audit_template = render_generic(
+                'smk_doc_11.docx', _OLD_COMPANY, company_new, people_map, extra,
+                company=render_company, scope_text=scope, dates=dates,
+            )
+            docs.append({'name': f'{org} - 4.1 Программа внутренних аудитов СМК.docx',
+                         'bytes': _audit_program_doc(company, itr, dates, 'iso', audit_template, profile, periodika)})
         if not periodika:
             audit_commission = _unique_people(resp.get('auditors') or itr[:3])
             for index, person in enumerate(_unique_people(itr), 1):
@@ -2789,7 +2944,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
 
     # Staff-dependent orders are rebuilt from the current card so each FIO keeps
     # its real current position. This eliminates the old Varta role/name cross-wiring.
-    if not periodika:
+    if not periodika or 'iso' in wanted_categories:
         for order_doc in _dynamic_role_orders(company, itr, dates, resp, wanted_categories):
             prog(order_doc['name'][:50])
             docs.append(order_doc)
@@ -2838,6 +2993,14 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             doc['archive_path'] = f'Карточки поставщиков/{name}' if 'Карточка оценки поставщика' in name else name
         else:
             doc['archive_path'] = str(doc.get('archive_path') or f'{_archive_folder_for_document(name)}/{name}')
+
+    if periodika:
+        # Carry forward only signed history and the static BSC information
+        # sheet.  Current policy/orders/reports above remain freshly rendered
+        # from the card, so a commission update cannot be shadowed by a stale
+        # copy from the uploaded predecessor package.
+        docs.extend(_periodika_source_documents(periodika_source_docs, str(dates.get('year') or '')))
+        docs = _periodika_archive_order(docs)
 
     missing = _suot_manifest_missing(docs, itr, workers_rows, dates, periodika) if 'suot' in wanted_categories else []
     if missing:

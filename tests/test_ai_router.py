@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,19 @@ class FakeResponse:
 
 
 class AIRouterTests(unittest.TestCase):
+    def test_temporary_failure_retries_sooner_but_respects_retry_after(self):
+        router = self.router({'AIAI_PREFERRED': 'true', 'AIAI_PAID_ENABLED': 'true',
+                              'AIAI_UNLIMITED': 'true', 'AIAI_API_KEY': 'test',
+                              'AIAI_BASE_URL': 'https://example.invalid/v1', 'AIAI_MODEL': 'test'},
+                             lambda *_args, **_kwargs: FakeResponse({}, 503))
+        with patch('ai_router.time.time', return_value=1000):
+            with self.assertRaises(AIProviderError):
+                router.complete_text(system='', messages=[{'role': 'user', 'content': 'test'}])
+        self.assertEqual(router._load_state()['cooldowns']['aiai'], 1030)
+        with patch('ai_router.time.time', return_value=2000):
+            router._set_cooldown('aiai', 120, classification='temporary')
+        self.assertEqual(router._load_state()['cooldowns']['aiai'], 2120)
+
     def test_aiai_priority_is_explicit_and_keeps_audio_groq_first(self):
         router = self.router({'AIAI_PREFERRED': 'true'}, lambda *_args, **_kwargs: None)
         self.assertEqual(router._text_candidates()[0].provider, 'aiai')

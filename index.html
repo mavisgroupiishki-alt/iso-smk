@@ -517,7 +517,7 @@ body[data-role="operator"] [data-owner-only]{display:none!important}
           <label class="ai-file-action raw">📁 Загрузить предыдущий пакет
             <input id="ai-previous-package-input" type="file" accept=".zip,.rar" style="display:none" onchange="aiHandlePreviousPackage(this)">
           </label>
-          <span class="ai-input-help">Прошлые документы — источник для ИК; изменения прикрепляйте отдельно. Оригиналы пока не копируются в новый архив.</span>
+          <span class="ai-input-help">Прошлый пакет — источник для ИК: документы предыдущей версии будут сохранены отдельной папкой, а актуальные изменения прикрепляйте отдельно.</span>
         </div>
         <div id="ai-scope-profile-choice" style="display:none;margin-top:8px;padding:8px 10px;border:1px solid #E8B39F;border-radius:8px;background:#FFF8F0;font-size:11px;color:#825345"></div>
       </section>
@@ -2825,6 +2825,10 @@ function aiValidateReadiness(data) {
       ['manual', 'expert'].includes(String(person.source || '').toLowerCase()) &&
       !aiIsOfficialStaffRow(person)
     ).forEach(person => missing.push('должность сотрудника: ' + person.fio));
+    if(data.certification?.package_mode === 'periodika'
+        && !data.iso_suot?.previous_package_source_ref) {
+      warnings.push('для периодики желательно загрузить предыдущий пакет через отдельную кнопку выше');
+    }
   }
   if(product === 'company_att') {
     const ca = data.company_attestation || {};
@@ -3629,6 +3633,14 @@ function aiMergeStructuredSource(baseData, sourceData, allowUnverified = false) 
       merged.familiarizations = [...byName.values()];
       base.iso_suot.policy_evidence = merged;
     }
+  }
+  if(typeof source.iso_suot?.previous_package_source_ref === 'string'
+      && source.iso_suot.previous_package_source_ref) {
+    base.iso_suot = {...(base.iso_suot || {})};
+    // This opaque, server-owned reference is created only for a selected
+    // predecessor package. It contains no document data in the browser and is
+    // required later to place the prior-year files into the periodika ZIP.
+    base.iso_suot.previous_package_source_ref = source.iso_suot.previous_package_source_ref;
   }
   if(source.company_attestation) {
     const sca = source.company_attestation;

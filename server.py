@@ -71,13 +71,14 @@ OUT_DIR     = _DATA/'output'
 KV_DIR      = _DATA/'kv'
 TASKS_DIR   = _DATA/'tasks'
 ARCHIVE_UPLOAD_DIR = _DATA/'archive_uploads'
+PERIODIKA_SOURCE_DIR = _DATA/'periodika_sources'
 KNOWLEDGE_DIR = _DATA/'knowledge'
 AUTH_DIR = _DATA/'auth'
 USERS_FILE = AUTH_DIR/'users.json'
 SESSIONS_FILE = AUTH_DIR/'sessions.json'
 PORT = int(os.environ.get("PORT", 8766))
 
-for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR, ARCHIVE_UPLOAD_DIR, KNOWLEDGE_DIR, AUTH_DIR]:
+for d in [JOURNAL_DIR, CO_DIR, OUT_DIR, KV_DIR, TASKS_DIR, ARCHIVE_UPLOAD_DIR, PERIODIKA_SOURCE_DIR, KNOWLEDGE_DIR, AUTH_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 _STORAGE_LOCK = __import__('threading').RLock()
@@ -1127,6 +1128,143 @@ def _generated_archive_entry_name(doc):
     return path.as_posix()
 
 
+def _periodika_source_record_path(source_ref: str) -> Path | None:
+    """Return the owned predecessor-package record path, or reject the key."""
+    value = str(source_ref or '').strip()
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{12,80}', value):
+        return None
+    return PERIODIKA_SOURCE_DIR / f'{value}.json'
+
+
+def _store_periodika_source_archive(task_id: str, owner_user_id: str, archive_path: Path,
+                                    filename: str) -> str | None:
+    """Keep one uploaded predecessor package for the later generation step.
+
+    Archive OCR text alone is insufficient to return the signed previous-year
+    documents.  Store the accepted upload under an opaque id and bind its record
+    to the same workspace owner as the archive task; the browser receives only
+    that id, never a filesystem path.
+    """
+    if not owner_user_id or not archive_path.is_file():
+        return None
+    source_ref = f'{str(task_id)[:16]}_{secrets.token_hex(12)}'
+    record_path = _periodika_source_record_path(source_ref)
+    if record_path is None:
+        return None
+    suffix = '.zip' if str(archive_path).casefold().endswith('.zip') else '.rar'
+    stored_name = f'{source_ref}{suffix}'
+    stored_path = PERIODIKA_SOURCE_DIR / stored_name
+    try:
+        PERIODIKA_SOURCE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            PERIODIKA_SOURCE_DIR.chmod(0o700)
+        except OSError:
+            pass
+        shutil.copyfile(archive_path, stored_path)
+        try:
+            stored_path.chmod(0o600)
+        except OSError:
+            pass
+        _atomic_write_text(record_path, json.dumps({
+            'owner_user_id': owner_user_id,
+            'archive': stored_name,
+            'filename': Path(str(filename or '')).name,
+            'created_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        }, ensure_ascii=False))
+        try:
+            record_path.chmod(0o600)
+        except OSError:
+            pass
+        return source_ref
+    except OSError:
+        try:
+            stored_path.unlink(missing_ok=True)
+            record_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
+def _periodika_package_prefix(names: list[str]) -> str:
+    """Choose the explicit ISO-periodika directory within a mixed archive."""
+    candidates: dict[str, list] = {}
+    for name in names:
+        parts = [part for part in PurePosixPath(str(name).replace('\\', '/')).parts if part]
+        for index in range(len(parts) - 1):
+            folder_markers = [part.casefold().replace('ё', 'е') for part in parts[:index + 1]]
+            # Operators commonly keep the mode and the standard in separate
+            # folders (``Периодика/ИСО``), while older exports put both in one
+            # directory (``ИК ИСО …``).  Both layouts identify the same
+            # predecessor package; do not silently fall back to the archive
+            # root merely because the words are split across directories.
+            is_periodika = any(
+                'периодик' in marker or re.search(r'(^|[^а-яa-z])ик([^а-яa-z]|$)', marker)
+                for marker in folder_markers
+            )
+            if not is_periodika or not any('исо' in marker for marker in folder_markers):
+                continue
+            prefix = '/'.join(parts[:index + 1])
+            year = max((int(value) for marker in folder_markers
+                        for value in re.findall(r'20\d{2}', marker)), default=0)
+            count, newest_year = candidates.get(prefix, [0, 0])
+            candidates[prefix] = [count + 1, max(newest_year, year)]
+    if not candidates:
+        return ''
+    return max(candidates, key=lambda key: (candidates[key][1], candidates[key][0], len(key)))
+
+
+def _load_periodika_source_documents(source_ref: str, owner_user_id: str) -> list[dict] | None:
+    """Read only the selected owner's predecessor package as in-memory files."""
+    record_path = _periodika_source_record_path(source_ref)
+    if record_path is None or not owner_user_id:
+        return None
+    try:
+        record = json.loads(record_path.read_text('utf-8'))
+    except (OSError, ValueError):
+        return None
+    if str(record.get('owner_user_id') or '') != str(owner_user_id):
+        return None
+    archive_name = Path(str(record.get('archive') or '')).name
+    archive_path = PERIODIKA_SOURCE_DIR / archive_name
+    if not archive_path.is_file():
+        return None
+    temporary_zip = None
+    try:
+        source_path = archive_path
+        if archive_path.suffix.casefold() == '.rar':
+            temporary = tempfile.NamedTemporaryFile(prefix='periodika-source-', suffix='.zip', delete=False)
+            temporary.close()
+            temporary_zip = Path(temporary.name)
+            if not _rar_to_zip_path(archive_path, temporary_zip, str(record.get('filename') or archive_name)):
+                return None
+            source_path = temporary_zip
+        with zipfile.ZipFile(source_path) as archive:
+            names = [info.filename for info in archive.infolist() if not info.is_dir()]
+            prefix = _periodika_package_prefix(names)
+            prefix_slash = f'{prefix}/' if prefix else ''
+            docs = []
+            for info in archive.infolist():
+                name = info.filename.replace('\\', '/')
+                if info.is_dir() or (prefix_slash and not name.startswith(prefix_slash)):
+                    continue
+                # A predecessor package is a document package.  Do not carry
+                # executable or unrelated binary attachments into the result.
+                suffix = PurePosixPath(name).suffix.casefold()
+                if suffix not in {'.doc', '.docx', '.pdf', '.xlsx', '.xls'}:
+                    continue
+                docs.append({
+                    'name': PurePosixPath(name).name,
+                    'archive_path': name,
+                    'bytes': archive.read(info),
+                })
+            return docs
+    except (OSError, zipfile.BadZipFile):
+        return None
+    finally:
+        if temporary_zip is not None:
+            temporary_zip.unlink(missing_ok=True)
+
+
 def _generation_zip_name(company_name, timestamp, task_id):
     safe_org = re.sub(r'[^\w\-]', '_', str(company_name or ''))
     safe_task = re.sub(r'[^a-zA-Z0-9_-]', '_', str(task_id or ''))
@@ -1162,6 +1300,18 @@ def _run_generation_task(task_id):
         if HEAVY_WORK_LOCK.locked():
             on_prog(0, 100, 'Ожидаю завершения чтения другого большого файла.')
         with HEAVY_WORK_LOCK:
+            iso_suot = ai_data.get('iso_suot')
+            if isinstance(iso_suot, dict):
+                source_ref = str(iso_suot.get('previous_package_source_ref') or '')
+                if source_ref:
+                    source_docs = _load_periodika_source_documents(
+                        source_ref, str(task.get('owner_user_id') or ''),
+                    )
+                    if source_docs is None:
+                        raise RuntimeError(
+                            'Не удалось восстановить выбранный предыдущий пакет. Загрузите его ещё раз перед формированием периодики.'
+                        )
+                    iso_suot['_periodika_source_docs'] = source_docs
             ai_data['_knowledge_context'] = knowledge_context(product) if user_role == 'owner' else ''
             ai_data['_knowledge_rules'] = knowledge_list(active_only=True, scope=product) if user_role == 'owner' else []
             result = generate_package(ai_data, api_key, product, on_prog)
@@ -5527,6 +5677,16 @@ def _run_archive_task(task_id):
             structured_data = {}
             read_warnings = _archive_read_warnings(result_text)
             source_status = task.get('source_status') or {}
+        if (package_mode == 'periodika'
+                and product in ('iso', 'suot', 'iso_suot')):
+            # Keep the accepted predecessor package until generation.  Without
+            # this, the reader deletes the only copy before the generator can
+            # return the prior-year signed documents in their own folder.
+            source_ref = _store_periodika_source_archive(
+                task_id, str(task.get('owner_user_id') or ''), archive_path, filename,
+            )
+            if source_ref:
+                structured_data.setdefault('iso_suot', {})['previous_package_source_ref'] = source_ref
         if (TASKS.get(task_id) or task).get('status') == 'cancelled':
             raise ArchiveTaskCancelled()
         task.update({'status': 'done', 'kind': 'archive', 'text': result_text,

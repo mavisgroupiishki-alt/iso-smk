@@ -200,6 +200,21 @@ SPK_ACTIVITY_PROFILES = {
     },
 }
 
+# This sentence is common to all construction SPK profiles.  Keep it in the
+# deterministic template renderer rather than asking a model to restate a
+# legal reference: a single stale reference in a generated regulation is much
+# more damaging than a visible template update.
+_ACCEPTANCE_CONTROL_LEGAL_TEXT = (
+    'Приемочный контроль осуществляется в соответствии с требованиями '
+    'Постановления Совета Министров Республики Беларусь от 15 мая 2025 г. № 266 '
+    '«О совершенствовании архитектурной, градостроительной и строительной деятельности», '
+    'Постановления Министерства архитектуры и строительства Республики Беларусь '
+    'от 8 октября 2025 г. № 108 «Об установлении форм актов приемки объектов в эксплуатацию, '
+    'гарантийного паспорта объекта строительства, перечней документов, представляемых приемочной комиссии», '
+    'Постановления Министерства архитектуры и строительства Республики Беларусь '
+    'от 29 мая 2024 г. № 47 «Об утверждении перечня исполнительной документации».'
+)
+
 
 def _spk_activity_profile(spk_data=None):
     key = str((spk_data or {}).get('activity_profile') or 'construction').strip().lower()
@@ -879,6 +894,13 @@ def render_polozhenie(company: dict, director_fio: str, approval_date: str = '',
     xml = xml.replace(old_company, new_company)
     profile = profile or SPK_ACTIVITY_PROFILES['construction']
     xml = _replace_paragraphs_by_marker(xml, profile.get('polozhenie_replacements') or ())
+    # Apply the current acceptance-control references after a scope profile:
+    # specialised profiles may first replace the generic paragraph with their
+    # scope-specific wording, but the legal basis itself is identical.
+    xml = _replace_paragraphs_by_marker(xml, (
+        ('Приемочный контроль при производстве СМР осуществляется', _ACCEPTANCE_CONTROL_LEGAL_TEXT),
+        ('Приемочный контроль осуществляется в соответствии с требованиями', _ACCEPTANCE_CONTROL_LEGAL_TEXT),
+    ))
 
     dir_init = _dir_initials(director_fio)
     paras = _paragraphs(xml)

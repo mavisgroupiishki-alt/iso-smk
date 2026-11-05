@@ -238,7 +238,7 @@ class AIProviderRouter:
                 self._record(candidate, task_type, "failure", reason=classification,
                              switch_reason=failures[-2] if len(failures) > 1 else "")
                 if classification in {"quota", "temporary", "quality"}:
-                    self._set_cooldown(candidate.provider, retry_after)
+                    self._set_cooldown(candidate.provider, retry_after, classification=classification)
 
         reason = ";".join(failures[-8:])
         self._record(Candidate("router", ""), task_type, "exhausted", reason=reason)
@@ -535,8 +535,9 @@ class AIProviderRouter:
         except (OSError, ValueError, TypeError):
             return {"cooldowns": {}}
 
-    def _set_cooldown(self, provider: str, retry_after: int | None) -> None:
-        seconds = min(max(int(retry_after or self.env.get("AI_PROVIDER_COOLDOWN_SECONDS", "300")), 30), 3600)
+    def _set_cooldown(self, provider: str, retry_after: int | None, *, classification: str = "quota") -> None:
+        default = "30" if classification == "temporary" else self.env.get("AI_PROVIDER_COOLDOWN_SECONDS", "300")
+        seconds = min(max(int(retry_after or default), 30), 3600)
         with self._lock:
             state = self._load_state()
             state.setdefault("cooldowns", {})[provider] = time.time() + seconds

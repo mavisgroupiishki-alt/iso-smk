@@ -10,6 +10,7 @@ import http.client
 import http.server
 import json
 import threading
+from pathlib import Path
 
 
 def test_single_docx_upload_http_extracts_staff(monkeypatch):
@@ -138,6 +139,116 @@ def test_periodika_hides_service_files_and_puts_cards_in_their_own_folder():
     assert all(d['archive_path'].startswith('Карточки поставщиков/') for d in cards)
     assert any('номенклатура дел' in d['name'].lower() for d in result['docs'])
     assert not any('отчет по процессу строительства' in d['name'].lower() for d in result['docs'])
+
+
+def test_periodika_keeps_iso_governance_documents_current():
+    """A periodic package updates the live ISO governance set, not only cards.
+
+    AGS-Montazh exposed that the former periodika whitelist silently dropped the
+    appendices, council protocol and all commission orders.  Those documents are
+    exactly where a changed commission must be reflected.
+    """
+    company = {
+        'name': 'Тест', 'form': 'ООО', 'director_fio': 'Иванов Иван Иванович',
+        'scope': 'производство строительно-монтажных работ',
+    }
+    staff = [
+        {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        {'fio': 'Петров Петр Петрович', 'position': 'Начальник участка'},
+    ]
+    result = templates.generate_iso_suot_package_v2(
+        company, staff, generator.calculate_dates('14.10.2026'),
+        generator.select_responsible(staff), product='iso', periodika=True,
+        iso_suot={'commission': [
+            {'fio': 'Петров Петр Петрович', 'position': 'Начальник участка', 'role': 'chair'},
+            {'fio': 'Иванов Иван Иванович', 'position': 'Директор'},
+        ]},
+    )
+    names = [doc['name'] for doc in result['docs']]
+    assert any('Приложение 1' in name for name in names)
+    assert any('Приложение 2' in name for name in names)
+    assert any('Протокол КС' in name for name in names)
+    order = next(doc for doc in result['docs'] if 'Приказ 8-СМК' in doc['name'])
+    assert 'Петров Петр Петрович' in '\n'.join(p.text for p in Document(io.BytesIO(order['bytes'])).paragraphs)
+
+
+def test_periodika_keeps_prior_documents_before_cards_and_current_docs():
+    management_report = Document()
+    management_report.add_paragraph('Сводный отчет по СМК за 2025 год')
+    management_report_bytes = io.BytesIO()
+    management_report.save(management_report_bytes)
+    source = [
+        {
+            'name': 'Журнал 2025.docx', 'bytes': b'old-journal',
+            'archive_path': 'ИК ИСО Тест 2026/Документы версии 2025/Журналы/Журнал 2025.docx',
+        },
+        {
+            'name': 'Информационный лист БСЦ.doc', 'bytes': b'bsc',
+            'archive_path': 'ИК ИСО Тест 2026/Информационный лист БСЦ.doc',
+        },
+        {
+            'name': 'Неактуальная политика.docx', 'bytes': b'old-policy',
+            'archive_path': 'ИК ИСО Тест 2026/Политика.docx',
+        },
+        {
+            'name': 'Тест - 4.1 Внутренние аудиты программа журнал 2026.docx', 'bytes': b'confirmed-audits',
+            'archive_path': 'ИК ИСО Тест 2026/Тест - 4.1 Внутренние аудиты программа журнал 2026.docx',
+        },
+        {
+            'name': 'Тест - сводный отчет по СМК.docx', 'bytes': management_report_bytes.getvalue(),
+            'archive_path': 'ИК ИСО Тест 2026/Тест - сводный отчет по СМК.docx',
+        },
+    ]
+    result = templates.generate_iso_suot_package_v2(
+        {'name': 'Тест', 'form': 'ООО', 'director_fio': 'Иванов Иван Иванович',
+         'scope': 'производство строительно-монтажных работ'},
+        [{'fio': 'Иванов Иван Иванович', 'position': 'Директор'}],
+        generator.calculate_dates('14.10.2026'), {}, product='iso', periodika=True,
+        periodika_source_docs=source,
+    )
+    paths = [doc['archive_path'] for doc in result['docs']]
+    assert paths[0] == 'Документы версии 2025/Журналы/Журнал 2025.docx'
+    assert 'Информационный лист БСЦ.doc' in paths
+    assert 'Политика.docx' not in paths
+    audit = next(doc for doc in result['docs'] if 'аудиты программа журнал 2026' in doc['name'].lower())
+    assert audit['bytes'] == b'confirmed-audits'
+    assert not any(path.endswith('4.1 Программа внутренних аудитов СМК.docx') for path in paths)
+    report = next(doc for doc in result['docs'] if 'сводный отчет по смк' in doc['name'].lower())
+    assert report['bytes'] == management_report_bytes.getvalue()
+    first_card = next(index for index, path in enumerate(paths) if path.startswith('Карточки поставщиков/'))
+    assert first_card > 0
+    assert all(not path.startswith('Документы версии 2025/') for path in paths[first_card:])
+
+
+def test_periodika_source_is_owned_and_selects_the_prior_package_root(tmp_path, monkeypatch):
+    """Only the selected owner's prior ISO package may be carried forward."""
+    monkeypatch.setattr(server, 'PERIODIKA_SOURCE_DIR', tmp_path / 'periodika_sources')
+    server.PERIODIKA_SOURCE_DIR.mkdir()
+    archive_path = tmp_path / 'ags.zip'
+    with zipfile.ZipFile(archive_path, 'w') as archive:
+        archive.writestr('АГС-монтаж/ИК ИСО АГС-монтаж 2026/Документы версии 2025/Журналы/Журнал.docx', b'journal')
+        archive.writestr('АГС-монтаж/ИК ИСО АГС-монтаж 2026/Информационный лист БСЦ.doc', b'bsc')
+        archive.writestr('АГС-монтаж/ИК ИСО АГС-монтаж 2026/Политика.docx', b'policy')
+        archive.writestr('АГС-монтаж/Другой пакет/Документы версии 2024/Чужой.docx', b'foreign')
+
+    source_ref = server._store_periodika_source_archive('task1234', 'owner-a', archive_path, 'АГС-монтаж.zip')
+    source_docs = server._load_periodika_source_documents(source_ref, 'owner-a')
+
+    assert source_docs is not None
+    paths = {doc['archive_path'] for doc in source_docs}
+    assert 'АГС-монтаж/ИК ИСО АГС-монтаж 2026/Документы версии 2025/Журналы/Журнал.docx' in paths
+    assert 'АГС-монтаж/ИК ИСО АГС-монтаж 2026/Информационный лист БСЦ.doc' in paths
+    assert all('Другой пакет' not in path for path in paths)
+    assert server._load_periodika_source_documents(source_ref, 'owner-b') is None
+
+
+def test_periodika_source_selector_accepts_separate_mode_and_iso_folders():
+    names = [
+        'Компания/Периодика 2026/ИСО 9001/Документы версии 2025/Журнал.docx',
+        'Компания/Периодика 2026/ИСО 9001/Информационный лист БСЦ.doc',
+        'Компания/Другая папка/Документы версии 2025/Чужой.docx',
+    ]
+    assert server._periodika_package_prefix(names) == 'Компания/Периодика 2026/ИСО 9001'
 
 
 def test_customer_satisfaction_does_not_invent_scores():

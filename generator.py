@@ -1201,6 +1201,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
                 periodika=is_periodika,
                 knowledge_text=_GENERATION_KNOWLEDGE_CONTEXT,
                 knowledge_rules=generation_knowledge_rules,
+                periodika_source_docs=(company_data.get('iso_suot') or {}).get('_periodika_source_docs') or [],
             )
             required_missing = result_is.get('required_missing') or []
             if required_missing:
