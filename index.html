@@ -1536,6 +1536,15 @@ function aiSetDocumentDateToday() {
   aiSetDocumentDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`);
 }
 
+function aiDocumentDateControl() {
+  const current = aiNormalizeDocumentDate(aiCurrentData?.dates?.document_date || '');
+  return `<div style="margin-top:7px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">`
+    + `<label for="ai-document-date" style="font-size:10px">📅 Дата документов:</label>`
+    + `<input id="ai-document-date" type="text" inputmode="numeric" placeholder="ДД.ММ.ГГГГ" value="${igorEscape(current)}" onchange="aiSetDocumentDate(this.value)" style="width:94px;height:25px;border:1px solid #D9C6B8;border-radius:5px;padding:0 5px;font:inherit">`
+    + `<button type="button" onclick="aiSetDocumentDateToday()" style="height:25px;border:1px solid #D9C6B8;border-radius:5px;background:#fff;color:#8B4A5C;font:inherit;cursor:pointer">Сегодня</button>`
+    + `</div>`;
+}
+
 function aiApplySelectedRequestProfile(data = aiCurrentData) {
   if(!data) return data;
   const product = aiGetSelectedProduct();
@@ -3209,11 +3218,12 @@ function aiRenderCard(data) {
   // Даты
   const dt = aiCurrentData.dates||{};
   const dtF = [['Дата документов',dt.document_date],['Аудит',dt.audit_date],['Разработка',dt.development_date],['Внедрение',dt.implementation_date]].filter(([,v])=>v);
+  html += '<div class="ai-sec">Даты</div><div>';
   if(dtF.length) {
-    html += '<div class="ai-sec">Даты</div><div>';
     dtF.forEach(([l,v]) => html += `<div class="ai-df"><span class="ai-dl">${l}</span><span class="ai-dv">${igorEscape(v)}</span></div>`);
-    html += '</div>';
   }
+  html += aiDocumentDateControl();
+  html += '</div>';
 
   // Сотрудники
   const staff = aiCurrentData.staff||[];
@@ -3400,14 +3410,7 @@ function aiRenderCard(data) {
     ? 'width:100%;height:36px;background:#A56B75;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s'
     : 'width:100%;height:36px;background:#C299A8;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:not-allowed;transition:background .15s';
   if(!readiness.ready && readiness.missing.length) {
-    const dateControl = readiness.missing.includes('дата оформления документов')
-      ? `<div style="margin-top:8px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">`
-        + `<label for="ai-document-date" style="font-size:10px">📅 Дата документов:</label>`
-        + `<input id="ai-document-date" type="date" onchange="aiSetDocumentDate(this.value)" style="height:25px;border:1px solid #D9C6B8;border-radius:5px;padding:0 5px;font:inherit">`
-        + `<button type="button" onclick="aiSetDocumentDateToday()" style="height:25px;border:1px solid #D9C6B8;border-radius:5px;background:#fff;color:#8B4A5C;font:inherit;cursor:pointer">Сегодня</button>`
-        + `</div>`
-      : '';
-    document.getElementById('ai-card-body').insertAdjacentHTML('beforeend', `<div class="ai-missing-box"><b>Для формирования заполните:</b><br>${readiness.missing.join('<br>')}${dateControl}</div>`);
+    document.getElementById('ai-card-body').insertAdjacentHTML('beforeend', `<div class="ai-missing-box"><b>Для формирования заполните:</b><br>${readiness.missing.join('<br>')}</div>`);
   }
 }
 

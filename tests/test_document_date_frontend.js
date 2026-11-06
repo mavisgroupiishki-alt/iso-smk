@@ -3,8 +3,9 @@ const path = require('path');
 const vm = require('vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-if (!html.includes('id="ai-document-date"') || !html.includes('aiSetDocumentDateToday()')) {
-  throw new Error('blocked generation does not offer a direct document-date control');
+if (!html.includes('id="ai-document-date"') || !html.includes('aiSetDocumentDateToday()') ||
+    !html.includes('function aiDocumentDateControl()') || !html.includes('html += aiDocumentDateControl();')) {
+  throw new Error('company card does not offer a persistent direct document-date control');
 }
 function extractFunction(name) {
   const start = html.indexOf(`function ${name}(`);
@@ -35,6 +36,7 @@ const context = {
   },
   aiRenderCardFromCurrent: () => { rendered += 1; },
   aiSaveCurrentCompany: () => Promise.resolve(),
+  igorEscape: value => String(value || ''),
 };
 vm.createContext(context);
 vm.runInContext([
@@ -45,6 +47,7 @@ vm.runInContext([
   extractFunction('aiValidateReadiness'),
   extractFunction('aiNormalizeDocumentDate'),
   extractFunction('aiSetDocumentDate'),
+  extractFunction('aiDocumentDateControl'),
 ].join('\n\n'), context);
 
 if (context.aiValidateReadiness(context.aiCurrentData).ready) {
@@ -62,5 +65,9 @@ if (!context.aiValidateReadiness(context.aiCurrentData).ready) {
 if (context.aiNormalizeDocumentDate('13.10.2026') !== '13.10.2026' ||
     context.aiNormalizeDocumentDate('bad') !== '') {
   throw new Error('document date validation accepts an invalid value');
+}
+if (!context.aiDocumentDateControl().includes('value="13.10.2026"') ||
+    !context.aiDocumentDateControl().includes('placeholder="ДД.ММ.ГГГГ"')) {
+  throw new Error('manual date control does not show the saved editable value');
 }
 console.log('document date frontend test passed');
