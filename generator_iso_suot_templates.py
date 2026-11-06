@@ -2263,12 +2263,19 @@ def _order_identity(name: str) -> str | None:
     n = str(name or '').lower().replace('ё', 'е')
     if 'приказ' not in n:
         return None
+    # A package file can have a section prefix before the actual order number:
+    # ``3.1 Приказ 1 о начале разработки СМК``.  The old optional ``приказ``
+    # pattern read that prefix as order 3 and dropped this mandatory initial
+    # ISO order when it met ``Приказ 3-СМК``.  Match the number *after* the word
+    # "приказ" only; preserve decimal order numbers such as 10.1-OH&S too.
+    m = re.search(r'\bприказ\s*(?:№\s*)?(\d+(?:\.\d+)?)\b', n)
+    if not m:
+        return None
+    number = m.group(1)
     if 'суот' in n or 'oh&s' in n:
-        m = re.search(r'(?:приказ\s+|приказ\s+№\s*)?(\d+)(?:[\.\-]|\s)', n)
-        return f'suot:{m.group(1)}' if m else None
+        return f'suot:{number}'
     if 'смк' in n or 'приказ' in n:
-        m = re.search(r'(?:приказ\s+|приказ\s+№\s*)?(\d+)(?:[\.\-]|\s)', n)
-        return f'iso:{m.group(1)}' if m else None
+        return f'iso:{number}'
     return None
 
 

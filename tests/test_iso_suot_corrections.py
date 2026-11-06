@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 
 import generator
 import server
-from generator_iso_suot_templates import generate_iso_suot_package_v2
+from generator_iso_suot_templates import _order_identity, generate_iso_suot_package_v2
 
 
 def _xml_text(doc_bytes):
@@ -72,6 +72,35 @@ def test_explicit_commission_replaces_automatic_people_in_orders():
     assert 'Инженер по охране труда' in text
     assert 'члены комиссии — Инженер по охране труда — Ковалев Сергей Петрович' in text
     assert 'члены комиссии — Заместитель директора — Смирнов Дмитрий Петрович' not in text
+
+
+def test_initial_iso_order_is_not_replaced_by_order_three():
+    """The section prefix ``3.1`` is not the number of the ISO start order."""
+    data = _base_data()
+    itr = data['staff']
+    result = generate_iso_suot_package_v2(
+        data['company'], itr, generator.calculate_dates('20.10.2026'),
+        generator.select_responsible(itr), product='iso_suot',
+    )
+
+    names = [doc['name'] for doc in result['docs']]
+    start_order = next(doc for doc in result['docs'] if '3.1 Приказ 1 о начале разработки СМК' in doc['name'])
+    suot_order = next(doc for doc in result['docs'] if '1 Приказ о разработке OH&S' in doc['name'])
+    text = '\n'.join(paragraph.text for paragraph in Document(io.BytesIO(start_order['bytes'])).paragraphs)
+    suot_text = '\n'.join(paragraph.text for paragraph in Document(io.BytesIO(suot_order['bytes'])).paragraphs)
+
+    assert _order_identity(start_order['name']) == 'iso:1'
+    assert _order_identity('ООО «Тест» - Приказ 3-СМК.docx') == 'iso:3'
+    assert _order_identity('ООО «Тест» СУОТ - Приказ 10.1-OH&S.docx') == 'suot:10.1'
+    assert any('Приказ 3-СМК' in name for name in names)
+    assert 'О разработке системы менеджмента качества' in text
+    assert 'Разработать документацию системы менеджмента качества' in text
+    assert 'Назначить директора' in text
+    assert 'Варта' not in text
+    assert 'О разработке системы менеджмента здоровья и безопасности' in suot_text
+    assert 'Разработать документацию системы менеджмента здоровья и безопасности' in suot_text
+    assert '4.1. в срок до' in suot_text
+    assert 'Варта' not in suot_text
 
 
 def test_technical_correction_reply_does_not_tell_user_to_regenerate():
