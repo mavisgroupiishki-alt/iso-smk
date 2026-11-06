@@ -1725,6 +1725,8 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
 - 2 удостоверения ОТ у одного = берём более свежее
 - ДЛЯ СПК: из каждого перечня/паспорта/свидетельства отдельно извлекай средства измерений в spk.measurement_tools,
   документы ПОВЕРКИ в spk.verification_documents и документы КАЛИБРОВКИ в spk.calibration_documents.
+  Если средство измерений арендовано, обязательно извлекай договор в spk.rental_documents: предмет (конкретный
+  прибор либо «средства измерений»), номер, дату и полное наименование арендодателя. Эти сведения нужны в Справке СИ.
   Сопоставляй документ с прибором прежде всего по заводскому номеру, затем по модели/наименованию. Не оставляй
   эти сведения только в message/source_documents: они обязаны попасть в структурированные поля для Справки СИ.
 - ДЛЯ СПК И АТТЕСТАЦИИ: ФИО, должность, диплом, трудовая, аттестат и employment_periods одного человека должны
@@ -1765,13 +1767,13 @@ AI_SYSTEM = """Ты — ИИгорь, оформитель документов 
         "activity_profile":"construction|metal_only|construction_metal|low_voltage_systems",
         "premises": [{"address":"","area":"","ownership":"","document":""}],
         "technical_competence": {"number":"","date":"","valid_until":""},
-        "measurement_tools": [{"name":"","model":"","factory_number":"","range":"","quantity":1}],
+        "measurement_tools": [{"name":"","model":"","factory_number":"","range":"","quantity":1,"ownership":"own|rented|unknown","rental_contract_number":"","rental_contract_date":"","rental_lessor":""}],
         "verification_documents": [{"tool":"","number":"","date":"","valid_until":""}],
         "calibration_documents": [{"tool":"","number":"","date":"","valid_until":""}],
         "ttk": [{"code":"","name":"","developer":"","valid_until":"","work_type":""}],
         "machinery": [{"name":"","model":"","quantity":1,"ownership":""}],
         "laboratories": [{"name":"","contract":"","scope":""}],
-        "rental_documents": [{"subject":"","number":"","date":"","valid_until":""}],
+        "rental_documents": [{"subject":"","number":"","date":"","lessor":"","valid_until":""}],
         "incoming_control_products": [{"name":"","supplier":"","standard":""}],
         "periodika": {"outgoing_number":"","contract_number":"","contract_date":""}
     },
@@ -6147,6 +6149,69 @@ def _spk_si_add_document(result: dict, document: dict) -> None:
         target.append(document)
 
 
+def _spk_si_add_rental_document(result: dict, document: dict) -> None:
+    """Keep an SI lease only when it has traceable contract evidence."""
+    if not (document.get('number') or document.get('date') or document.get('lessor')):
+        return
+    signature = tuple(_spk_si_norm(document.get(key)) for key in ('subject', 'number', 'date', 'lessor'))
+    if not any(signature == tuple(_spk_si_norm(row.get(key)) for key in ('subject', 'number', 'date', 'lessor'))
+               for row in result['rental_documents']):
+        result['rental_documents'].append(document)
+
+
+def _spk_si_rental_documents_from_block(block: str, compact: str) -> list:
+    """Extract a lease only when its subject is an identifiable SI.
+
+    Premise and machinery leases must never leak into the SI certificate.  A
+    generic phrase «средства измерений» intentionally applies to every SI row;
+    named instruments remain tied to that exact instrument.
+    """
+    # Archive blocks begin with ``--- filename ---``.  A filename such as
+    # «Договор аренды нивелира.docx» is not a contract number and must not
+    # satisfy the agreement-number expression below.
+    body = re.sub(r'^\s*---[^\n]*---\s*', '', block, count=1)
+    compact_body = re.sub(r'\s+', ' ', body.replace('\xa0', ' '))
+    lower = compact_body.casefold().replace('ё', 'е')
+    if not ('договор' in lower and 'аренд' in lower):
+        return []
+
+    subjects = []
+    for tool_name, pattern in _SPK_COPY_LIST_TOOLS:
+        if re.search(pattern, lower, re.IGNORECASE):
+            subjects.append(tool_name)
+    if not subjects and re.search(r'средств\w* измер|измерительн\w* оборудован', lower):
+        subjects.append('Средства измерений')
+    if not subjects:
+        return []
+
+    number_match = re.search(
+        r'договор(?:\s+аренды)?\s*(?:№|N)?\s*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9./_-]{0,80})',
+        compact_body, re.IGNORECASE,
+    )
+    date_match = re.search(
+        r'(?:договор(?:\s+аренды)?[^\n]{0,100}?\s+от|дата\s+(?:заключения|договора))\s*'
+        r'(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})', compact_body, re.IGNORECASE,
+    )
+    lessor_match = re.search(
+        r'арендодатель\s*(?:[:—-]|—)?\s*((?:ООО|ОДО|ОАО|ЗАО|ЧТУП|РУП|ИП)\s*(?:«[^»]+»|"[^"]+"|[^\n.;]{2,120}))',
+        body, re.IGNORECASE,
+    )
+    if not lessor_match:
+        lessor_match = re.search(
+            r'((?:ООО|ОДО|ОАО|ЗАО|ЧТУП|РУП|ИП)\s*(?:«[^»]+»|"[^"]+"|[^\n.;]{2,120}))'
+            r'[^.\n]{0,140}?\bарендодател',
+            body, re.IGNORECASE,
+        )
+    lessor = re.sub(r'\s+', ' ', lessor_match.group(1)).strip(' ,;') if lessor_match else ''
+    base = {
+        'number': number_match.group(1).strip('.,;') if number_match else '',
+        'date': date_match.group(1) if date_match else '',
+        'lessor': lessor,
+        'source': 'rental_contract',
+    }
+    return [{**base, 'subject': subject} for subject in dict.fromkeys(subjects)]
+
+
 def _spk_si_match_tool(items: list, candidate: dict) -> dict | None:
     """Find the same SI row without allowing a different serial number to match."""
     candidate_name = _spk_si_norm(candidate.get('name') or candidate.get('tool'))
@@ -6178,7 +6243,12 @@ def _extract_spk_si_evidence(text: str) -> dict:
     date and serial number. Leaving those values solely to a later chat response
     made the SI table lose them even when the PDF had already been read.
     """
-    result = {'measurement_tools': [], 'verification_documents': [], 'calibration_documents': []}
+    result = {
+        'measurement_tools': [],
+        'verification_documents': [],
+        'calibration_documents': [],
+        'rental_documents': [],
+    }
     # Archive extraction puts every file behind this marker.  SPK SI PDFs are read
     # one page at a time, so split those pages too: each certificate then stays tied
     # to its own device and cannot be paired with a neighbouring page's serial.
@@ -6189,6 +6259,8 @@ def _extract_spk_si_evidence(text: str) -> dict:
     for block in blocks:
         compact = re.sub(r'\s+', ' ', block.replace('\xa0', ' '))
         lower = compact.lower().replace('ё', 'е')
+        for rental_document in _spk_si_rental_documents_from_block(block, compact):
+            _spk_si_add_rental_document(result, rental_document)
         structured_lines = [line.strip() for line in block.splitlines()
                             if re.match(r'^(?:СИ|ПОВЕРКА|КАЛИБРОВКА)\s*\|', line.strip(), re.IGNORECASE)]
         if structured_lines:
@@ -6291,11 +6363,12 @@ def _merge_spk_si_evidence(spk: dict, evidence: dict) -> dict:
         else:
             tools.append(dict(evidence_tool))
     merged['measurement_tools'] = tools
-    for key in ('verification_documents', 'calibration_documents'):
+    for key in ('verification_documents', 'calibration_documents', 'rental_documents'):
         docs = [dict(item) for item in (merged.get(key) or []) if isinstance(item, dict)]
         for evidence_doc in evidence.get(key) or []:
-            signature = tuple(_spk_si_norm(evidence_doc.get(field)) for field in ('tool', 'number', 'date', 'factory_number'))
-            if not any(signature == tuple(_spk_si_norm(item.get(field)) for field in ('tool', 'number', 'date', 'factory_number')) for item in docs):
+            fields = ('subject', 'number', 'date', 'lessor') if key == 'rental_documents' else ('tool', 'number', 'date', 'factory_number')
+            signature = tuple(_spk_si_norm(evidence_doc.get(field)) for field in fields)
+            if not any(signature == tuple(_spk_si_norm(item.get(field)) for field in fields) for item in docs):
                 docs.append(dict(evidence_doc))
         merged[key] = docs
     return merged
@@ -6312,6 +6385,7 @@ def _merge_spk_copy_list_baseline(spk: dict, evidence: dict, copy_list_tools: li
             'measurement_tools': [],
             'verification_documents': (evidence or {}).get('verification_documents') or [],
             'calibration_documents': (evidence or {}).get('calibration_documents') or [],
+            'rental_documents': (evidence or {}).get('rental_documents') or [],
         },
     )
     tools = []

@@ -330,7 +330,10 @@ def _replace_director_signature(xml: str, paras: list, dir_init: str) -> str:
             break
     if idx is None or paras[idx] not in xml:
         return xml
-    old_text = re.sub(r'<[^>]+>', '', paras[idx]).strip()
+    # This template uses leading spaces together with a negative paragraph
+    # indent to position the signing block.  Stripping them moves «Директор»
+    # beyond the left page edge after a name replacement.
+    old_text = re.sub(r'<[^>]+>', '', paras[idx])
     # Заменяем только ФИО в конце строки (после последней группы подчёркиваний/пробелов)
     new_text = re.sub(r'[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.[А-ЯЁ]\.\s*$', dir_init, old_text)
     if new_text == old_text:  # маска не сработала — подставим в конец
@@ -1029,6 +1032,23 @@ def render_spravka_si(company: dict, director_fio: str, si_list: list, as_of_dat
         xml = _splice_rows(xml, rows[2:], new_rows)
 
     paras = _paragraphs(xml)
+    # The approved form has one final information column.  It now carries the
+    # lease reference as well, so its heading must not imply that only a
+    # verification or calibration certificate can appear there.
+    header_index = _find_para_index(paras, lambda text: 'Сведения о поверке' in text)
+    if header_index >= 0:
+        xml = xml.replace(
+            paras[header_index],
+            _replace_para_text(paras[header_index], 'Сведения о поверке,'),
+            1,
+        )
+        if header_index + 1 < len(paras):
+            xml = xml.replace(
+                paras[header_index + 1],
+                _replace_para_text(paras[header_index + 1], 'калибровке или аренде'),
+                1,
+            )
+        paras = _paragraphs(xml)
     xml = _replace_director_signature(xml, paras, _dir_initials(director_fio))
     if as_of_date:
         xml = xml.replace('12.06.2026', as_of_date)
@@ -1080,6 +1100,18 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
     verifications = [dict(x) for x in (spk_data.get('verification_documents') or []) if isinstance(x, dict)]
     calibrations = [dict(x) for x in (spk_data.get('calibration_documents') or []) if isinstance(x, dict)]
     docs = verifications + calibrations
+    rental_docs = [dict(x) for x in (spk_data.get('rental_documents') or []) if isinstance(x, dict)]
+    # A parser or an operator may attach lease facts straight to a concrete SI
+    # item.  Normalise those records into the same matching path as separately
+    # uploaded lease agreements.
+    for tool in tools:
+        if any(tool.get(key) for key in ('rental_contract_number', 'rental_contract_date', 'rental_lessor')):
+            rental_docs.append({
+                'subject': tool.get('name') or tool.get('model') or '',
+                'number': tool.get('rental_contract_number') or '',
+                'date': tool.get('rental_contract_date') or '',
+                'lessor': tool.get('rental_lessor') or '',
+            })
     warnings = []
 
     def is_certificate_reference(value):
@@ -1112,6 +1144,20 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
             bits.append(f'действует до {valid}')
         return ' '.join(bits).strip()
 
+    def rental_text(d):
+        number = str(d.get('number') or d.get('contract_number') or '').strip()
+        date = str(d.get('date') or d.get('contract_date') or '').strip()
+        lessor = str(d.get('lessor') or d.get('organization') or d.get('landlord') or '').strip()
+        bits = ['Аренда: договор']
+        if number:
+            bits[-1] += f' № {number}'
+        if date:
+            bits.append(f'от {date}')
+        if lessor:
+            bits.append(f'арендодатель: {lessor}')
+        # Do not manufacture lease details from a bare word «аренда».
+        return '; '.join(bits) if (number or date or lessor) else ''
+
     def matches(tool, d):
         factory = _norm_si_text(tool.get('factory_number') or tool.get('number'))
         d_factory = _norm_si_text(d.get('factory_number') or d.get('tool_number'))
@@ -1135,6 +1181,16 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
             (len(document_words) > 1 and set(document_words).issubset(tool_words))
         )
 
+    def rental_matches(tool, rental):
+        subject = str(rental.get('subject') or rental.get('tool') or rental.get('name') or '')
+        normalized_subject = _norm_si_text(subject)
+        # A contract that explicitly covers measurement equipment applies to
+        # each listed SI.  For a named contract subject, retain the same strict
+        # device matching used for verification evidence.
+        if re.search(r'средств\w* измер|измерительн', normalized_subject):
+            return True
+        return matches(tool, {'tool': subject, 'factory_number': rental.get('factory_number') or rental.get('tool_number')})
+
     rows = []
     used_docs = set()
     for tool in tools:
@@ -1145,6 +1201,7 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
                 if text:
                     related.append(text)
                 used_docs.add(idx)
+        related_rentals = [rental_text(rental) for rental in rental_docs if rental_matches(tool, rental)]
         # A range/characteristic actually read from the submitted passport or
         # verification overrides the standard template. Without such evidence,
         # retain the template value instead of turning a familiar tool yellow.
@@ -1161,7 +1218,11 @@ def _build_real_si_list(spk_data: dict) -> tuple[list, list]:
                         if source_range_or_characteristics
                         else [model, standard_characteristics]) if x
         )
-        verification = '; '.join(dict.fromkeys(related)) or 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
+        verification_parts = list(dict.fromkeys(related))
+        if not verification_parts:
+            verification_parts.append('ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка')
+        verification_parts.extend(text for text in related_rentals if text not in verification_parts)
+        verification = '; '.join(verification_parts)
         if not related:
             warnings.append(f"Для СИ «{tool.get('name') or tool.get('model') or 'без названия'}» не найден документ поверки/калибровки.")
         rows.append({

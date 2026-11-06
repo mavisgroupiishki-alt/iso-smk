@@ -5,7 +5,7 @@ import zipfile
 
 import generator
 from docx_review import collect_required_items, collect_review_tokens_and_items
-from generator_spk_templates import _build_real_si_list, generate_spk_package_v2
+from generator_spk_templates import _build_real_si_list, generate_spk_package_v2, render_spravka_si
 import server
 
 
@@ -704,6 +704,52 @@ def test_spk_si_does_not_present_invoice_or_contract_as_verification_certificate
 
     assert rows[0]['verification'] == 'ТРЕБУЕТ УТОЧНЕНИЯ: поверка/калибровка'
     assert len(warnings) == 1
+
+
+def test_spk_si_shows_rental_contract_number_date_and_lessor_in_the_reference():
+    rows, warnings = _build_real_si_list({
+        'measurement_tools': [
+            {'name': 'Нивелир', 'factory_number': 'N-22'},
+            {'name': 'Рулетка измерительная', 'factory_number': 'R-11'},
+        ],
+        'rental_documents': [{
+            'subject': 'Нивелир',
+            'number': '15/26',
+            'date': '02.10.2026',
+            'lessor': 'ООО «Прокат СИ»',
+        }],
+    })
+    by_name = {row['name']: row for row in rows}
+
+    assert 'Аренда: договор № 15/26; от 02.10.2026; арендодатель: ООО «Прокат СИ»' in by_name['Нивелир']['verification']
+    assert 'Прокат СИ' not in by_name['Рулетка измерительная']['verification']
+    assert len(warnings) == 2
+
+    document = render_spravka_si(
+        {'name': 'Тестовая организация'}, 'Иванов Иван Иванович', rows, '17.09.2026',
+    )
+    text = _xml_text(document)
+    assert 'Сведения о поверке,' in text
+    assert 'калибровке или аренде' in text
+    assert 'договор № 15/26' in text
+    assert 'арендодатель: ООО «Прокат СИ»' in text
+
+
+def test_spk_si_extracts_rental_agreement_only_for_named_measurement_tool():
+    evidence = server._extract_spk_si_evidence('''
+--- Договор аренды нивелира.docx ---
+ДОГОВОР АРЕНДЫ № 15/26 от 02.10.2026
+Арендодатель: ООО «Прокат СИ»
+Предмет договора: нивелир оптический.
+''')
+
+    assert evidence['rental_documents'] == [{
+        'subject': 'Нивелир',
+        'number': '15/26',
+        'date': '02.10.2026',
+        'lessor': 'ООО «Прокат СИ»',
+        'source': 'rental_contract',
+    }]
 
 
 def test_spk_si_reads_the_actual_pererechen_sredstv_izmereniya_heading():
