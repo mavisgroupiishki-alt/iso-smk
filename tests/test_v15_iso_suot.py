@@ -128,7 +128,7 @@ def test_suot_report_has_current_scope_and_current_staff_count():
     assert '17 человек' not in source_xml
 
 
-def test_periodika_iso_contains_only_annual_documents_and_current_objects():
+def test_periodika_iso_contains_annual_documents_current_objects_and_updated_orders():
     data = sample_data()
     company = dict(data['company']); company['scope'] = data['certification']['scope']
     itr = [x for x in data['staff'] if not x['is_worker']]
@@ -144,10 +144,15 @@ def test_periodika_iso_contains_only_annual_documents_and_current_objects():
     assert any('оценке удовлетворенности заказчиков' in name.lower() for name in names)
     assert any('сводн' in name.lower() for name in names)
     assert not any('РК СМК' in name or 'СТП СМК' in name for name in names)
-    assert not any('Приказ' in name or 'ДИ ' in name for name in names)
+    # In periodic renewal, orders tied to the commission are regenerated from
+    # the current staff card so departed members cannot remain in the package.
+    assert any('Приказ 3-СМК' in name for name in names)
+    assert not any('ДИ ' in name for name in names)
     assert not any('Журнал' in name for name in names)
-    assert not any('Приложение 1 организационная структура' in name for name in names)
-    assert not any('Приложение 2 Перечень документов СМК' in name for name in names)
+    # These two controlled lists are rebuilt from the current card in a
+    # periodic package; leaving the previous staff/roles would be unsafe.
+    assert any('Приложение 1 организационная структура' in name for name in names)
+    assert any('Приложение 2 Перечень документов СМК' in name for name in names)
     report = next(doc for doc in result['docs'] if 'оценке удовлетворенности заказчиков' in doc['name'].lower())
     assert 'Текущий ремонт поликлиники' in xml_text(report['bytes'])
 
@@ -179,7 +184,7 @@ def test_generator_uses_periodika_mode_from_card_data():
     assert names
     assert any('Политика в области качества' in name for name in names)
     assert not any('РК СМК' in name or 'СТП СМК' in name for name in names)
-    assert not any('Приказ' in name for name in names)
+    assert any('Приказ 3-СМК' in name for name in names)
 
 
 def test_generator_refuses_iso_package_with_missing_critical_card_fields():
@@ -356,8 +361,8 @@ def test_suot_audit_checklist_never_assigns_a_person_to_audit_themself():
     assert 'Аудитор: Начальник участка — Падуто Александр Сергеевич' in text
 
 
-def test_suot_audit_program_uses_another_itr_when_only_director_has_ot_certificate():
-    """A valid second ITR is safer than a placeholder in a finished programme."""
+def test_suot_audit_program_keeps_actual_roles_when_only_director_has_ot_certificate():
+    """The approved programme matrix lists actual audited roles, not invented auditors."""
     data = sample_data()
     data['company']['director_fio'] = 'Яскин Илья Васильевич'
     data['company']['director_position'] = 'Директор'
@@ -372,8 +377,8 @@ def test_suot_audit_program_uses_another_itr_when_only_director_has_ot_certifica
     rows = Document(io.BytesIO(programme)).tables[0].rows
     director_row = next(row for row in rows if row.cells[1].text.startswith('Директор'))
 
-    assert 'Падуто Александр Сергеевич' in director_row.cells[4].text
-    assert 'ТРЕБУЕТ УТОЧНЕНИЯ' not in director_row.cells[4].text
+    assert director_row.cells[2].text
+    assert 'ТРЕБУЕТ УТОЧНЕНИЯ' not in director_row.cells[1].text
 
 
 def test_suot_role_orders_never_assign_operational_safety_to_an_accountant():
@@ -492,7 +497,7 @@ def test_suot_template_lists_replace_generic_specialist_and_current_document_yea
     assert 'СТП OH&S 8.1-02-2026' in stp
 
 
-def test_suot_audit_program_is_landscape_and_uses_selected_document_date():
+def test_suot_audit_program_uses_approved_month_matrix_and_selected_document_date():
     data = sample_data()
     data['dates'] = {'document_date': '14.10.2026'}
     result = generator.generate_package(data, 'dummy', 'suot')
@@ -501,9 +506,35 @@ def test_suot_audit_program_is_landscape_and_uses_selected_document_date():
     order = next(doc for doc in result['docs'] if 'Приказ 4-OH&S' in doc['name'])
     audit_document = Document(io.BytesIO(audit['bytes']))
 
-    assert audit_document.sections[0].orientation == WD_ORIENT.LANDSCAPE
+    assert audit_document.sections[0].orientation == WD_ORIENT.PORTRAIT
+    assert len(audit_document.tables) == 1
+    assert len(audit_document.tables[0].columns) == 16
+    audit_text = _visible_doc_text(audit['bytes'])
+    assert '1 Цель проведения аудитов:' in audit_text
+    assert '2 Методы проведения внутренних аудитов:' in audit_text
+    assert '3 Содержание программы:' in audit_text
+    assert 'Январь' in audit_text and 'Декабрь' in audit_text
     assert '14.10.2026' in _visible_doc_text(audit['bytes'])
     assert '14.10.2026' in _visible_doc_text(order['bytes'])
+
+
+def test_dynamic_orders_follow_approved_order_form_and_suot_responsibility_numbering():
+    data = sample_data()
+    data['dates'] = {'document_date': '14.10.2026'}
+    result = generator.generate_package(data, 'dummy', 'iso_suot')
+
+    iso_order = next(doc for doc in result['docs'] if 'Приказ 3-СМК' in doc['name'])
+    suot_order = next(doc for doc in result['docs'] if 'Приказ 4-OH&S' in doc['name'])
+    iso_text = _visible_doc_text(iso_order['bytes'])
+    suot_text = _visible_doc_text(suot_order['bytes'])
+
+    assert 'ПРИКАЗ' in iso_text
+    assert '14.10.2026 г. № 3-СМК' in iso_text
+    assert 'В ОБЛАСТИ:' not in iso_text
+    assert 'Специалистам организации обеспечить представление требуемой информации' in iso_text
+    assert '1. НАЗНАЧИТЬ:' in suot_text
+    assert '1.3.1. Ответственным за общее состояние электрохозяйства' in suot_text
+    assert 'УТВЕРЖДАЮ' not in suot_text
 
 
 def test_generator_uses_only_company_director_in_suot_orders():
@@ -540,7 +571,7 @@ def test_nonstandard_scope_is_visible_in_smk_orders_but_not_added_to_customer_re
     order_text = xml_text(order['bytes'])
     report_text = xml_text(report['bytes'])
     assert scope in order_text
-    assert 'В ОБЛАСТИ:' in order_text
+    assert 'В ОБЛАСТИ:' not in order_text
     assert scope not in report_text
     assert 'В ОБЛАСТИ:' not in report_text
     assert 'Цех металлоконструкций «Север»' in report_text
@@ -610,8 +641,8 @@ def test_iso_scope_from_current_card_never_turns_into_a_placeholder():
         [paragraph.text for paragraph in order_document.paragraphs]
         + [cell.text for table in order_document.tables for row in table.rows for cell in row.cells]
     )
-    assert f'В ОБЛАСТИ: {scope}' in order_text
-    assert 'В ОБЛАСТИ: ТРЕБУЕТ УТОЧНЕНИЯ' not in order_text
+    assert scope in order_text
+    assert 'ТРЕБУЕТ УТОЧНЕНИЯ' not in order_text
 
 
 def test_iso_uses_explicit_document_date_and_preserves_approved_forms():

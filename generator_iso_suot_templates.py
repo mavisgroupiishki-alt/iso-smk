@@ -25,7 +25,10 @@ from typing import Iterable
 
 from docx import Document
 from docx.enum.section import WD_ORIENT
+from docx.enum.table import WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 from iso_suot_scope_profiles import (
     OFFICIAL_SOURCES_CHECKED_ON,
@@ -606,6 +609,114 @@ def _make_audit_program_table_readable(doc: Document, table) -> None:
                     run.font.size = Pt(9)
 
 
+def _set_cell_direction(cell, direction: str = 'btLr') -> None:
+    """Match the compact vertical month labels used in approved audit plans."""
+    tc_pr = cell._tc.get_or_add_tcPr()
+    element = OxmlElement('w:textDirection')
+    element.set(qn('w:val'), direction)
+    tc_pr.append(element)
+
+
+def _set_cell_text(cell, text: str, *, bold: bool = False, size: float = 8.5,
+                   align=WD_ALIGN_PARAGRAPH.CENTER) -> None:
+    cell.text = ''
+    paragraph = cell.paragraphs[0]
+    paragraph.alignment = align
+    run = paragraph.add_run(str(text or ''))
+    run.bold = bold
+    run.font.name = 'Times New Roman'
+    run.font.size = Pt(size)
+
+
+def _cmr_audit_matrix(doc: Document, people: list[dict], standard: str) -> None:
+    """Add the approved 12-month audit-plan matrix used for CMR ISO/SUOT packs."""
+    section = doc.sections[0]
+    section.orientation = WD_ORIENT.PORTRAIT
+    section.page_width = Cm(21)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(0.65)
+    section.right_margin = Cm(0.65)
+    section.top_margin = Cm(1.4)
+    section.bottom_margin = Cm(1.35)
+
+    table = doc.add_table(rows=3, cols=16)
+    table.style = 'Table Grid'
+    table.autofit = False
+    widths = [Cm(0.65), Cm(3.55), Cm(5.2)] + [Cm(0.7)] * 12 + [Cm(1.55)]
+    for column, width in zip(table.columns, widths):
+        column.width = width
+    for row in table.rows:
+        for cell, width in zip(row.cells, widths):
+            cell.width = width
+    table.rows[1].height = Cm(1.55)
+    table.rows[1].height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+    table.rows[2].height = Cm(0.4)
+    table.rows[2].height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+
+    # Fixed columns span the entire three-row heading.  The month heading is
+    # deliberately a separate row: this is the approved paper form, rather
+    # than a generic schedule table.
+    first = table.cell(0, 0).merge(table.cell(2, 0))
+    role = table.cell(0, 1).merge(table.cell(2, 1))
+    criteria = table.cell(0, 2).merge(table.cell(2, 2))
+    mark = table.cell(0, 15).merge(table.cell(2, 15))
+    term = table.cell(0, 3).merge(table.cell(0, 14))
+    _set_cell_text(first, '№\nп/п', bold=True)
+    _set_cell_text(role, 'Проверяемые\nдолжностные лица', bold=True)
+    _set_cell_text(criteria, 'Критерии аудита\n(требования стандарта и документы системы)', bold=True)
+    _set_cell_text(term, 'Сроки проведения аудита', bold=True)
+    _set_cell_text(mark, 'Отметка\nо выполнении', bold=True)
+
+    months = ('Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+              'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь')
+    for index, month in enumerate(months, 3):
+        _set_cell_text(table.cell(1, index), month, bold=True, size=7.5)
+        _set_cell_direction(table.cell(1, index))
+        _set_cell_text(table.cell(2, index), str(index + 2), bold=True, size=6.5)
+
+    criteria_for = _role_audit_points_suot if standard == 'suot' else _role_audit_points_iso
+    targets = list(people or []) or [{'position': 'ТРЕБУЕТ УТОЧНЕНИЯ'}]
+    for ordinal, person in enumerate(targets, 1):
+        row = table.add_row().cells
+        values = (
+            str(ordinal),
+            str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+            criteria_for(person.get('position', '')),
+        )
+        for column, value in enumerate(values):
+            _set_cell_text(row[column], value, size=8, align=WD_ALIGN_PARAGRAPH.LEFT if column in {1, 2} else WD_ALIGN_PARAGRAPH.CENTER)
+        # Stagger assignments across the year, preserving a clear schedule that
+        # the audit journal can later record against.  This is deliberately not
+        # derived from the document issue date.
+        _set_cell_text(row[3 + ((ordinal - 1) % 12)], 'Х', bold=True, size=9)
+        _set_cell_text(row[15], '', size=8)
+    doc.add_paragraph()
+
+
+def _cmr_audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
+                           profile: dict | None = None) -> bytes:
+    """Build the approved CMR ISO/SUOT audit-programme layout from live staff."""
+    label = 'СТБ ISO 45001-2020' if standard == 'suot' else 'СТБ ISO 9001-2015'
+    system = 'СУОТ' if standard == 'suot' else 'СМК'
+    doc = _new_doc(
+        company,
+        f'ПРОГРАММА ПРОВЕДЕНИЯ ВНУТРЕННИХ АУДИТОВ НА {dates.get("year") or "ТРЕБУЕТ УТОЧНЕНИЯ"} ГОД',
+        dates,
+        'document',
+    )
+    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for paragraph in (
+        f'1 Цель проведения аудитов: систематическая оценка соответствия {system} и ее процессов требованиям, установленным {label} и документами {system}.',
+        '2 Методы проведения внутренних аудитов: анализ документов, проведение собеседования.',
+        '3 Содержание программы:',
+    ):
+        doc.add_paragraph(paragraph)
+    _cmr_audit_matrix(doc, itr, standard)
+    if profile:
+        doc.add_paragraph('Профильный фокус аудита: ' + str(profile.get('audit_focus') or 'ТРЕБУЕТ УТОЧНЕНИЯ') + '.')
+    return _doc_bytes(doc)
+
+
 def _set_text(paragraph, text: str) -> None:
     """Set visible paragraph text without throwing away its first-run formatting."""
     if paragraph.runs:
@@ -1109,6 +1220,13 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
         if profile:
             doc.add_paragraph('Профильный фокус аудита: ' + str(profile.get('audit_focus') or 'ТРЕБУЕТ УТОЧНЕНИЯ') + '.')
         return _doc_bytes(doc)
+
+    # The validated CMR reference pack uses the same three-part, 12-month
+    # programme form for ISO and SUOT.  The former generic six-column SUOT
+    # table looked like a different product and did not give dates a single
+    # source of truth.
+    if standard == 'suot':
+        return _cmr_audit_program_doc(company, itr, dates, standard, profile)
 
     is_suot = standard == 'suot'
     title = ('ПРОГРАММА ПРОВЕДЕНИЯ ВНУТРЕННИХ АУДИТОВ СУОТ'
@@ -2111,22 +2229,66 @@ def _apply_explicit_commission(resp: dict, itr: list, iso_suot: dict | None) -> 
 
 def _appointment_order_doc(company: dict, dates: dict, number: str, title: str,
                            clauses: list[str], acquainted: list[dict] | None = None,
-                           scope: str = '', preamble: str = '') -> bytes:
-    doc = _new_doc(company, f'ПРИКАЗ № {number}', dates, 'goals')
-    p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p.add_run(title.upper()); r.bold = True
-    if scope:
-        p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.add_run(f'В ОБЛАСТИ: {scope}').bold = True
+                           scope: str = '', preamble: str = '', standard: str = 'iso') -> bytes:
+    """Render staff-dependent orders in the approved legal-order form.
+
+    These documents must look like the accepted ISO/SUOT source pack: an order
+    is not an approval form, so it has its own issuer/date/number/title block
+    and a real signature line.  ``scope`` stays in the substantive clauses and
+    is never emitted as a generic decorative heading.
+    """
+    doc = Document()
+    normal = doc.styles['Normal']
+    normal.font.name = 'Times New Roman'
+    normal.font.size = Pt(12)
+    section = doc.sections[0]
+    section.page_width = Cm(21)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(2)
+    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(1.5)
+    section.bottom_margin = Cm(1.5)
+
+    org = _full_org(company)
+    document_date = str(dates.get('document') or dates.get('goals') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
+    director = str(company.get('director_fio') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
+    director_position = str(company.get('director_position') or 'Директор')
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(org)
+    run.bold = True
+    run.font.size = Pt(14)
+
+    p = doc.add_paragraph()
+    run = p.add_run('ПРИКАЗ')
+    run.bold = True
+    run.font.size = Pt(14)
+    doc.add_paragraph(f'{document_date} г. № {number}')
+    if standard == 'iso' and str(company.get('city') or '').strip():
+        doc.add_paragraph(f'г. {company.get("city")}')
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(10)
+    run = p.add_run(title)
+    run.bold = True
     if preamble:
         doc.add_paragraph(preamble)
     p = doc.add_paragraph(); p.add_run('ПРИКАЗЫВАЮ:').bold = True
-    for i, clause in enumerate(clauses, 1):
-        doc.add_paragraph(f'{i}. {clause}')
-    if acquainted:
+    for index, clause in enumerate(clauses, 1):
+        text = str(clause or '').strip()
+        if re.match(r'^\d+(?:\.\d+)*\.', text):
+            rendered = text
+        elif text.startswith(('-', '•')):
+            rendered = text
+        else:
+            rendered = f'{index}. {text}'
+        doc.add_paragraph(rendered)
+    if acquainted and standard == 'suot':
         p = doc.add_paragraph(); p.add_run('С приказом ознакомлены:').bold = True
         for person in _unique_people(acquainted):
             doc.add_paragraph(f'{_person_order_label(person)} __________________')
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(12)
+    p.add_run(f'{director_position} __________________ {director}')
     return _doc_bytes(doc)
 
 
@@ -2155,15 +2317,27 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
     if 'iso' in wanted_categories:
         items = [
             ('3-СМК', 'О назначении аудиторов для проведения внутреннего аудита',
-             [f'Область применения СМК: {scope}.', f'Назначить внутренними аудиторами: {labels(auditors)}.', 'Контроль за исполнением приказа оставляю за директором.'], auditors),
+             [f'С целью проведения внутреннего аудита системы менеджмента качества в области «{scope}».',
+              f'Назначить внутренними аудиторами: {labels(auditors)}.',
+              'Специалистам организации обеспечить представление требуемой информации и данных, достоверность сведений и необходимые условия для проведения аудита.',
+              'Контроль за исполнением приказа оставляю за директором.'], auditors),
             ('5-СМК', 'О проведении оценки и анализа рисков',
-             [f'Область применения СМК: {scope}.', f'Создать рабочую группу по идентификации и оценке рисков в составе: {labels(risk_group)}.', 'Рабочей группе провести идентификацию и оценку рисков по действующим процессам организации.'], risk_group),
+             [f'В связи с внедрением системы менеджмента качества в области «{scope}».',
+              f'Создать рабочую группу по идентификации и оценке рисков в составе: {labels(risk_group)}.',
+              'Рабочей группе провести идентификацию и оценку рисков по действующим процессам организации.',
+              'Контроль за исполнением приказа оставляю за директором.'], risk_group),
             ('6-СМК', 'О назначении владельца процесса',
              [f'Назначить владельцем процесса «{scope}»: {_person_order_label(process_person)}.', 'Владельцу процесса обеспечить мониторинг показателей и управление рисками процесса.'], [process_person]),
             ('7-СМК', 'О назначении ответственного за фонд ТНПА, НПА и документов СМК',
-             [f'Область применения СМК: {scope}.', f'Назначить ответственным за актуализацию и управление фондом документов: {_person_order_label(fnpa_person)}.'], [fnpa_person]),
+             [f'В целях актуализации фонда ТНПА, НПА и документов СМК в области «{scope}».',
+              f'Назначить ответственным за актуализацию и управление документами СМК: {_person_order_label(fnpa_person)}.',
+              f'Назначить ответственным за ТТК, ТНПА и НПА: {_person_order_label(process_person or fnpa_person)}.',
+              'Контроль за исполнением приказа оставляю за директором.'], [fnpa_person, process_person]),
             ('8-СМК', 'О создании Координационного совета',
-             [f'Область применения СМК: {scope}.', f'Создать Координационный совет в составе: {labels(council)}.', 'Совету осуществлять мониторинг результативности СМК и мероприятий по улучшению.'], council),
+             [f'В целях координации работ по функционированию СМК в области «{scope}».',
+              f'Создать Координационный совет в составе: {labels(council)}.',
+              'Совету осуществлять мониторинг результативности СМК и мероприятий по улучшению.',
+              'Контроль за исполнением приказа оставляю за директором.'], council),
             ('9-СМК', 'О проведении внутреннего обучения специалистов',
              [f'Провести внутреннее обучение специалистов для области «{scope}»: {labels(auditors)}.', 'Тематика обучения: документированная информация СМК и внутренний аудит.'], auditors),
             ('10-СМК', 'О назначении ответственного за входной контроль',
@@ -2172,7 +2346,7 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
              [f'Для области «{scope}» назначить ответственным за учёт, технический осмотр и своевременную поверку средств измерений: {_person_order_label(process_person or fnpa_person)}.'], [process_person or fnpa_person]),
         ]
         for number,title,clauses,people in items:
-            docs.append({'name': f'{org} - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people,scope)})
+            docs.append({'name': f'{org} - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people,scope,standard='iso')})
 
     if 'suot' in wanted_categories:
         ot_people = _unique_people(auditors)
@@ -2200,26 +2374,21 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
               'Обучение провести с привлечением внештатных специалистов при необходимости профильной подготовки.',
               'Результаты обучения и проверки знаний оформить протоколом.'], ot_people),
             ('4-OH&S', 'О назначении ответственных лиц СУОТ',
-             [f'Назначить ответственными за организацию работы по охране труда: {committee_members}.',
-              f'Назначить ответственными за организацию работы и осуществление контроля по охране труда: {committee_members}.',
-              f'Назначить ответственными за проведение вводного инструктажа по охране труда и вводного противопожарного инструктажа: {committee_members}.',
-              f'Назначить ответственными за проведение инструктажей по охране труда и противопожарных инструктажей: {committee_members}.',
-              f'Назначить ответственными за организацию работы по обеспечению здоровья и безопасности в соответствующих подразделениях и на участках: {committee_members}.',
-              f'Назначить ответственным за общее состояние электрохозяйства, исправность электроинструмента, лестниц и средств защиты: {operational}.',
-              f'Назначить ответственным за поддержание исправного состояния, проведение периодических испытаний и проверок ручных электрических машин, переносного электроинструмента, светильников и вспомогательного оборудования: {operational}.',
-              f'Назначить ответственным за учёт, обеспечение, своевременный осмотр, испытания и хранение средств защиты: {operational}.',
-              f'Назначить ответственным за исправное состояние ручного слесарного, слесарно-сборочного и столярного инструмента: {operational}.',
-              f'Назначить ответственным за контроль исправного состояния и правильного применения ограждений: {operational}.',
-              f'Назначить ответственным за периодические испытания лестниц и стремянок с фиксацией результатов в журнале: {operational}.',
-              f'Назначить ответственным за осмотр лестниц и стремянок перед применением: {operational}.',
-              f'Назначить ответственным за пожарную безопасность, первичные средства пожаротушения и организацию обучения требованиям пожарной безопасности: {operational}.',
-              f'Назначить ответственным за безопасное производство погрузочно-разгрузочных работ, осмотр лестниц и стремянок, а также исправность ручного инструмента: {operational}.',
-              f'Назначить ответственным за исправное техническое состояние и эксплуатацию технологического оборудования, вентиляционных и отопительных систем, электроустановок, средств связи, оповещения и технических средств противопожарной защиты: {operational}.',
-              f'Назначить ответственным за создание системы обучения требованиям пожарной безопасности и организацию обучения работников пожарно-техническому минимуму: {operational}.',
-              f'Назначить ответственным за организацию работы добровольной пожарной дружины и пожарно-технической комиссии: {operational}.',
-              f'Утвердить состав комиссии для проверки знаний работающих по вопросам охраны труда: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.',
-              f'Утвердить состав пожарно-технической комиссии: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.',
-              f'Утвердить состав комиссии по проведению общих технических осмотров зданий и сооружений: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.'], ot_people,
+             ['1. НАЗНАЧИТЬ:',
+              f'1.1. Ответственными за организацию работы и осуществление контроля по охране труда: {committee_members}.',
+              f'1.2. Ответственными за проведение вводного инструктажа по охране труда и вводного противопожарного инструктажа: {committee_members}.',
+              f'1.3. Ответственными за организацию работы по обеспечению здоровья и безопасности в подразделениях и на участках: {committee_members}.',
+              f'1.3.1. Ответственным за общее состояние электрохозяйства, исправность электроинструмента, лестниц и средств защиты: {operational}.',
+              f'1.3.2. Ответственным за проведение периодических испытаний и проверок ручных электрических машин, переносного электроинструмента, светильников и вспомогательного оборудования: {operational}.',
+              f'1.3.3. Ответственным за учёт, обеспечение, своевременный осмотр, испытания и хранение средств защиты: {operational}.',
+              f'1.3.4. Ответственным за исправность ручного слесарного, слесарно-сборочного и столярного инструмента: {operational}.',
+              f'1.3.5. Ответственным за контроль исправности и правильного применения ограждений: {operational}.',
+              f'1.3.6. Ответственным за периодические испытания и осмотр лестниц и стремянок: {operational}.',
+              f'1.3.7. Ответственным за пожарную безопасность, первичные средства пожаротушения и обучение требованиям пожарной безопасности: {operational}.',
+              f'1.4. Утвердить состав комиссии для проверки знаний по вопросам охраны труда: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.',
+              f'1.5. Утвердить состав пожарно-технической комиссии: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.',
+              f'1.6. Утвердить состав комиссии по проведению общих технических осмотров зданий и сооружений: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.',
+              '2. Контроль за исполнением приказа оставляю за директором.'], ot_people,
              'В целях обеспечения безопасных условий труда, соблюдения требований охраны труда и организации контроля за их выполнением.'),
             ('5-OH&S', 'О назначении аудиторов СУОТ',
              [f'Назначить руководителем группы по аудиту СУОТ: {_person_order_label(lead)}.',
@@ -2242,7 +2411,7 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
         for item in items:
             number, title, clauses, people = item[:4]
             preamble = item[4] if len(item) > 4 else ''
-            docs.append({'name': f'{org} СУОТ - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people,preamble=preamble)})
+            docs.append({'name': f'{org} СУОТ - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people,preamble=preamble,standard='suot')})
     return docs
 
 
