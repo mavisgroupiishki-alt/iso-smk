@@ -1268,8 +1268,11 @@ def _empty_calibration_schedule(data: bytes) -> bytes:
 
 
 def _training_doc(company: dict, people: list, dates: dict, standard: str, kind='protocol') -> bytes:
+    if kind == 'program':
+        return _seminar_program_doc(company, people, dates, standard)
+
     label = 'СУОТ / ISO 45001' if standard == 'suot' else 'СМК / ISO 9001'
-    title = ('ПРОТОКОЛ ВНУТРЕННЕГО ОБУЧЕНИЯ' if kind == 'protocol' else 'ПРОГРАММА ВНУТРЕННЕГО ОБУЧЕНИЯ') + f' — {label}'
+    title = 'ПРОТОКОЛ ВНУТРЕННЕГО ОБУЧЕНИЯ' + f' — {label}'
     doc = _new_doc(company, title, dates, 'goals')
     doc.add_paragraph(f'Тема: документирование, требования и внутренний аудит {label}.')
     table = doc.add_table(rows=1, cols=4)
@@ -1279,6 +1282,110 @@ def _training_doc(company: dict, people: list, dates: dict, standard: str, kind=
         row = table.add_row().cells
         vals = [str(idx), str(person.get('fio') or 'ТРЕБУЕТ УТОЧНЕНИЯ'), str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ'), '']
         for i, v in enumerate(vals): row[i].text = v
+    return _doc_bytes(doc)
+
+
+def _seminar_attendee_name(person: dict) -> str:
+    """Return the formal surname-and-initials form used in seminar registers."""
+    parts = str(person.get('fio') or '').strip().split()
+    if len(parts) >= 3:
+        return f'{parts[0]} {parts[1][0]}.{parts[2][0]}.'
+    if len(parts) == 2:
+        return f'{parts[0]} {parts[1][0]}.'
+    return str(person.get('fio') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
+
+
+def _seminar_program_doc(company: dict, people: list, dates: dict, standard: str) -> bytes:
+    """Create the two-page internal-training seminar programme from the approved form.
+
+    The programme describes the course and keeps a separate attendance register.
+    It is intentionally different from the training protocol, which records an
+    individual result for each attendee.
+    """
+    is_suot = standard == 'suot'
+    subject = (
+        '«Документальное оформление и порядок разработки системы управления охраной труда. '
+        'Внутренний аудит системы менеджмента здоровья и безопасности при профессиональной деятельности»'
+        if is_suot else
+        '«Документальное оформление и порядок разработки системы менеджмента качества. '
+        'Внутренний аудит системы менеджмента качества»'
+    )
+    doc = _new_doc(company, 'Программа семинара', dates, 'goals')
+    section = doc.sections[0]
+    section.left_margin = Cm(2)
+    section.right_margin = Cm(0.7)
+    section.top_margin = Cm(1.5)
+    section.bottom_margin = Cm(1.5)
+
+    title = doc.paragraphs[-1]
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for run in title.runs:
+        run.bold = False
+        run.font.size = Pt(14)
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(12)
+    p.paragraph_format.space_after = Pt(14)
+    run = p.add_run(subject)
+    run.bold = True
+    run.font.size = Pt(14)
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(12)
+    run = p.add_run('Продолжительность 1 день (8 часов).')
+    run.italic = True
+    run.font.size = Pt(12)
+
+    programme = doc.add_table(rows=2, cols=3)
+    programme.style = 'Table Grid'
+    programme.autofit = False
+    widths = (Cm(1.1), Cm(13.7), Cm(3.5))
+    for column, width in zip(programme.columns, widths):
+        column.width = width
+    for row in programme.rows:
+        for cell, width in zip(row.cells, widths):
+            cell.width = width
+    for cell, heading in zip(programme.rows[0].cells, ('№\nп/п', 'Тема занятия', 'Количество\nчасов')):
+        _set_cell_text(cell, heading, bold=True, size=11)
+    day = programme.cell(1, 0).merge(programme.cell(1, 2))
+    _set_cell_text(day, 'День 1', size=11)
+    topics = (
+        ('Термины и основные принципы, цели и задачи аудита', '1'),
+        ('Планирование аудита, предварительный анализ документов', '1'),
+        ('Подготовка аудита. Менеджмент программы аудита', '1'),
+        ('Компетентность и оценка аудитора', '1'),
+        ('Основные методы проведения аудита', '1'),
+        ('Оформление обязательных документов аудита', '3'),
+    )
+    for number, (topic, hours) in enumerate(topics, 1):
+        row = programme.add_row().cells
+        _set_cell_text(row[0], str(number), size=11)
+        _set_cell_text(row[1], topic, size=11, align=WD_ALIGN_PARAGRAPH.LEFT)
+        _set_cell_text(row[2], hours, size=11)
+
+    doc.add_page_break()
+    p = doc.add_paragraph('Лист присутствия на семинаре:')
+    p.paragraph_format.space_after = Pt(8)
+    attendance = doc.add_table(rows=1, cols=2)
+    attendance.style = 'Table Grid'
+    attendance.autofit = False
+    attendance_widths = (Cm(9.2), Cm(9.2))
+    for column, width in zip(attendance.columns, attendance_widths):
+        column.width = width
+    for cell, heading, width in zip(attendance.rows[0].cells, ('ФИО', 'Подпись, дата'), attendance_widths):
+        cell.width = width
+        _set_cell_text(cell, heading, bold=True, size=11)
+    attendees = _unique_people(people)
+    for person in attendees:
+        row = attendance.add_row().cells
+        _set_cell_text(row[0], _seminar_attendee_name(person), size=11, align=WD_ALIGN_PARAGRAPH.LEFT)
+        _set_cell_text(row[1], '', size=11)
+    # Preserve enough blank lines for manual attendance marks, as in the
+    # approved «Шифер» form, without inventing signatures or dates.
+    for _ in range(max(0, 20 - len(attendees))):
+        row = attendance.add_row().cells
+        _set_cell_text(row[0], '', size=11, align=WD_ALIGN_PARAGRAPH.LEFT)
+        _set_cell_text(row[1], '', size=11)
     return _doc_bytes(doc)
 
 
@@ -2222,6 +2329,7 @@ def _apply_explicit_commission(resp: dict, itr: list, iso_suot: dict | None) -> 
     updated['auditors'] = commission
     updated['risk_group'] = commission
     updated['coord_council'] = commission
+    updated['_explicit_commission'] = True
     if chair:
         updated['commission_chair'] = chair
     return updated
@@ -2282,9 +2390,13 @@ def _appointment_order_doc(company: dict, dates: dict, number: str, title: str,
         else:
             rendered = f'{index}. {text}'
         doc.add_paragraph(rendered)
-    if acquainted and standard == 'suot':
+    acquainted_people = [
+        person for person in _unique_people(acquainted)
+        if _norm(person.get('fio')) != _norm(director)
+    ]
+    if acquainted_people and standard == 'suot':
         p = doc.add_paragraph(); p.add_run('С приказом ознакомлены:').bold = True
-        for person in _unique_people(acquainted):
+        for person in acquainted_people:
             doc.add_paragraph(f'{_person_order_label(person)} __________________')
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(12)
@@ -2304,13 +2416,41 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
     auditors = _unique_people((resp.get('auditors') or []) if isinstance(resp, dict) else [])
     if not auditors:
         auditors = _unique_people(([director] if director else []) + list(itr or []))[:3]
+    explicit_commission = bool(resp.get('_explicit_commission')) if isinstance(resp, dict) else False
+
+    def commission_eligible(person: dict) -> bool:
+        position = _norm(person.get('position'))
+        return any(token in position for token in (
+            'директор', 'инженер', 'прораб', 'производитель работ', 'мастер',
+            'начальник', 'техник', 'охране труда',
+        ))
+
+    # An automatically selected auditor set can be short when the uploaded
+    # schedule has no OT-certificate flags.  That is not a missing commission:
+    # enrich it only with current technical/managerial ITR.  An explicitly
+    # supplied commission remains authoritative and is never silently expanded.
+    commission_people = _unique_people(auditors)
+    if not explicit_commission:
+        for person in _unique_people(([director] if director else []) + list(itr or [])):
+            if commission_eligible(person) and _norm(person.get('fio')) not in {
+                _norm(current.get('fio')) for current in commission_people
+            }:
+                commission_people.append(person)
+
     risk_group = _unique_people((resp.get('risk_group') or auditors) if isinstance(resp, dict) else auditors)
     council = _unique_people((resp.get('coord_council') or auditors) if isinstance(resp, dict) else auditors)
+    if not explicit_commission:
+        risk_group = _unique_people(risk_group + commission_people)
+        council = _unique_people(council + commission_people)
     process_person = (resp.get('process_resp') or {}) if isinstance(resp, dict) else {}
     fnpa_person = (resp.get('fnpa_resp') or {}) if isinstance(resp, dict) else {}
     di_person = (resp.get('di_resp') or {}) if isinstance(resp, dict) else {}
 
     def labels(people): return '; '.join(_person_order_label(p) for p in _unique_people(people)) or 'ТРЕБУЕТ УТОЧНЕНИЯ'
+    def chaired_members(chair, members):
+        lead_label = _person_order_label(chair)
+        member_label = '; '.join(_person_order_label(person) for person in _unique_people(members))
+        return f'председатель — {lead_label}' + (f'; члены комиссии — {member_label}' if member_label else '')
     org = _clean_org_name(company)
     scope = str(company.get('scope') or '').strip() or 'ТРЕБУЕТ УТОЧНЕНИЯ'
 
@@ -2339,7 +2479,7 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
               'Совету осуществлять мониторинг результативности СМК и мероприятий по улучшению.',
               'Контроль за исполнением приказа оставляю за директором.'], council),
             ('9-СМК', 'О проведении внутреннего обучения специалистов',
-             [f'Провести внутреннее обучение специалистов для области «{scope}»: {labels(auditors)}.', 'Тематика обучения: документированная информация СМК и внутренний аудит.'], auditors),
+             [f'Провести внутреннее обучение специалистов для области «{scope}»: {labels(itr)}.', 'Тематика обучения: документированная информация СМК и внутренний аудит.'], _unique_people(itr)),
             ('10-СМК', 'О назначении ответственного за входной контроль',
              [f'Для области «{scope}» назначить ответственным за организацию входного контроля: {_person_order_label(process_person)}.'], [process_person]),
             ('11-СМК', 'О технических осмотрах средств измерений',
@@ -2349,7 +2489,7 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
             docs.append({'name': f'{org} - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people,scope,standard='iso')})
 
     if 'suot' in wanted_categories:
-        ot_people = _unique_people(auditors)
+        ot_people = _unique_people(commission_people)
         lead = (resp.get('commission_chair') or director or (ot_people[0] if ot_people else {}))
         # Office roles may own records, but must not become a silent default for
         # electrical and fire-safety responsibility. Prefer the real manager of
@@ -2361,18 +2501,19 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
             person for person in ot_people
             if _norm(person.get('fio')) != _norm(lead.get('fio'))
         ]
-        committee_member_labels = labels(committee_without_chair)
+        commission_description = chaired_members(lead, committee_without_chair)
+        training_people = _unique_people(itr)
         items = [
             ('9-OH&S', 'О проведении Дня охраны труда',
-             [f'Создать постоянно действующую комиссию для проведения контроля за соблюдением требований охраны труда: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.',
+             [f'Создать постоянно действующую комиссию для проведения контроля за соблюдением требований охраны труда: {commission_description}.',
               'Проводить День охраны труда ежеквартально в сроки, установленные графиком организации.',
               'Комиссии оформлять результаты контроля в журнале и направлять директору предложения по устранению выявленных нарушений.'],
              _unique_people([lead] + committee_without_chair)),
             ('10.1-OH&S', 'О проведении внутреннего обучения специалистов СУОТ',
-             [f'Провести внутреннее обучение по требованиям СУОТ для следующих работников: {committee_members}.',
+             [f'Провести внутреннее обучение по требованиям СУОТ для следующих работников: {labels(training_people)}.',
               f'Утвердить программу внутреннего обучения СУОТ и протокол его проведения. Ответственный за организацию обучения: {_person_order_label(lead)}.',
               'Обучение провести с привлечением внештатных специалистов при необходимости профильной подготовки.',
-              'Результаты обучения и проверки знаний оформить протоколом.'], ot_people),
+              'Результаты обучения и проверки знаний оформить протоколом.'], training_people),
             ('4-OH&S', 'О назначении ответственных лиц СУОТ',
              ['1. НАЗНАЧИТЬ:',
               f'1.1. Ответственными за организацию работы и осуществление контроля по охране труда: {committee_members}.',
@@ -2385,9 +2526,9 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
               f'1.3.5. Ответственным за контроль исправности и правильного применения ограждений: {operational}.',
               f'1.3.6. Ответственным за периодические испытания и осмотр лестниц и стремянок: {operational}.',
               f'1.3.7. Ответственным за пожарную безопасность, первичные средства пожаротушения и обучение требованиям пожарной безопасности: {operational}.',
-              f'1.4. Утвердить состав комиссии для проверки знаний по вопросам охраны труда: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.',
-              f'1.5. Утвердить состав пожарно-технической комиссии: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.',
-              f'1.6. Утвердить состав комиссии по проведению общих технических осмотров зданий и сооружений: председатель — {_person_order_label(lead)}; члены комиссии — {committee_member_labels}.',
+              f'1.4. Утвердить состав комиссии для проверки знаний по вопросам охраны труда: {commission_description}.',
+              f'1.5. Утвердить состав пожарно-технической комиссии: {commission_description}.',
+              f'1.6. Утвердить состав комиссии по проведению общих технических осмотров зданий и сооружений: {commission_description}.',
               '2. Контроль за исполнением приказа оставляю за директором.'], ot_people,
              'В целях обеспечения безопасных условий труда, соблюдения требований охраны труда и организации контроля за их выполнением.'),
             ('5-OH&S', 'О назначении аудиторов СУОТ',
@@ -3022,18 +3163,34 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             docs.append({'name': f'{org} - Карточка оценки поставщика {idx}.docx',
                          'bytes': _supplier_card_doc(company, supplier, comparison, dates, idx)})
 
-        # Job descriptions for EVERY actual ITR. If no exact template exists, create
-        # a generic draft and mark profile-specific duties for review.
+        # Job descriptions must cover EVERY actual ITR position.  Broad template
+        # matching (for example, any position containing «смет») can otherwise
+        # leave a stale deputy-director DI in a package for a current engineer.
+        # Preserve an exact current-position template, remove unmatched legacy
+        # DIs, and generate a current-position form for every remaining role.
         if not periodika:
-            used_positions = set()
+            positions = []
+            seen_positions = set()
             for person in itr or []:
                 position = str(person.get('position') or '').strip()
                 key = _norm(position)
-                if not position or key in used_positions:
-                    continue
-                used_positions.add(key)
-                if _matching_template(position, _ITR_TEMPLATE_RULES):
-                    # A matching original template is already present in docs.
+                if position and key not in seen_positions:
+                    positions.append((position, key))
+                    seen_positions.add(key)
+
+            def is_job_description(doc: dict) -> bool:
+                return bool(re.search(r'(^|\s)(ди|должност)', _norm(doc.get('name')), re.I))
+
+            def has_current_position(doc: dict) -> bool:
+                name = _norm(doc.get('name'))
+                return any(key in name for _, key in positions)
+
+            docs = [
+                doc for doc in docs
+                if not is_job_description(doc) or has_current_position(doc)
+            ]
+            for position, key in positions:
+                if any(is_job_description(doc) and key in _norm(doc.get('name')) for doc in docs):
                     continue
                 prog(f'Должностная инструкция: {position}')
                 docs.append({'name': f'{org} - ДИ {position}.docx', 'bytes': _generic_job_description(company, position, dates)})

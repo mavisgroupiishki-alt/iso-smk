@@ -300,11 +300,63 @@ def test_suot_training_and_safety_day_records_use_only_current_staff():
     training_program = next(text for name, text in docs.items() if 'Программа внутреннего обучения' in name)
     safety_day = next(text for name, text in docs.items() if 'Приказ 9-OH&S' in name)
 
-    for text in (training_order, training_protocol, training_program, safety_day):
+    for text in (training_order, training_protocol, safety_day):
         assert 'Главный специалист' not in text
         assert 'Лукашик Сергей Васильевич' in text
         assert 'Волков Василий Анатольевич' in text
+    assert 'Главный специалист' not in training_program
+    assert 'Лукашик С.В.' in training_program
+    assert 'Волков В.А.' in training_program
     assert 'председатель — Директор — Глушинский Олег Иванович; члены комиссии — Заместитель директора-главный инженер — Лукашик Сергей Васильевич; Производитель работ — Волков Василий Анатольевич.' in safety_day
+
+
+def test_orders_training_and_iso_di_cover_all_current_itr_not_only_ot_commission():
+    """A sparse OT-certificate list must not hide current ITR from documents.
+
+    Regression for the «Нова Констракт» package: only the director had an OT
+    certificate, which left all commission members blank, restricted the
+    training order to one person, and kept a stale DI for another position.
+    """
+    data = sample_data()
+    data['company'].update({
+        'name': 'Нова Констракт',
+        'director_fio': 'Суриков Дмитрий Михайлович',
+        'director_position': 'Директор',
+    })
+    data['staff'] = [
+        {'fio': 'Суриков Дмитрий Михайлович', 'position': 'Директор', 'is_worker': False, 'ot_certificate': True},
+        {'fio': 'Павленко Александр Игоревич', 'position': 'Инженер материально-технического обеспечения', 'is_worker': False},
+        {'fio': 'Харчук Вероника Николаевна', 'position': 'Ведущий инженер-сметчик', 'is_worker': False},
+    ]
+    data['workers'] = []
+
+    result = generator.generate_package(data, 'dummy', 'iso_suot')
+    docs = {doc['name']: doc['bytes'] for doc in result['docs']}
+    safety_day = _visible_doc_text(next(value for name, value in docs.items() if 'Приказ 9-OH&S' in name))
+    training_order = _visible_doc_text(next(value for name, value in docs.items() if 'Приказ 10.1-OH&S' in name))
+    programme = Document(io.BytesIO(next(
+        value for name, value in docs.items()
+        if 'Программа внутреннего обучения' in name and 'СУОТ' in name
+    )))
+    awareness = _visible_doc_text(next(value for name, value in docs.items() if 'Лист ознакомления с целями' in name and 'СУОТ' not in name))
+
+    for fio in ('Суриков Дмитрий Михайлович', 'Павленко Александр Игоревич', 'Харчук Вероника Николаевна'):
+        assert fio in safety_day
+        assert fio in training_order
+        assert fio in awareness
+    assert 'ТРЕБУЕТ УТОЧНЕНИЯ' not in safety_day
+    # The signing director is not repeated as a separate acquainted person.
+    assert safety_day.count('Директор — Суриков Дмитрий Михайлович') == 1
+
+    assert 'Программа семинара' in '\n'.join(paragraph.text for paragraph in programme.paragraphs)
+    assert len(programme.tables) == 2
+    assert 'Тема занятия' in programme.tables[0].cell(0, 1).text
+    attendance = '\n'.join(cell.text for row in programme.tables[1].rows for cell in row.cells)
+    for fio in ('Суриков Д.М.', 'Павленко А.И.', 'Харчук В.Н.'):
+        assert fio in attendance
+
+    assert any('ДИ Инженер материально-технического обеспечения' in name for name in docs)
+    assert any('ДИ Ведущий инженер-сметчик' in name for name in docs)
 
 
 def test_suot_never_adds_worker_instructions_absent_from_the_staff_roster():
