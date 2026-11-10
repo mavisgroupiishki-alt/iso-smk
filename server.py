@@ -2213,7 +2213,24 @@ def call_ai(messages, api_key, knowledge_text="", product="all"):
         )
         return _sanitize_ai_visible_response(result.text, product)
     except AIProviderError as exc:
-        raise RuntimeError('Подходящая ИИ-модель временно недоступна. Сообщение не обработано; повторите его позже.') from exc
+        raise RuntimeError(
+            'Сервис разбора документов временно недоступен. Файл не обработан и не потерян: '
+            'не загружайте его повторно, попробуйте отправить сообщение через несколько минут.'
+        ) from exc
+
+
+def _has_text_ai_provider():
+    """Check whether chat has any configured text route without spending quota."""
+    return bool(
+        str(os.environ.get('VIBE_API_KEY') or '').strip()
+        or str(os.environ.get('GEMINI_API_KEY') or '').strip()
+        or str(os.environ.get('OPENROUTER_API_KEY') or '').strip()
+        or (
+            str(os.environ.get('CLOUDFLARE_API_TOKEN') or '').strip()
+            and str(os.environ.get('CLOUDFLARE_ACCOUNT_ID') or '').strip()
+        )
+        or AI_ROUTER._aiai_enabled()
+    )
 
 
 # ── Дата-утилиты (без изменений) ─────────────────────────────
@@ -8230,7 +8247,7 @@ class H(http.server.BaseHTTPRequestHandler):
             elif p=='/api/ai/chat':
                 req=json.loads(body)
                 api_key=os.environ.get('VIBE_API_KEY','')
-                if not api_key and not str(os.environ.get('GEMINI_API_KEY') or '').strip() and not AI_ROUTER._aiai_enabled():
+                if not _has_text_ai_provider():
                     self._json({'success':False,'error':'Сервис ИИгоря сейчас недоступен. Обратитесь к ответственному за приложение.'},500); return
                 messages=req.get('messages',[])
                 product_scope = str(req.get('product') or 'all')

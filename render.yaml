@@ -32,11 +32,14 @@ services:
         sync: false
       - key: AIAI_API_KEY
         sync: false
-      # Paid reserve is fail-closed: these are deliberately unset by default.
-      # Set all four only after approving a real BYN budget and a conservative
-      # per-request reservation with the AIAI.BY tariff.
+      # AIAI.BY is the approved no-limit primary text/vision reserve for this
+      # product. Its endpoint, model and key remain dashboard-only secrets.
       - key: AIAI_PAID_ENABLED
-        value: "false"
+        value: "true"
+      - key: AIAI_UNLIMITED
+        value: "true"
+      - key: AIAI_PREFERRED
+        value: "true"
       - key: AIAI_DAILY_BUDGET_BEL
         sync: false
       - key: AIAI_MONTHLY_BUDGET_BEL

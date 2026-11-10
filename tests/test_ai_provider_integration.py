@@ -26,6 +26,15 @@ class Response:
 
 
 class ProviderIntegrationTests(unittest.TestCase):
+    def test_text_provider_preflight_accepts_each_supported_reserve(self):
+        base = {'VIBE_API_KEY': '', 'GEMINI_API_KEY': '', 'OPENROUTER_API_KEY': '',
+                'CLOUDFLARE_API_TOKEN': '', 'CLOUDFLARE_ACCOUNT_ID': '',
+                'AIAI_PAID_ENABLED': 'false', 'AIAI_API_KEY': '', 'AIAI_BASE_URL': ''}
+        with patch.dict(server.os.environ, {**base, 'OPENROUTER_API_KEY': 'test'}, clear=True):
+            self.assertTrue(server._has_text_ai_provider())
+        with patch.dict(server.os.environ, {**base, 'CLOUDFLARE_API_TOKEN': 'test', 'CLOUDFLARE_ACCOUNT_ID': 'account'}, clear=True):
+            self.assertTrue(server._has_text_ai_provider())
+
     def test_ocr_allows_explicitly_configured_aiai_without_legacy_keys(self):
         env = {'AIAI_PAID_ENABLED': 'true', 'AIAI_UNLIMITED': 'true', 'AIAI_API_KEY': 'test',
                'AIAI_BASE_URL': 'https://example.invalid/v1', 'AIAI_VISION_MODEL': 'vision-test'}
