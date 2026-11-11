@@ -888,6 +888,20 @@ def _iso_policy_doc(template_data: bytes, itr: list, dates: dict, periodika: boo
                     evidence: dict | None = None) -> bytes:
     """Render the policy template; historical dates require the original policy."""
     doc = Document(io.BytesIO(template_data))
+    evidence = evidence if isinstance(evidence, dict) else {}
+
+    def valid_date(value):
+        try:
+            return datetime.strptime(str(value), '%d.%m.%Y')
+        except (TypeError, ValueError):
+            return None
+
+    approval = str(evidence.get('approval_date') or '')
+    approval_date = valid_date(approval)
+    familiarizations = {
+        _norm(row.get('fio')): row for row in evidence.get('familiarizations', [])
+        if isinstance(row, dict) and row.get('fio')
+    }
     # The source policy has dozens of legacy empty paragraphs before its
     # familiarisation sheet. With a shorter current scope this leaves an almost
     # blank second page; remove only that contiguous spacer block.
@@ -902,20 +916,19 @@ def _iso_policy_doc(template_data: bytes, itr: list, dates: dict, periodika: boo
         # The signature list is its own sheet in the approved policy. Keep it
         # together instead of leaving one employee alone on a third page.
         heading.paragraph_format.page_break_before = True
-    if periodika:
+    # An uploaded policy is the primary source for its approval date.  This is
+    # equally important when an operator starts a new task from an existing
+    # package: creating a ZIP must not silently re-approve a signed policy.
+    if approval_date:
+        for paragraph in doc.paragraphs:
+            updated = re.sub(r'\b\d{2}\.\d{2}\.\d{4}\b', approval, paragraph.text)
+            if updated != paragraph.text:
+                _set_text(paragraph, updated)
+    elif periodika:
         # The source template is not the organisation's signed policy.  Its
         # generated date cannot be presented as the original approval date.
-        evidence = evidence if isinstance(evidence, dict) else {}
-        def valid_date(value):
-            try:
-                return datetime.strptime(str(value), '%d.%m.%Y')
-            except (TypeError, ValueError):
-                return None
-        approval = str(evidence.get('approval_date') or '')
-        approval_date = valid_date(approval)
         for paragraph in doc.paragraphs:
-            updated = re.sub(r'\b\d{2}\.\d{2}\.\d{4}\b',
-                             approval if approval_date else 'ТРЕБУЕТ УТОЧНЕНИЯ', paragraph.text)
+            updated = re.sub(r'\b\d{2}\.\d{2}\.\d{4}\b', 'ТРЕБУЕТ УТОЧНЕНИЯ', paragraph.text)
             if updated != paragraph.text:
                 _set_text(paragraph, updated)
     policy_people = list(itr or [])
@@ -925,22 +938,24 @@ def _iso_policy_doc(template_data: bytes, itr: list, dates: dict, periodika: boo
             if isinstance(row, dict) and row.get('fio') and _norm(row['fio']) not in present:
                 policy_people.append({'fio': row['fio']})
                 present.add(_norm(row['fio']))
-    _replace_staff_signature_rows(doc, policy_people, '' if periodika else str(dates.get('document') or dates.get('policy') or ''))
-    if periodika:
-        familiarizations = {_norm(row.get('fio')): row for row in evidence.get('familiarizations', []) if isinstance(row, dict) and row.get('fio')}
-        table = next((t for t in doc.tables if len(t.columns) == 3 and t.rows
-                      and 'фио' in t.rows[0].cells[0].text.lower()), None)
-        if table is not None:
-            for row, person in zip(table.rows[1:], policy_people):
-                previous = familiarizations.get(_norm(person.get('fio')))
-                if previous is not None:
-                    value = previous.get('date') or ''
-                    row.cells[2].text = value if valid_date(value) else ''
-                else:
-                    hired = str(person.get('hire_date') or '')
-                    hired_date = valid_date(hired)
-                    if person.get('is_new_employee') is True and hired_date and approval_date and hired_date > approval_date:
-                        row.cells[2].text = hired
+    _replace_staff_signature_rows(doc, policy_people, '')
+    table = next((t for t in doc.tables if len(t.columns) == 3 and t.rows
+                  and 'фио' in t.rows[0].cells[0].text.lower()), None)
+    if table is not None:
+        has_policy_history = bool(approval_date or familiarizations)
+        default_date = '' if periodika or has_policy_history else str(dates.get('document') or dates.get('policy') or '')
+        for row, person in zip(table.rows[1:], policy_people):
+            previous = familiarizations.get(_norm(person.get('fio')))
+            if previous is not None:
+                value = previous.get('date') or ''
+                row.cells[2].text = value if valid_date(value) else ''
+                continue
+            hired = str(person.get('hire_date') or '')
+            hired_date = valid_date(hired)
+            if person.get('is_new_employee') is True and hired_date and (not approval_date or hired_date > approval_date):
+                row.cells[2].text = hired
+            else:
+                row.cells[2].text = default_date
     return _doc_bytes(doc)
 
 

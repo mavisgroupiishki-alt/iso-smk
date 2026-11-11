@@ -632,6 +632,25 @@ def test_periodika_policy_uses_confirmed_old_dates_and_new_hire_date():
                     'Сидоров Илья Иванович': ''}
 
 
+def test_initial_policy_keeps_source_approval_and_familiarization_dates():
+    """A source policy remains the source of truth even for an initial rerender."""
+    dates = generator.calculate_dates('01.10.2026', '01.10.2026')
+    data = templates.render_generic('smk_doc_1.docx', templates._OLD_COMPANY,
+                                    {}, {}, templates._date_map(dates), company={}, scope_text='', dates=dates)
+    staff = [
+        {'fio': 'Иванов Иван Иванович', 'hire_date': '01.02.2020'},
+        {'fio': 'Петров Петр Петрович', 'hire_date': '12.03.2026', 'is_new_employee': True},
+    ]
+    evidence = {'approval_date': '05.02.2025', 'familiarizations': [
+        {'fio': 'Иванов Иван Иванович', 'date': '07.02.2025'},
+    ]}
+    doc = Document(io.BytesIO(templates._iso_policy_doc(data, staff, dates, False, evidence)))
+    assert '05.02.2025' in '\n'.join(p.text for p in doc.paragraphs)
+    rows = {r.cells[0].text: r.cells[2].text for r in doc.tables[0].rows[1:]}
+    assert rows == {'Иванов Иван Иванович': '07.02.2025',
+                    'Петров Петр Петрович': '12.03.2026'}
+
+
 def test_policy_retains_familiarization_even_when_approval_date_missing():
     dates = generator.calculate_dates('01.10.2026')
     data = templates.render_generic('smk_doc_1.docx', templates._OLD_COMPANY,
