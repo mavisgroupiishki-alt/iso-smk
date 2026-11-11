@@ -79,16 +79,27 @@ def test_fast_deterministic_iso_suot_package():
     assert 'Волков Василий Анатольевич' in combined
     assert any('ИОТ Штукатур' in d['name'] for d in result['docs'])
     assert any('Карточка оценки поставщика' in d['name'] for d in result['docs'])
+    assert any('план повышения квалификации' in d['name'].lower() for d in result['docs'])
+    assert not any('Отчет по процессу строительства' in d['name'] and 'СУОТ' not in d['name'] for d in result['docs'])
     paths = {doc['archive_path'] for doc in result['docs']}
-    assert any(path.startswith('ИСО 9001/1 Приказы/') for path in paths)
+    assert any(path.startswith('смк и карточки/') for path in paths)
+    assert any(path.startswith('инструкции и журналы/должностные инструкции/') for path in paths)
+    assert any(path.startswith('инструкции и журналы/журналы заказчику/') for path in paths)
+    assert any(
+        path.startswith('инструкции и журналы/журналы заказчику/') and 'проектно' in path.lower()
+        for path in paths
+    )
     assert any(path.startswith('СУОТ/1 Приказы/') for path in paths)
     assert any(path.startswith('СУОТ/5 Риски/') for path in paths)
     assert all('/' in path and '..' not in path for path in paths)
-    org_structure = next(d for d in result['docs'] if d['name'] == 'ОмиТрейд - Приложение 1 организационная структура.docx')
-    document_list = next(d for d in result['docs'] if d['name'] == 'ОмиТрейд - Приложение 2 Перечень документов СМК.docx')
-    assert 'Лукашик Сергей Васильевич' in xml_text(org_structure['bytes'])
-    assert 'Грук Сергей Борисович' in xml_text(org_structure['bytes'])
-    assert 'СТП СМК Управление рисками' in xml_text(document_list['bytes'])
+    assert not any(
+        ('Приложение 1' in d['name'] or 'Приложение 2 Перечень документов СМК' in d['name'])
+        and 'СУОТ' not in d['name']
+        for d in result['docs']
+    )
+    assert not any('Контрольный лист внутреннего аудита СМК' in d['name'] for d in result['docs'])
+    assert not any('Отчет по внутреннему аудиту СМК' in d['name'] for d in result['docs'])
+    assert not result['extra_files']
     assert not any('валидац' in d['name'].lower() for d in result['docs'])
 
 
@@ -651,15 +662,82 @@ def test_confirmed_scope_profiles_change_iso_suot_content_not_only_scope_label()
             company, itr, dates, generator.select_responsible(itr), product='iso_suot',
             workers=workers, suppliers=data['suppliers'], objects=data['objects'],
         )
-        profile_doc = next(doc for doc in result['docs'] if 'Профиль области работ' in doc['name'])
         instruction_list = next(doc for doc in result['docs'] if 'Перечень инструкций по ОТ' in doc['name'])
         audit_program = next(doc for doc in result['docs'] if 'Программа внутренних аудитов' in doc['name'] and 'СУОТ' in doc['name'])
-        assert expected in xml_text(profile_doc['bytes']).lower()
         assert profile['audit_focus'].lower() in xml_text(audit_program['bytes']).lower()
         assert any(title.lower() in xml_text(instruction_list['bytes']).lower() for title in profile['instructions'])
 
 
-def test_unknown_scope_is_explicit_ai_draft_with_provenance_and_official_sources():
+def test_iso_order_four_is_not_removed_as_a_job_description():
+    data = sample_data()
+    itr = [x for x in data['staff'] if not x['is_worker']]
+    workers = [x for x in data['staff'] if x['is_worker']]
+    result = generate_iso_suot_package_v2(
+        data['company'], itr, generator.calculate_dates('20.08.2026'), generator.select_responsible(itr),
+        product='iso', workers=workers, objects=data['objects'], suppliers=data['suppliers'],
+    )
+    order = next(doc for doc in result['docs'] if '3.4 приказ о внесении' in doc['name'].lower())
+    assert 'ответственного лица' in xml_text(order['bytes']).lower()
+    assert order['archive_path'].startswith('смк и карточки/')
+
+
+def test_iso_dynamic_orders_keep_the_approved_order_logic():
+    data = sample_data()
+    itr = [x for x in data['staff'] if not x['is_worker']]
+    workers = [x for x in data['staff'] if x['is_worker']]
+    dates = generator.calculate_dates('20.08.2026')
+    result = generate_iso_suot_package_v2(
+        data['company'], itr, dates, generator.select_responsible(itr),
+        product='iso', workers=workers, objects=data['objects'], suppliers=data['suppliers'],
+    )
+    docs = {doc['name']: xml_text(doc['bytes']) for doc in result['docs']}
+    audit_order = next(text for name, text in docs.items() if 'Приказ 3-СМК' in name)
+    risk_order = next(text for name, text in docs.items() if 'Приказ 5-СМК' in name)
+    training_order = next(text for name, text in docs.items() if 'Приказ 9-СМК' in name)
+    instrument_order = next(text for name, text in docs.items() if 'Приказ 11-СМК' in name)
+    assert 'С целью проведения внутреннего аудита системы менеджмента качества в области' in audit_order
+    assert '1. С целью проведения' not in audit_order
+    assert dates['audit'] in risk_order
+    assert 'внештатных специалистов' in training_order
+    assert 'ежемесячно' in instrument_order
+
+
+def test_iso_initial_package_keeps_ot_forms_and_all_current_itr_even_if_ocr_marks_them_workers():
+    data = sample_data()
+    data['staff'].extend([
+        {'fio': 'Петрова Анна Сергеевна', 'position': 'Юрисконсульт', 'is_worker': True},
+        {'fio': 'Иванов Петр Петрович', 'position': 'Ведущий инженер', 'is_worker': True},
+    ])
+    result = generator.generate_package(data, 'dummy', 'iso')
+    names = [doc['name'] for doc in result['docs']]
+    assert any('ДИ Юрисконсульт' in name for name in names)
+    assert any('ДИ Ведущий инженер' in name for name in names)
+    assert any('Журнал учета должност' in name for name in names)
+    assert any('ИНСТРУКЦИЯ 1' in name for name in names)
+    journal = next(doc for doc in result['docs'] if 'Журнал учета должност' in doc['name'])
+    assert journal['archive_path'].startswith('инструкции и журналы/журналы заполненные/')
+    audit = next(doc for doc in result['docs'] if 'Программа внутренних аудитов СМК' in doc['name'])
+    assert 'Юрисконсульт' in xml_text(audit['bytes'])
+    assert 'Ведущий инженер' in xml_text(audit['bytes'])
+
+
+def test_iso_initial_calibration_schedule_has_no_sample_equipment_without_evidence():
+    company = {
+        'name': 'Тест', 'form': 'ООО', 'director_fio': 'Иванов Иван Иванович',
+        'scope': 'производство строительно-монтажных работ',
+    }
+    staff = [{'fio': 'Иванов Иван Иванович', 'position': 'Директор'}]
+    result = generate_iso_suot_package_v2(
+        company, staff, generator.calculate_dates('14.10.2026'),
+        generator.select_responsible(staff), product='iso', periodika=False,
+    )
+    schedule = next(doc for doc in result['docs']
+                    if 'график' in doc['name'].lower() and 'поверк' in doc['name'].lower())
+    table = Document(io.BytesIO(schedule['bytes'])).tables[0]
+    assert all(not cell.text.strip() for row in table.rows[5:] for cell in row.cells)
+
+
+def test_unknown_scope_is_explicit_ai_draft_without_service_documents():
     data = sample_data()
     data['company']['scope'] = 'Производство нестандартных изделий из биополимеров'
     data['certification']['scope'] = 'Производство нестандартных изделий из биополимеров'
@@ -667,15 +745,8 @@ def test_unknown_scope_is_explicit_ai_draft_with_provenance_and_official_sources
     result = generator.generate_package(data, 'dummy', 'iso_suot')
     assert not result.get('error')
     assert any('ИИ-черновик' in warning for warning in result['warnings'])
-    report = next(doc for doc in result['extra_files'] if doc['name'].endswith('Отчет происхождения профиля.json'))
-    payload = __import__('json').loads(report['bytes'].decode('utf-8'))
-    assert payload['profile']['status'] == 'ai_draft'
-    assert payload['unverified_assumptions']
-    assert {source['url'] for source in payload['official_source_registry']} == {
-        'https://pravo.by/', 'https://tnpa.by/',
-        'https://eec.eaeunion.org/comission/department/deptexreg/',
-    }
-    assert report['archive_path'].startswith('Служебная информация/')
+    assert not result['extra_files']
+    assert not any('Профиль области работ' in doc['name'] for doc in result['docs'])
 
 
 def test_iso_scope_from_current_card_never_turns_into_a_placeholder():
@@ -710,7 +781,7 @@ def test_iso_uses_explicit_document_date_and_preserves_approved_forms():
     ]
     result = generator.generate_package(data, 'dummy', 'iso')
     docs = {doc['name']: doc['bytes'] for doc in result['docs']}
-    assert not any('повышения квалификации' in name.lower() for name in docs)
+    assert any('повышения квалификации' in name.lower() for name in docs)
 
     def text(fragment):
         doc = Document(io.BytesIO(fragment))
@@ -736,14 +807,12 @@ def test_iso_uses_explicit_document_date_and_preserves_approved_forms():
     # A different supplier is not automatically a competitor for this product.
     assert 'ООО «Второй поставщик»' not in supplier
     assert 'ТРЕБУЕТ УТОЧНЕНИЯ' in supplier
-    assert 'за 2025 год' in report
+    assert 'за период с 12.01.2026 по 12.01.2026' in report
     assert 'В ОБЛАСТИ:' not in report
     assert 'Производитель работ' not in goals
     assert 'Производитель работ' not in opportunities
 
-    process = text(next(value for name, value in docs.items() if 'Отчет по процессу строительства' in name))
-    assert '0/6' not in process
-    assert '0/2' in process
+    assert not any('Отчет по процессу строительства' in name for name in docs)
 
 
 def _visible_doc_text(doc_bytes):
@@ -754,7 +823,7 @@ def _visible_doc_text(doc_bytes):
     )
 
 
-def test_iso_audit_artifacts_use_current_year_and_never_self_audit():
+def test_iso_audit_program_uses_current_year_and_keeps_suot_audit_forms_out_of_iso():
     data = sample_data()
     company = dict(data['company']); company['scope'] = data['certification']['scope']
     itr = [person for person in data['staff'] if not person['is_worker']]
@@ -772,8 +841,8 @@ def test_iso_audit_artifacts_use_current_year_and_never_self_audit():
         audited = row.cells[1].text
         auditor = row.cells[7].text
         assert audited and auditor and audited != auditor
-    assert sum('Контрольный лист внутреннего аудита' in name for name in docs) == len(itr)
-    assert sum('Отчет по внутреннему аудиту' in name for name in docs) == len(itr)
+    assert not any('Контрольный лист внутреннего аудита' in name for name in docs)
+    assert not any('Отчет по внутреннему аудиту' in name for name in docs)
 
 
 def test_iso_coordination_protocol_uses_current_staff_without_duplicate_roles():

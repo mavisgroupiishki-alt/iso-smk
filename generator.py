@@ -94,7 +94,9 @@ def calculate_dates(audit_date_str: str, development_date_str: str = '') -> dict
     policy  = audit - timedelta(days=34)
     goals   = policy + timedelta(days=5)
     risks   = policy + timedelta(days=2)
-    reports = audit - timedelta(days=7)
+    # ISO/SUOT reports are approved before the visit, not a week before it.
+    # The approved packages use a date approximately one month before audit.
+    reports = audit - timedelta(days=30)
 
     return {
         'audit':    _fmt_date(audit),
@@ -1107,7 +1109,7 @@ def generate_package(company_data: dict, api_key: str, product: str, progress_cb
     ]
     ITR_EXCLUDE = [
         'производитель работ','директор','инженер','прораб','мастер',
-        'бухгалтер','техник-программист','заведующий','юрист','кадров',
+        'бухгалтер','техник-программист','заведующий','юрист','юрисконсульт','кадров',
         'экономист','менеджер','начальник',
     ]
     import re as _re_worker

@@ -676,7 +676,7 @@ def test_satisfaction_source_reads_confirmed_scores():
     assert result['customers'][0] == {'name': 'Заказчик А', 'complaints': 'Нет', 'score': '4'}
 
 
-def test_policy_keeps_all_named_workers_of_the_same_profession():
+def test_policy_lists_only_itr_and_never_workers():
     workers = [{'fio': 'Работников Иван Иванович', 'position': 'Штукатур', 'hire_date': '12.03.2026', 'is_new_employee': True},
                {'fio': 'Работников Петр Петрович', 'position': 'Штукатур', 'hire_date': '13.03.2026', 'is_new_employee': True}]
     company = {'name': 'Тест', 'form': 'ООО', 'director_fio': 'Иванов Иван Иванович',
@@ -688,5 +688,5 @@ def test_policy_keeps_all_named_workers_of_the_same_profession():
         iso_suot={'policy_evidence': {'approval_date': '05.02.2025', 'familiarizations': []}})
     doc = Document(io.BytesIO(next(d['bytes'] for d in result['docs'] if 'Политика в области качества' in d['name'])))
     rows = {r.cells[0].text: r.cells[2].text for r in doc.tables[0].rows[1:]}
-    assert rows['Работников Иван Иванович'] == '12.03.2026'
-    assert rows['Работников Петр Петрович'] == '13.03.2026'
+    assert 'Работников Иван Иванович' not in rows
+    assert 'Работников Петр Петрович' not in rows

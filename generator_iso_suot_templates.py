@@ -230,8 +230,9 @@ def _category_of(key: str) -> str:
     if key.startswith('converted_'):
         idx = int(key.split('_')[1].split('.')[0])
         return 'suot' if idx in _SUOT_CONVERTED_IDX else 'iso'
-    # These are explicitly occupational-safety instructions, not ISO 9001 docs.
-    if key in {'instrukciya_7.docx', 'instrukciya_8.docx', 'instrukciya_9.docx', 'instrukciya_10.docx'}:
+    # The construction-process report belongs to SUOT.  General OT instructions
+    # remain part of the ISO initial archive too, as in the approved packages.
+    if key == 'smk_doc_15.docx':
         return 'suot'
     return 'iso'
 
@@ -727,15 +728,21 @@ def _set_text(paragraph, text: str) -> None:
         paragraph.add_run(text)
 
 
-def _rewrite_report_period(data: bytes, reporting_year: str) -> bytes:
-    """Annual reports state one completed year, never template date ranges."""
+def _rewrite_report_period(data: bytes, dates: dict, periodika: bool) -> bytes:
+    """Use a document-date period for a new package and a year for periodika."""
     doc = Document(io.BytesIO(data))
     pattern = re.compile(r'за\s+период\s+с\s+\d{1,2}[.]\d{1,2}[.]\d{4}\s*(?:г[.]?)?\s+по\s+\d{1,2}[.]\d{1,2}[.]\d{4}\s*(?:г[.]?)?', re.I)
     single_year = re.compile(r'за\s+\d{4}\s+год', re.I)
+    if periodika:
+        label = f"за {str(dates.get('reporting_year') or dates.get('year') or '').strip()} год"
+    else:
+        start = str(dates.get('document') or dates.get('policy') or '').strip()
+        finish = str(dates.get('reports') or dates.get('document') or '').strip()
+        label = f'за период с {start} по {finish}' if start and finish else 'за период с ТРЕБУЕТ УТОЧНЕНИЯ по ТРЕБУЕТ УТОЧНЕНИЯ'
 
     def rewrite(value: str) -> str:
-        value = pattern.sub(f'за {reporting_year} год', value)
-        return single_year.sub(f'за {reporting_year} год', value)
+        value = pattern.sub(label, value)
+        return single_year.sub(label, value)
 
     for paragraph in doc.paragraphs:
         changed = rewrite(paragraph.text)
@@ -1161,11 +1168,28 @@ def _archive_folder_for_document(name: str) -> str:
         if 'иот' in text or 'инструкц' in text or 'при работе с электроинструментом' in text:
             return 'СУОТ/3 Инструкции'
         return 'СУОТ/8 Формы и прочее'
-    if 'приказ' in text:
-        return 'ИСО 9001/1 Приказы'
-    if any(token in text for token in ('должност', 'ди ', 'инструкц', 'журнал')):
-        return 'ИСО 9001/2 Инструкции и журналы'
-    return 'ИСО 9001/3 СМК и карточки'
+    # ISO follows the approved client archive structure.  Orders and records
+    # of the QMS remain together in «смк и карточки»; only instructions and
+    # journals have their own nested working folders.
+    if 'карточка оценки поставщик' in text or 'оценке удовлетворенности заказчик' in text:
+        return 'смк и карточки/карточки поставщиков'
+    if 'журнал' in text:
+        customer_journals = (
+            'договоров с заказчиками', 'договоров с поставщиками',
+            'регистрации приказов',
+            'входящей документации', 'исходящей корреспонденции',
+        )
+        is_project_estimate_journal = 'проектно' in text and 'смет' in text
+        return (
+            'инструкции и журналы/журналы заказчику'
+            if is_project_estimate_journal or any(token in text for token in customer_journals)
+            else 'инструкции и журналы/журналы заполненные'
+        )
+    if 'должностная инструкц' in text or re.search(r'(?:^|[-–—]\s*)\d*\s*ди\s+', text):
+        return 'инструкции и журналы/должностные инструкции'
+    if 'инструкци' in text or 'иот ' in text:
+        return 'инструкции и журналы/инструкции по от'
+    return 'смк и карточки'
 
 
 def _different_auditor(audited: dict, auditors: list[dict], index: int,
@@ -2250,20 +2274,10 @@ def _supplier_card_doc(company: dict, supplier: dict, comparison_supplier: dict 
         if any_score:
             actual[9].text = str(total).replace('.', ',')
 
-    # Always show what is actually known about the supplier evaluation.
-    status = str(supplier.get('status') or '').strip()
-    decision = str(supplier.get('decision') or supplier.get('applicability') or '').strip()
-    p = doc.add_paragraph(); p.add_run('Сведения об оценке поставщика').bold = True
-    doc.add_paragraph(f'Статус в перечне: {status or "действующий поставщик по предоставленному перечню"}.')
+    # Keep the approved card layout: no explanatory paragraphs after the
+    # table. Scores are entered only from factual supplier evaluation data.
     if scores:
-        if actual[9].text.strip(): doc.add_paragraph(f'Суммарная балльная оценка: {actual[9].text.strip()}.')
-        doc.add_paragraph(f'Решение о применимости: {decision or "ТРЕБУЕТ УТОЧНЕНИЯ"}.')
-    else:
-        note = doc.add_paragraph()
-        note.add_run(
-            'ТРЕБУЕТ УТОЧНЕНИЯ: отсутствуют фактические баллы по цене, качеству, срокам, '
-            'условиям оплаты и опыту работы. Заполните оценку по фактическим условиям сотрудничества.'
-        )
+        actual[10].text = str(supplier.get('decision') or supplier.get('applicability') or actual[10].text or '').strip()
 
     return _doc_bytes(doc)
 
@@ -2457,36 +2471,50 @@ def _dynamic_role_orders(company: dict, itr: list, dates: dict, resp: dict,
     if 'iso' in wanted_categories:
         items = [
             ('3-СМК', 'О назначении аудиторов для проведения внутреннего аудита',
-             [f'С целью проведения внутреннего аудита системы менеджмента качества в области «{scope}».',
-              f'Назначить внутренними аудиторами: {labels(auditors)}.',
-              'Специалистам организации обеспечить представление требуемой информации и данных, достоверность сведений и необходимые условия для проведения аудита.',
-              'Контроль за исполнением приказа оставляю за директором.'], auditors),
+             [f'Назначить внутренними аудиторами: {labels(auditors)}.',
+              'Специалистам организации обеспечить представление требуемой информации и данных, достоверность сведений.',
+              'Специалистам организации создать необходимые условия для проведения аудита.',
+              'Контроль за исполнением приказа оставляю за собой.'], auditors,
+             f'С целью проведения внутреннего аудита системы менеджмента качества в области «{scope}».'),
             ('5-СМК', 'О проведении оценки и анализа рисков',
-             [f'В связи с внедрением системы менеджмента качества в области «{scope}».',
-              f'Создать рабочую группу по идентификации и оценке рисков в составе: {labels(risk_group)}.',
-              'Рабочей группе провести идентификацию и оценку рисков по действующим процессам организации.',
-              'Контроль за исполнением приказа оставляю за директором.'], risk_group),
+             [f'Директору {_person_order_label(director)} организовать проведение процедуры идентификации, оценки и анализа рисков согласно СТП СМК 02-{dates.get("year") or "ТРЕБУЕТ УТОЧНЕНИЯ"}.',
+              f'Для проведения идентификации, оценки и анализа рисков создать экспертную группу в составе: {labels(risk_group)}.',
+              f'Идентификацию, оценку и анализ рисков провести в срок до {dates.get("audit") or "ТРЕБУЕТ УТОЧНЕНИЯ"}.',
+              'Контроль за исполнением приказа оставляю за собой.'], risk_group,
+             f'В связи с внедрением системы менеджмента качества и руководства по качеству РК СМК 01-{dates.get("year") or "ТРЕБУЕТ УТОЧНЕНИЯ"}.'),
             ('6-СМК', 'О назначении владельца процесса',
-             [f'Назначить владельцем процесса «{scope}»: {_person_order_label(process_person)}.', 'Владельцу процесса обеспечить мониторинг показателей и управление рисками процесса.'], [process_person]),
+             [f'Назначить {_person_order_label(process_person)} владельцем процесса «{scope}» в соответствии с СТП СМК 04-{dates.get("year") or "ТРЕБУЕТ УТОЧНЕНИЯ"}.',
+              'Контроль за исполнением приказа оставляю за собой.'], [process_person]),
             ('7-СМК', 'О назначении ответственного за фонд ТНПА, НПА и документов СМК',
-             [f'В целях актуализации фонда ТНПА, НПА и документов СМК в области «{scope}».',
-              f'Назначить ответственным за актуализацию и управление документами СМК: {_person_order_label(fnpa_person)}.',
-              f'Назначить ответственным за ТТК, ТНПА и НПА: {_person_order_label(process_person or fnpa_person)}.',
-              'Контроль за исполнением приказа оставляю за директором.'], [fnpa_person, process_person]),
+             [f'Назначить {_person_order_label(director)} ответственным за управление фондом документации СМК.',
+              f'Назначить {_person_order_label(fnpa_person or process_person)} ответственным за управление фондом ТТК, ТНПА и НПА.',
+              'Контроль за исполнением приказа оставляю за собой.'], [director, fnpa_person, process_person]),
             ('8-СМК', 'О создании Координационного совета',
-             [f'В целях координации работ по функционированию СМК в области «{scope}».',
-              f'Создать Координационный совет в составе: {labels(council)}.',
+             [f'Создать Координационный совет организации в следующем составе: {labels(council)}.',
               'Совету осуществлять мониторинг результативности СМК и мероприятий по улучшению.',
-              'Контроль за исполнением приказа оставляю за директором.'], council),
+              'Контроль за исполнением приказа оставляю за собой.'], council,
+             'Для обеспечения поддержания в рабочем состоянии процессов СМК, постоянного мониторинга, оценки и координации системы менеджмента качества.'),
             ('9-СМК', 'О проведении внутреннего обучения специалистов',
-             [f'Провести внутреннее обучение специалистов для области «{scope}»: {labels(itr)}.', 'Тематика обучения: документированная информация СМК и внутренний аудит.'], _unique_people(itr)),
+             [f'Провести внутреннее обучение следующих специалистов: {labels(itr)}.',
+              'Разработать программу внутреннего обучения по теме «Документальное оформление и порядок разработки системы менеджмента качества. Внутренний аудит системы менеджмента качества».',
+              'При необходимости провести обучение с привлечением внештатных специалистов, имеющих подтверждённую компетентность внутреннего аудитора.',
+              'Контроль за исполнением приказа оставляю за собой.'], _unique_people(itr),
+             'С целью подготовки специалистов в области ведения документированной информации СМК и проведения внутреннего аудита СМК.'),
             ('10-СМК', 'О назначении ответственного за входной контроль',
-             [f'Для области «{scope}» назначить ответственным за организацию входного контроля: {_person_order_label(process_person)}.'], [process_person]),
+             [f'Назначить {_person_order_label(process_person)} ответственным за проведение входного контроля продукции и материалов.',
+              'Контроль за исполнением приказа оставляю за собой.'], [process_person],
+             'С целью повышения качества выполняемых работ и обеспечения входного контроля продукции и материалов.'),
             ('11-СМК', 'О технических осмотрах средств измерений',
-             [f'Для области «{scope}» назначить ответственным за учёт, технический осмотр и своевременную поверку средств измерений: {_person_order_label(process_person or fnpa_person)}.'], [process_person or fnpa_person]),
+             [f'Назначить {_person_order_label(process_person or fnpa_person)} ответственным за проведение технического осмотра средств измерений, составление графика поверки и передачу средств измерений на поверку.',
+              f'{_person_order_label(process_person or fnpa_person)} проводить технический осмотр средств измерений ежемесячно с регистрацией результатов в журнале технического осмотра.',
+              'Специалистам, использующим средства измерений и испытательное оборудование, передавать их для технического осмотра не позднее 10 числа текущего месяца.',
+              'Контроль за исполнением приказа оставляю за собой.'], [process_person or fnpa_person],
+             'В целях обеспечения исправного технического состояния средств измерений и испытательного оборудования в соответствии с требованиями ТНПА.'),
         ]
-        for number,title,clauses,people in items:
-            docs.append({'name': f'{org} - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company,dates,number,title,clauses,people,scope,standard='iso')})
+        for item in items:
+            number, title, clauses, people = item[:4]
+            preamble = item[4] if len(item) > 4 else ''
+            docs.append({'name': f'{org} - Приказ {number} {title}.docx', 'bytes': _appointment_order_doc(company, dates, number, title, clauses, people, scope, preamble, standard='iso')})
 
     if 'suot' in wanted_categories:
         ot_people = _unique_people(commission_people)
@@ -3002,8 +3030,6 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
     for key in keys:
         if key == 'converted_1.docx':  # known corrupt pseudo-docx
             continue
-        if key == 'smk_doc_23.docx':  # not part of this ISO/SUOT package
-            continue
         if key in _DYNAMIC_KEYS or key in _DYNAMIC_ROLE_ORDER_KEYS:
             continue
         if key in _ITR_TEMPLATE_RULES and key not in applicable_itr_template_keys:
@@ -3049,7 +3075,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 company=render_company, scope_text=scope, dates=dates,
             )
             if key in {'smk_doc_14.docx', 'smk_doc_15.docx', 'smk_doc_24.docx'}:
-                data = _rewrite_report_period(data, str(dates.get('reporting_year') or dates.get('year') or ''))
+                data = _rewrite_report_period(data, dates, periodika)
             if category == 'iso':
                 data = _normalize_iso_document_references(data, str(dates.get('year') or ''))
             elif category == 'suot':
@@ -3062,7 +3088,15 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 data = _ensure_scope_in_report(data, scope)
             if key == 'smk_doc_14.docx':
                 data = _ensure_satisfaction_objects(data, objects, (iso_suot or {}).get('satisfaction_customers'))
-            if key == 'smk_doc_16.docx' and periodika:
+            # A calibration schedule is not an inventory register.  The source
+            # template contains sample instruments, which must never survive
+            # when the customer did not attach a verification/calibration
+            # record.  Keep the table empty until factual evidence is present
+            # for either an initial or a periodic package.
+            calibration_evidence = any((iso_suot or {}).get(field) for field in (
+                'verification_documents', 'calibration_documents', 'measurement_tools',
+            ))
+            if key == 'smk_doc_16.docx' and not calibration_evidence:
                 data = _empty_calibration_schedule(data)
             if key == 'smk_doc_15.docx':
                 data = _replace_process_object_count(data, objects)
@@ -3082,22 +3116,22 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             company=render_company, scope_text=scope, dates=dates,
         )
         docs.append({'name': f'{org} - 1 Политика в области качества.docx',
-                     'bytes': _iso_policy_doc(policy_template, _unique_people(list(itr or []) + list(workers or [])),
+                     'bytes': _iso_policy_doc(policy_template, _unique_people(itr),
                                               dates, periodika, (iso_suot or {}).get('policy_evidence'))})
-        # These two appendices are part of the approved ISO set.  A periodic
-        # package still needs a current organisational structure and document
-        # list; omitting them makes the package look incomplete and leaves the
-        # previous commission/staff frozen in an old version.
-        prog('Приложение 1 Организационная структура СМК')
-        docs.append({
-            'name': f'{org} - Приложение 1 организационная структура.docx',
-            'bytes': _iso_org_structure_doc(company, itr, workers_rows, dates),
-        })
-        prog('Приложение 2 Перечень документов СМК')
-        docs.append({
-            'name': f'{org} - Приложение 2 Перечень документов СМК.docx',
-            'bytes': _iso_document_list_doc(company, dates),
-        })
+        if periodika:
+            # Appendices 1–2 accompany the periodic ISO update only.  They
+            # are not baseline-package documents and must not appear in a new
+            # ISO package merely because they exist in the template library.
+            prog('Приложение 1 Организационная структура СМК')
+            docs.append({
+                'name': f'{org} - Приложение 1 организационная структура.docx',
+                'bytes': _iso_org_structure_doc(company, itr, workers_rows, dates),
+            })
+            prog('Приложение 2 Перечень документов СМК')
+            docs.append({
+                'name': f'{org} - Приложение 2 Перечень документов СМК.docx',
+                'bytes': _iso_document_list_doc(company, dates),
+            })
         prog('Лист ознакомления с целями СМК')
         awareness_template = render_generic(
             'smk_doc_6.docx', _OLD_COMPANY, company_new, people_map, extra,
@@ -3134,22 +3168,6 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             )
             docs.append({'name': f'{org} - 4.1 Программа внутренних аудитов СМК.docx',
                          'bytes': _audit_program_doc(company, itr, dates, 'iso', audit_template, profile, periodika)})
-        if not periodika:
-            audit_commission = _unique_people(resp.get('auditors') or itr[:3])
-            for index, person in enumerate(_unique_people(itr), 1):
-                auditor = _different_auditor(person, audit_commission, index, itr)
-                fio = str(person.get('fio') or index)
-                prog(f'Контрольный лист аудита СМК: {fio}')
-                docs.append({
-                    'name': f'{org} - Контрольный лист внутреннего аудита СМК {index}.docx',
-                    'bytes': _audit_checklist_doc(company, person, auditor, dates, 'iso'),
-                })
-                prog(f'Отчет внутреннего аудита СМК: {fio}')
-                docs.append({
-                    'name': f'{org} - Отчет по внутреннему аудиту СМК {index}.docx',
-                    'bytes': _audit_report_doc(company, person, auditor, dates, 'iso'),
-                })
-
         # Supplier evaluation cards must use the current supplier list, never the
         # unrelated suppliers from the sample company.
         supplier_rows = [dict(x) for x in (suppliers or []) if isinstance(x, dict)]
@@ -3179,7 +3197,13 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                     seen_positions.add(key)
 
             def is_job_description(doc: dict) -> bool:
-                return bool(re.search(r'(^|\s)(ди|должност)', _norm(doc.get('name')), re.I))
+                # «Приказ ... о внесении изменений в ДИ» is not a job
+                # description.  Looking for every standalone «ДИ» deleted the
+                # mandatory ISO order № 4 from finished archives.
+                name = _norm(doc.get('name'))
+                return 'должностная инструкц' in name or bool(
+                    re.search(r'(^|[-–—]\s*)\d*\s*ди\s+', name, re.I)
+                )
 
             def has_current_position(doc: dict) -> bool:
                 name = _norm(doc.get('name'))
@@ -3282,26 +3306,10 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             prog(order_doc['name'][:50])
             docs.append(order_doc)
 
-    # Initial packages retain provenance; periodic packages report review
-    # requirements as warnings instead of adding a service-information folder.
+    # Package output must contain only deliverable documents. Scope provenance
+    # and source registers remain server-side diagnostic data, never a visible
+    # archive folder for the client.
     extra_files = []
-    if not periodika:
-        prog('Профиль области работ и источники проверки')
-        docs.append({
-            'name': f'{org} - 0 Профиль области работ.docx',
-            'bytes': _scope_profile_doc(company, profile, dates),
-            'archive_path': f'Служебная информация/{org} - 0 Профиль области работ.docx',
-        })
-        docs.append({
-            'name': f'{org} - 0 Реестр официальных источников.docx',
-            'bytes': _official_sources_doc(company, profile, dates),
-            'archive_path': f'Служебная информация/{org} - 0 Реестр официальных источников.docx',
-        })
-        extra_files = [{
-            'name': f'{org} - 0 Отчет происхождения профиля.json',
-            'bytes': _json.dumps(scope_profile_provenance(scope, profile), ensure_ascii=False, indent=2).encode('utf-8'),
-            'archive_path': f'Служебная информация/{org} - 0 Отчет происхождения профиля.json',
-        }]
 
     # A legacy detailed order and a newer dynamic order can otherwise appear side by
     # side. Collapse them before the final package is returned.
