@@ -581,11 +581,26 @@ def _clear_table_rows(table, start: int) -> None:
 
 
 def _set_journal_date_column_width(table) -> None:
-    """Keep DD.MM.YYYY on one line in the ISO audit journal."""
+    """Keep DD.MM.YYYY and complete rows readable in the ISO audit journal."""
     width = Cm(2.1)
     table.columns[0].width = width
     for row in table.rows:
         row.cells[0].width = width
+        row_properties = row._tr.get_or_add_trPr()
+        if not row_properties.findall(qn('w:cantSplit')):
+            row_properties.append(OxmlElement('w:cantSplit'))
+
+
+def _make_audit_journal_readable(doc: Document, table) -> None:
+    """Match the compact human audit-journal form without clipping a row."""
+    section = doc.sections[0]
+    section.bottom_margin = Cm(1.0)
+    for row in table.rows:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.name = 'Times New Roman'
+                    run.font.size = Pt(9)
 
 
 def _make_audit_program_table_readable(doc: Document, table) -> None:
@@ -931,13 +946,7 @@ def _iso_policy_doc(template_data: bytes, itr: list, dates: dict, periodika: boo
             updated = re.sub(r'\b\d{2}\.\d{2}\.\d{4}\b', 'ТРЕБУЕТ УТОЧНЕНИЯ', paragraph.text)
             if updated != paragraph.text:
                 _set_text(paragraph, updated)
-    policy_people = list(itr or [])
-    if periodika:
-        present = {_norm(person.get('fio')) for person in policy_people if person.get('fio')}
-        for row in evidence.get('familiarizations', []):
-            if isinstance(row, dict) and row.get('fio') and _norm(row['fio']) not in present:
-                policy_people.append({'fio': row['fio']})
-                present.add(_norm(row['fio']))
+    policy_people = _policy_people(itr, evidence)
     _replace_staff_signature_rows(doc, policy_people, '')
     table = next((t for t in doc.tables if len(t.columns) == 3 and t.rows
                   and 'фио' in t.rows[0].cells[0].text.lower()), None)
@@ -962,6 +971,112 @@ def _iso_policy_doc(template_data: bytes, itr: list, dates: dict, periodika: boo
 def _iso_awareness_doc(template_data: bytes, people: list, dates: dict) -> bytes:
     doc = Document(io.BytesIO(template_data))
     _replace_staff_signature_rows(doc, people, str(dates.get('document') or dates.get('goals') or ''))
+    return _doc_bytes(doc)
+
+
+def _position_identity(position: str) -> str:
+    """Stable comparison key for equivalent spellings of an ITR position."""
+    key = _norm(position)
+    if 'ведущ' in key and 'инженер' in key and ('пто' in key or 'производственно техническ' in key):
+        return 'ведущий инженер пто'
+    if ('производител' in key and 'работ' in key) or 'прораб' in key:
+        return 'производитель работ'
+    return key
+
+
+def _reference_position_rows(itr: list, iso_suot: dict | None) -> list[dict]:
+    """Add explicit prior-package roles without inventing a person for them."""
+    rows, seen = [], set()
+    for person in itr or []:
+        if not isinstance(person, dict):
+            continue
+        position = str(person.get('position') or '').strip()
+        key = _position_identity(position)
+        if position and key not in seen:
+            rows.append(dict(person))
+            seen.add(key)
+    for raw in (iso_suot or {}).get('reference_positions') or []:
+        position = str(raw.get('position') if isinstance(raw, dict) else raw or '').strip()
+        key = _position_identity(position)
+        if position and key not in seen:
+            rows.append({'position': position, 'source_reference': True})
+            seen.add(key)
+    return rows
+
+
+def _policy_people(itr: list, evidence: dict | None) -> list[dict]:
+    """Preserve verified familiarisation rows when a prior policy is uploaded."""
+    people = _unique_people(itr)
+    present = {_norm(person.get('fio')) for person in people if person.get('fio')}
+    for row in (evidence or {}).get('familiarizations') or []:
+        if not isinstance(row, dict):
+            continue
+        fio = str(row.get('fio') or '').strip()
+        key = _norm(fio)
+        if fio and key not in present:
+            people.append({'fio': fio, 'source_policy': True})
+            present.add(key)
+    return people
+
+
+def _job_description_register_doc(template_data: bytes, company: dict,
+                                  positions: list[dict], dates: dict) -> bytes:
+    """Rebuild the DI register from exactly the positions that get a DI file."""
+    doc = Document(io.BytesIO(template_data))
+    document_date = str(dates.get('document') or dates.get('goals') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
+    for paragraph in doc.paragraphs:
+        if 'начат' in _norm(paragraph.text):
+            _set_text(paragraph, re.sub(r'\d{2}\.\d{2}\.\d{4}', document_date, paragraph.text))
+    table = next((table for table in doc.tables if len(table.columns) >= 6 and table.rows
+                  and 'номер' in _norm(table.rows[0].cells[0].text)
+                  and 'инструкц' in _norm(table.rows[0].cells[0].text)), None)
+    if table is None:
+        return _doc_bytes(doc)
+    _clear_table_rows(table, 2)
+    developer = f"Директор {_initials(company.get('director_fio') or '')}"
+
+    def dative(position: str) -> str:
+        key = _position_identity(position)
+        forms = {
+            'директор': 'директору',
+            'ведущий инженер': 'ведущему инженеру',
+            'бухгалтер': 'бухгалтеру',
+            'менеджер': 'менеджеру',
+            'юрисконсульт': 'юрисконсульту',
+            'мастер': 'мастеру',
+            'агент по снабжению': 'агенту по снабжению',
+            'ведущий инженер пто': 'ведущему инженеру ПТО',
+            'производитель работ': 'производителю работ',
+        }
+        return forms.get(key, f'по должности «{position}»')
+
+    for index, person in enumerate(positions, 1):
+        cells = table.add_row().cells
+        position = str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ').strip()
+        values = (
+            f'ДИ-{index:02d}', f'{document_date} г.', f'{document_date} г.',
+            f'Должностная инструкция {dative(position)}', developer, '',
+        )
+        for column, value in enumerate(values[:len(cells)]):
+            cells[column].text = value
+    return _doc_bytes(doc)
+
+
+def _iso_source_information_doc(company: dict, itr: list, workers: list, dates: dict) -> bytes:
+    """Create the missing ISO source-information form from card facts only."""
+    doc = _new_doc(company, 'ИСХОДНАЯ ИНФОРМАЦИЯ ДЛЯ СМК', dates, 'document')
+    doc.add_paragraph(f"Область применения СМК: {company.get('scope') or 'ТРЕБУЕТ УТОЧНЕНИЯ'}.")
+    doc.add_paragraph(f"Численность персонала: {len(_unique_people(itr)) + len(workers or [])} чел.")
+    doc.add_paragraph('Инженерно-технические работники:')
+    table = doc.add_table(rows=1, cols=3)
+    table.style = 'Table Grid'
+    for cell, value in zip(table.rows[0].cells, ('№', 'Должность', 'ФИО')):
+        cell.text = value
+    for index, person in enumerate(itr or [], 1):
+        cells = table.add_row().cells
+        cells[0].text = str(index)
+        cells[1].text = str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
+        cells[2].text = str(person.get('fio') or '')
     return _doc_bytes(doc)
 
 
@@ -1116,8 +1231,14 @@ def _role_audit_points_iso(position: str) -> str:
         return 'п.п. 4.1–4.4, 5.2–5.3, 6.1–6.3, 7.2–7.5, 8.1, 10.1–10.3'
     if 'бухгалтер' in p:
         return 'п.п. 4.1, 4.2, 5.3, 6.1–6.3, 7.2–7.5, 10.3'
+    if 'пто' in p or 'производственно техническ' in p:
+        return 'п.п. 4.1, 4.2, 5.2–5.3, 6.1–6.3, 7.2–7.5, 8.2, 8.4, 8.7, 10.3'
+    if 'снабжен' in p or 'мтс' in p:
+        return 'п.п. 4.1, 4.2, 5.3, 6.1–6.3, 7.2–7.5, 10.3'
     if 'юрис' in p:
         return 'п.п. 4.1, 4.2, 5.3, 6.1–6.3, 7.1.6, 7.2–7.5, 8.7, 10.3'
+    if 'менеджер' in p:
+        return 'п.п. 4.1, 4.2, 7.2, 7.5, 10.3'
     if 'инженер' in p:
         return 'п.п. 4.1–4.4, 5.2–5.3, 6.1–6.3, 7.1–7.5, 8.1, 8.2, 8.4–8.7, 9.1–9.2, 10.1–10.3'
     if 'кадр' in p or 'персонал' in p:
@@ -1222,12 +1343,67 @@ def _different_auditor(audited: dict, auditors: list[dict], index: int,
     return candidates[(index - 1) % len(candidates)] if candidates else {}
 
 
+def _audit_evidence_rows(audit_evidence: dict | None) -> list[dict]:
+    """Return the verified rows of a predecessor's ISO audit programme.
+
+    A previous approved programme is evidence, not a hint for a model.  Its
+    grouped positions, criteria and scheduled month must survive re-generation
+    unchanged.  Invalid fragments are ignored rather than becoming a document
+    fact.
+    """
+    rows = []
+    for raw in (audit_evidence or {}).get('rows') or []:
+        if not isinstance(raw, dict):
+            continue
+        position = str(raw.get('position') or '').strip()
+        criteria = str(raw.get('criteria') or '').strip()
+        try:
+            month = int(raw.get('month'))
+        except (TypeError, ValueError):
+            continue
+        if position and criteria and 0 <= month < 12:
+            rows.append({'position': position, 'criteria': criteria, 'month': month})
+    return rows
+
+
+def _audit_evidence_journal(audit_evidence: dict | None) -> list[dict]:
+    """Return only confirmed audit-journal cells from the predecessor."""
+    rows = []
+    for raw in (audit_evidence or {}).get('journal') or []:
+        if not isinstance(raw, dict):
+            continue
+        position = str(raw.get('position') or '').strip()
+        criteria = str(raw.get('criteria') or '').strip()
+        date = str(raw.get('date') or '').strip()
+        auditor = str(raw.get('auditor') or '').strip()
+        if position and criteria:
+            rows.append({'position': position, 'criteria': criteria, 'date': date, 'auditor': auditor})
+    return rows
+
+
+def _set_audit_approval_date(doc: Document, approval_date: str) -> None:
+    """Update only the approval block, never dates recorded in the journal."""
+    if not re.fullmatch(r'\d{2}\.\d{2}\.\d{4}', str(approval_date or '').strip()):
+        return
+    for paragraph in doc.paragraphs:
+        # The body begins here; journal dates below it are historical evidence.
+        if 'программа проведения внутренних аудитов' in _norm(paragraph.text):
+            break
+        updated = re.sub(r'\b\d{2}\.\d{2}\.\d{4}\b', approval_date, paragraph.text)
+        if updated != paragraph.text:
+            _set_text(paragraph, updated)
+            return
+
+
 def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
                        template_data: bytes | None = None, profile: dict | None = None,
-                       periodika: bool = False) -> bytes:
+                       periodika: bool = False, audit_evidence: dict | None = None) -> bytes:
     if standard == 'iso' and template_data:
         doc = Document(io.BytesIO(template_data))
         period_year = str(dates.get('year') or '')
+        evidence_rows = _audit_evidence_rows(audit_evidence)
+        evidence_journal = _audit_evidence_journal(audit_evidence)
+        _set_audit_approval_date(doc, str((audit_evidence or {}).get('approval_date') or ''))
         for para in doc.paragraphs:
             if 'ПРОГРАММА проведения внутренних аудитов' in para.text:
                 _set_text(para, re.sub(r'на\s+\d{4}\s+год', f'на {period_year} год', para.text, flags=re.I))
@@ -1237,25 +1413,45 @@ def _audit_program_doc(company: dict, itr: list, dates: dict, standard: str,
             _clear_table_rows(journal, 3)
             _set_journal_date_column_width(journal)
             auditors = [p for p in itr if p.get('ot_certificate')] or list(itr or [])[:1]
-            for index, person in enumerate(itr or [], 1):
+            planned_rows = evidence_rows or [
+                {'position': str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ'),
+                 'criteria': _role_audit_points_iso(person.get('position', '')),
+                 'month': (index - 1) % 12}
+                for index, person in enumerate(itr or [], 1)
+            ]
+            journal_by_position = {
+                _norm(row['position']): row for row in evidence_journal
+            }
+            for index, planned in enumerate(planned_rows, 1):
+                position = planned['position']
+                person = next((candidate for candidate in itr or []
+                               if _norm(candidate.get('position')) == _norm(position)), {})
                 row = schedule.add_row().cells
                 row[0].text = str(index)
-                row[1].text = str(person.get('position') or 'ТРЕБУЕТ УТОЧНЕНИЯ')
-                row[2].text = _role_audit_points_iso(person.get('position', ''))
+                row[1].text = position
+                row[2].text = planned['criteria']
                 if len(row) > 3:
-                    row[3 + ((index - 1) % 12)].text = 'Х'
-                auditor = _different_auditor(person, auditors, index, itr)
+                    row[3 + planned['month']].text = 'Х'
+                has_person = bool(str(person.get('fio') or '').strip())
+                auditor = _different_auditor(person, auditors, index, itr) if has_person else {}
+                journal_source = journal_by_position.get(_norm(position), {})
                 log = journal.add_row().cells
                 values = [
-                    '' if periodika else str(dates.get('document') or dates.get('audit') or ''),
-                    _person_order_label(person),
-                    _role_audit_points_iso(person.get('position', '')),
-                    '—', '—', '—', '—', _person_order_label(auditor), '—',
+                    # A journal date is copied only from an approved predecessor.
+                    # Without that evidence a programme remains a plan, not a
+                    # fabricated record of a completed audit.
+                    journal_source.get('date', ''),
+                    journal_source.get('position') or (_person_order_label(person) if has_person else position),
+                    journal_source.get('criteria') or planned['criteria'],
+                    '', '', '', '', _person_order_label(auditor) if auditor else '', '',
                 ]
+                if journal_source.get('auditor'):
+                    values[7] = journal_source['auditor']
                 for col, value in enumerate(values[:len(log)]):
                     log[col].text = value
             for cell in journal.rows[2].cells:
                 cell.text = f'{period_year} год'
+            _make_audit_journal_readable(doc, journal)
         if profile:
             doc.add_paragraph('Профильный фокус аудита: ' + str(profile.get('audit_focus') or 'ТРЕБУЕТ УТОЧНЕНИЯ') + '.')
         return _doc_bytes(doc)
@@ -2951,6 +3147,9 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
     # rather than pretending that it has an approved profile.
     profile = resolve_scope_profile(scope, profile_request or 'ai_draft')
     workers_rows = _actual_worker_rows(workers or [])
+    reference_itr = _reference_position_rows(itr, iso_suot)
+    policy_evidence = (iso_suot or {}).get('policy_evidence') or {}
+    policy_people = _policy_people(itr, policy_evidence)
 
     director = (resp.get('director') or {}) if isinstance(resp, dict) else {}
     director_fio = str(company.get('director_fio') or director.get('fio') or '').strip()
@@ -3131,8 +3330,8 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             company=render_company, scope_text=scope, dates=dates,
         )
         docs.append({'name': f'{org} - 1 Политика в области качества.docx',
-                     'bytes': _iso_policy_doc(policy_template, _unique_people(itr),
-                                              dates, periodika, (iso_suot or {}).get('policy_evidence'))})
+                     'bytes': _iso_policy_doc(policy_template, policy_people,
+                                              dates, periodika, policy_evidence)})
         if periodika:
             # Appendices 1–2 accompany the periodic ISO update only.  They
             # are not baseline-package documents and must not appear in a new
@@ -3153,7 +3352,7 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
             company=render_company, scope_text=scope, dates=dates,
         )
         docs.append({'name': f'{org} - 2.2 Лист ознакомления с целями.docx',
-                     'bytes': _iso_awareness_doc(awareness_template, itr, dates)})
+                     'bytes': _iso_awareness_doc(awareness_template, policy_people, dates)})
         prog('Протокол Координационного совета по фактическому составу')
         docs.append({
             'name': f'{org} - 3.8.2 Протокол КС.docx',
@@ -3182,7 +3381,10 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                 company=render_company, scope_text=scope, dates=dates,
             )
             docs.append({'name': f'{org} - 4.1 Программа внутренних аудитов СМК.docx',
-                         'bytes': _audit_program_doc(company, itr, dates, 'iso', audit_template, profile, periodika)})
+                         'bytes': _audit_program_doc(
+                             company, reference_itr, dates, 'iso', audit_template, profile, periodika,
+                             (iso_suot or {}).get('audit_evidence'),
+                         )})
         # Supplier evaluation cards must use the current supplier list, never the
         # unrelated suppliers from the sample company.
         supplier_rows = [dict(x) for x in (suppliers or []) if isinstance(x, dict)]
@@ -3204,9 +3406,9 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
         if not periodika:
             positions = []
             seen_positions = set()
-            for person in itr or []:
+            for person in reference_itr:
                 position = str(person.get('position') or '').strip()
-                key = _norm(position)
+                key = _position_identity(position)
                 if position and key not in seen_positions:
                     positions.append((position, key))
                     seen_positions.add(key)
@@ -3233,6 +3435,19 @@ def generate_iso_suot_package_v2(company: dict, itr: list, dates: dict, resp: di
                     continue
                 prog(f'Должностная инструкция: {position}')
                 docs.append({'name': f'{org} - ДИ {position}.docx', 'bytes': _generic_job_description(company, position, dates)})
+            register_index = next((index for index, doc in enumerate(docs)
+                                   if 'журнал учета должност' in _norm(doc.get('name'))), None)
+            if register_index is not None:
+                register = docs[register_index]
+                docs[register_index] = {
+                    **register,
+                    'bytes': _job_description_register_doc(register['bytes'], company, reference_itr, dates),
+                }
+            prog('Исходная информация СМК')
+            docs.append({
+                'name': f'{org} - Исходная информация СМК.docx',
+                'bytes': _iso_source_information_doc(company, itr, workers_rows, dates),
+            })
 
     # --- Deterministic dynamic SUOT documents ---
     if 'suot' in wanted_categories:

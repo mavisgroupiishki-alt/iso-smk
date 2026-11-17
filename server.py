@@ -3601,6 +3601,16 @@ def extract_text_from_file(file_bytes, filename, _depth=0):
         if ext in ('txt', 'csv'):
             return file_bytes.decode('utf-8', errors='replace')[:8000]
 
+        elif ext == 'rtf':
+            # RTF job descriptions are still common in human ISO archives.
+            # We need their filename and readable text for role discovery; this
+            # intentionally performs only local, bounded parsing.
+            raw = file_bytes.decode('cp1251', errors='replace')
+            raw = re.sub(r"\\'([0-9a-fA-F]{2})", lambda m: bytes.fromhex(m.group(1)).decode('cp1251', 'replace'), raw)
+            text = re.sub(r'\\[a-zA-Z]+-?\d*\s?|[{}]', ' ', raw)
+            text = re.sub(r'\s+', ' ', text).strip()
+            return text[:8000] if text else '[Документ RTF не удалось прочитать]'
+
         elif ext == 'docx' or ext == 'doc':
             import io
             try:
@@ -4709,10 +4719,92 @@ def _iso_suot_policy_source(file_bytes: bytes, filename: str) -> dict:
         return {}
 
 
+def _iso_suot_audit_source(file_bytes: bytes, filename: str) -> dict:
+    """Extract only confirmed ISO audit-programme facts from an approved DOCX.
+
+    This preserves the human schedule and completed-audit dates on a follow-up
+    run.  It deliberately reads tables locally and never asks a model to infer
+    a month, auditor or completion date.
+    """
+    name = str(filename).casefold().replace('ё', 'е')
+    if (not name.endswith('.docx') or 'аудит' not in name
+            or not _iso_suot_safe_docx(file_bytes)):
+        return {}
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(file_bytes))
+        paragraphs = [paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip()]
+        owners = _iso_suot_company_name_candidates('--- программа аудитов.docx ---\n' + '\n'.join(paragraphs))
+        owner = _iso_suot_source_owner(owners, paragraphs)
+        if not owner:
+            return {}
+
+        approval_dates = []
+        for paragraph in paragraphs:
+            approval_dates.extend(re.findall(r'\b\d{2}\.\d{2}\.\d{4}\b', paragraph))
+            if 'программа проведения внутренних аудитов' in paragraph.casefold():
+                break
+        approval_date = approval_dates[0] if len(set(approval_dates)) == 1 else ''
+        rows, journal = [], []
+
+        def audit_position(value):
+            value = _clean_iso_suot_source_value(value)
+            normalized = value.casefold().replace('ё', 'е')
+            if (('производител' in normalized or 'прораб' in normalized)
+                    and 'мастер' in normalized):
+                return 'Производитель работ (прораб) / Мастер'
+            return value
+
+        for table in doc.tables:
+            if not table.rows:
+                continue
+            header = ' '.join(
+                cell.text.casefold().replace('ё', 'е')
+                for header_row in table.rows[:3]
+                for cell in header_row.cells
+            )
+            if len(table.columns) >= 16 and 'проверяем' in header and 'критери' in header:
+                for row in table.rows[3:]:
+                    cells = row.cells
+                    position = audit_position(cells[1].text)
+                    criteria = _clean_iso_suot_source_value(cells[2].text)
+                    if not position or not criteria or position.casefold().startswith('проверяем'):
+                        continue
+                    months = [month for month, cell in enumerate(cells[3:15])
+                              if _clean_iso_suot_source_value(cell.text).casefold() in ('x', 'х')]
+                    if len(months) == 1:
+                        rows.append({'position': position, 'criteria': criteria, 'month': months[0]})
+            elif len(table.columns) >= 9 and 'дата' in header and 'аудитируем' in header:
+                for row in table.rows[3:]:
+                    cells = row.cells
+                    position = audit_position(cells[1].text)
+                    criteria = _clean_iso_suot_source_value(cells[2].text)
+                    if not position or not criteria:
+                        continue
+                    date = _clean_iso_suot_source_value(cells[0].text)
+                    journal.append({
+                        'position': position,
+                        'criteria': criteria,
+                        'date': date if re.fullmatch(r'\d{2}\.\d{2}\.\d{4}', date) else '',
+                        'auditor': _clean_iso_suot_source_value(cells[7].text),
+                    })
+        if not rows:
+            return {}
+        return {
+            'company': owner,
+            'approval_date': approval_date,
+            'rows': rows,
+            'journal': journal,
+        }
+    except Exception:
+        return {}
+
+
 def _iso_suot_single_doc_data(file_bytes: bytes, filename: str) -> dict:
     satisfaction = _iso_suot_satisfaction_source(file_bytes, filename)
     policy = _iso_suot_policy_source(file_bytes, filename)
-    source = satisfaction or policy
+    audit = _iso_suot_audit_source(file_bytes, filename)
+    source = satisfaction or policy or audit
     owner = source.get('company') if source else None
     if not owner:
         return {}
@@ -4721,6 +4813,8 @@ def _iso_suot_single_doc_data(file_bytes: bytes, filename: str) -> dict:
         fields['satisfaction_customers'] = satisfaction['customers']
     if policy:
         fields['policy_evidence'] = {key: policy[key] for key in ('approval_date', 'date_conflict', 'familiarizations')}
+    if audit:
+        fields['audit_evidence'] = {key: audit[key] for key in ('approval_date', 'rows', 'journal')}
     return {'company': owner, 'iso_suot': fields} if fields else {}
 
 
@@ -4957,6 +5051,67 @@ def _iso_suot_source_staff(result_text: str) -> list:
     return rows
 
 
+def _iso_suot_reference_position(value: str) -> str:
+    """Normalise a role title copied from a human ISO/SUOT package."""
+    value = _clean_iso_suot_source_value(value).replace('_', ' ')
+    value = re.sub(r'\s*\(\d+\)\s*$', '', value).strip(' -–—:;,.')
+    key = value.casefold().replace('ё', 'е')
+    if 'ведущ' in key and 'инженер' in key:
+        return 'Ведущий инженер ПТО' if ('пто' in key or 'производственно' in key) else 'Ведущий инженер'
+    if ('производител' in key and 'работ' in key) or 'прораб' in key:
+        return 'Производитель работ (прораб)'
+    canonical = (
+        ('директор', 'Директор'),
+        ('бухгалтер', 'Бухгалтер'),
+        ('менеджер', 'Менеджер'),
+        ('юрисконсульт', 'Юрисконсульт'),
+        ('агент по снабж', 'Агент по снабжению'),
+        ('мастер', 'Мастер'),
+    )
+    for marker, title in canonical:
+        if marker in key:
+            return title
+    return value
+
+
+def _iso_suot_reference_positions(result_text: str) -> list:
+    """Read role names from prior DI filenames and audit programmes.
+
+    These are role-only references: they may create a DI or programme row, but
+    never manufacture an employee record or an appointment/signature.
+    """
+    positions, seen = [], set()
+
+    def add(raw):
+        position = _iso_suot_reference_position(raw)
+        key = position.casefold().replace('ё', 'е')
+        if (not position or len(position) > 120 or key in seen
+                or any(marker in key for marker in ('журнал', 'учет', 'внесени', 'разработк'))):
+            return
+        seen.add(key)
+        positions.append({'position': position, 'source': 'previous_package'})
+
+    for path, block in _archive_document_blocks(result_text):
+        normalized_path = str(path).casefold().replace('ё', 'е')
+        filename = PurePosixPath(str(path).replace('\\', '/')).name
+        stem = re.sub(r'\.(?:docx?|rtf)$', '', filename, flags=re.I)
+        if 'должностн' in normalized_path and 'журнал' not in filename.casefold():
+            match = re.search(r'(?:^|\s)(?:\d+\s*)?(?:ди|должностн\w*\s+инструкц\w*)\s+(.+)$', stem, re.I)
+            if match:
+                add(match.group(1))
+        if 'аудит' not in normalized_path:
+            continue
+        for line in str(block).splitlines():
+            cells = [_clean_iso_suot_source_value(cell) for cell in line.split('|')]
+            if len(cells) < 3 or not re.fullmatch(r'\d+', cells[0] or ''):
+                continue
+            if not re.search(r'(?:п[.]?п[.]?|\b4[.]1\b)', cells[2], re.I):
+                continue
+            for part in re.split(r'\s{2,}|\s*/\s*', cells[1]):
+                add(part)
+    return positions
+
+
 def _iso_suot_archive_card_data(result_text: str) -> dict:
     """Build the deterministic card payload for an ISO/SUOT source archive.
 
@@ -5049,6 +5204,7 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
         company['director_position'] = 'Директор'
 
     staff = _iso_suot_source_staff(full_text)
+    reference_positions = _iso_suot_reference_positions(full_text)
     if not company.get('director_fio'):
         director_row = next((row for row in staff if 'директор' in row['position'].casefold()), None)
         if director_row:
@@ -5147,6 +5303,8 @@ def _iso_suot_archive_card_data(result_text: str) -> dict:
         data['certification'] = {'scope': scope}
     if staff:
         data['staff'] = staff
+    if reference_positions:
+        data['iso_suot'] = {'reference_positions': reference_positions}
     if objects:
         data['objects'] = objects
     if suppliers:
@@ -6667,7 +6825,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
         message = '[Архив: поддерживаются ZIP и RAR.]'
         return {'text': message, 'analysis_text': message, 'summary': message,
                 'structured_data': {}}
-    TEXT_EXTS = ('docx', 'doc', 'txt', 'csv', 'xlsx', 'xls')  # без pdf — у него своя ветка ниже
+    TEXT_EXTS = ('docx', 'doc', 'rtf', 'txt', 'csv', 'xlsx', 'xls')  # без pdf — у него своя ветка ниже
     IMAGE_EXTS = ('jpg', 'jpeg', 'png', 'webp', 'heic', 'heif')
     TEXT_INNER_LIMIT = 4 * 1024 * 1024     # обычные текстовые файлы
     WORD_SCAN_INNER_LIMIT = 30 * 1024 * 1024  # DOCX может быть контейнером сканов
@@ -6768,6 +6926,7 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
     structured_fragments = []
     satisfaction_sources = []
     policy_sources = []
+    audit_sources = []
     nested_source_conflict = False
     nested_source_unverified = False
     # A compact receipt for the interface.  Keep names, state and page number
@@ -6845,6 +7004,8 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                         satisfaction_sources.append({'company': nested_owner, 'customers': nested_iso['satisfaction_customers']})
                     if nested_owner and nested_iso.get('policy_evidence'):
                         policy_sources.append({'company': nested_owner, **nested_iso['policy_evidence']})
+                    if nested_owner and nested_iso.get('audit_evidence'):
+                        audit_sources.append({'company': nested_owner, **nested_iso['audit_evidence']})
                     prefix = f"--- {folder + '/' if folder else ''}{short} (вложенный архив) ---"
                     texts.append(prefix + "\n\n" + (nested_text or '[Вложенный архив не дал читаемого текста]'))
                     set_source_status(fixed_name, 'read_local')
@@ -6863,6 +7024,9 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                     policy = _iso_suot_policy_source(data, short)
                     if policy:
                         policy_sources.append(policy)
+                    audit = _iso_suot_audit_source(data, short)
+                    if audit:
+                        audit_sources.append(audit)
                 txt = extract_text_from_file(data, short)
                 staff_tables = _iso_suot_staff_table_text(data, short) if str(product) in ('iso', 'suot', 'iso_suot') else ''
                 if staff_tables:
@@ -7295,6 +7459,32 @@ def extract_archive_with_vision(file_bytes, filename, api_key, progress_cb=None,
                                       'date_conflict': len(item['dates']) > 1 or item['date_conflict']}
                                      for item in people.values()],
             }
+        matching_audits = [source for source in audit_sources if same_company(source)]
+        if matching_audits:
+            # Prefer the richest verified programme. A second source with a
+            # different schedule is not merged: that would manufacture a plan.
+            matching_audits.sort(key=lambda source: len(source.get('rows') or []), reverse=True)
+            selected_audit = matching_audits[0]
+            structured_data.setdefault('iso_suot', {})['audit_evidence'] = {
+                'approval_date': str(selected_audit.get('approval_date') or ''),
+                'rows': list(selected_audit.get('rows') or []),
+                'journal': list(selected_audit.get('journal') or []),
+            }
+        reference_positions = (iso_suot_card_data.get('iso_suot') or {}).get('reference_positions') or []
+        if reference_positions:
+            target = structured_data.setdefault('iso_suot', {})
+            existing = target.get('reference_positions') or []
+            seen = {
+                str(row.get('position') if isinstance(row, dict) else row or '').casefold().replace('ё', 'е').strip()
+                for row in existing
+            }
+            for row in reference_positions:
+                position = str(row.get('position') if isinstance(row, dict) else row or '').strip()
+                key = position.casefold().replace('ё', 'е')
+                if position and key not in seen:
+                    existing.append({'position': position, 'source': 'previous_package'})
+                    seen.add(key)
+            target['reference_positions'] = existing
         for section in ('company', 'certification', 'dates'):
             incoming = iso_suot_card_data.get(section)
             if incoming:

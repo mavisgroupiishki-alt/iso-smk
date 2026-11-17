@@ -3630,6 +3630,12 @@ function aiMergeStructuredSource(baseData, sourceData, allowUnverified = false) 
       base.iso_suot.satisfaction_customers, source.iso_suot.satisfaction_customers,
       row => [row?.name, row?.complaints, row?.score].map(aiNormIdentity).join('|'));
   }
+  if(Array.isArray(source.iso_suot?.reference_positions) && source.iso_suot.reference_positions.length) {
+    base.iso_suot = {...(base.iso_suot || {})};
+    base.iso_suot.reference_positions = aiMergeEntityArray(
+      base.iso_suot.reference_positions, source.iso_suot.reference_positions,
+      row => aiNormIdentity(typeof row === 'string' ? row : row?.position));
+  }
   if(source.iso_suot?.policy_evidence) {
     base.iso_suot = {...(base.iso_suot || {})};
     const incoming = source.iso_suot.policy_evidence;
