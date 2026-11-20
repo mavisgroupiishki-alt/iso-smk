@@ -58,6 +58,19 @@ class AIRouterTests(unittest.TestCase):
         self.assertIsNone(result.cost)
         self.assertFalse(self.router({**env, 'AIAI_PAID_ENABLED': 'false'}, post)._aiai_enabled())
 
+    def test_aiai_uses_official_defaults_when_only_the_secret_is_configured(self):
+        calls = []
+        def post(url, **kwargs):
+            calls.append((url, kwargs['json']['model']))
+            return FakeResponse({'choices': [{'message': {'content': 'Проверка'}}]})
+        router = self.router({
+            'AIAI_PREFERRED': 'true', 'AIAI_PAID_ENABLED': 'true',
+            'AIAI_UNLIMITED': 'true', 'AIAI_API_KEY': 'test',
+        }, post)
+        result = router.complete_text(system='', messages=[{'role': 'user', 'content': 'Тест'}])
+        self.assertEqual(result.provider, 'aiai')
+        self.assertEqual(calls, [('https://api.aiai.by/v1/chat/completions', 'gpt-4o')])
+
     def test_fenced_json_is_validated_and_delivered_as_json(self):
         router = self.router({'GEMINI_API_KEY': 'test'}, lambda *_args, **_kwargs: FakeResponse(
             {'candidates': [{'content': {'parts': [{'text': '```json\n{"company":"Тест"}\n```'}]}}]}))

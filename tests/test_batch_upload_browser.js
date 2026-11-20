@@ -24,17 +24,17 @@ const path = require('path');
       aiAttachedFiles = [{name: 'сотрудники.xlsx'}, {name: 'счет.docx'}];
       document.getElementById('ai-input').value = '';
     });
-    page.on('dialog', dialog => dialog.type() === 'prompt' ? dialog.accept('Бета') : dialog.accept());
     await page.evaluate(() => aiSend());
     const card = await page.evaluate(() => aiCurrentData);
     if (card.company?.name !== 'Альфа' || card.staff?.[0]?.fio !== 'Иванов Иван Иванович') throw new Error('batch not transferred');
     await page.evaluate(() => {
       aiCurrentData = {certification: {standard: 'iso'}};
+      aiSetCompanyName('Бета');
       aiAttachedFiles = [{name: 'сотрудники.xlsx'}];
     });
     await page.evaluate(() => aiSend());
     const named = await page.evaluate(() => aiCurrentData);
-    if (named.company?.name !== 'Бета' || named.staff?.[0]?.fio !== 'Иванов Иван Иванович') throw new Error('manual company prompt failed');
+    if (named.company?.name !== 'Бета' || named.staff?.[0]?.fio !== 'Иванов Иван Иванович') throw new Error('selected company title was not retained');
     await page.evaluate(() => {
       aiCurrentData = {certification: {standard: 'iso'}};
       aiAttachedFiles = [{name: 'документ.docx'}];
@@ -58,7 +58,7 @@ const path = require('path');
     await page.evaluate(() => aiSend());
     const conflict = await page.evaluate(() => ({card: aiCurrentData, files: aiAttachedFiles.length, message: document.getElementById('ai-messages').textContent}));
     if (conflict.files !== 0 || conflict.message.includes('Документы содержат разные компании')) throw new Error('ISO upload was blocked on company mismatch');
-    if (conflict.card.company?.name !== 'Чужая' || conflict.card.staff?.length !== 1 || conflict.card.objects?.length) throw new Error('conflicting source polluted the company card: ' + JSON.stringify(conflict.card));
+    if (conflict.card.company?.name !== 'Чужая' || conflict.card.objects?.[0]?.name !== 'Чужой объект') throw new Error('selected company title did not accept source data: ' + JSON.stringify(conflict.card));
     await page.evaluate(() => {
       aiCurrentData = {company: {name: 'АГС-монтаж'}, certification: {standard: 'iso'}, staff: [{fio: 'Свой Сотрудник', position: 'Директор'}]};
       aiAttachedFiles = [{name: 'архив.rar'}];
@@ -75,8 +75,8 @@ const path = require('path');
     await page.evaluate(() => aiSend());
     if (!(await page.evaluate(() => window.modelReceivedArchive))) throw new Error('conflicted archive text was not sent for analysis');
     const conflictedArchiveCard = await page.evaluate(() => aiCurrentData);
-    if (conflictedArchiveCard.staff?.length !== 1 || conflictedArchiveCard.staff[0].fio !== 'Свой Сотрудник' || conflictedArchiveCard.objects?.length) throw new Error('conflicted archive polluted the company card');
-    if (await page.evaluate(() => window.conflictedCalls !== 1 || aiHistory.some(message => message.content.includes('Исходный текст архива')))) throw new Error('conflict text persisted or correction retry was called');
+    if (conflictedArchiveCard.company?.name !== 'АГС-монтаж' || conflictedArchiveCard.objects?.[0]?.name !== 'Чужой объект') throw new Error('selected title did not keep the destination card while accepting archive data: ' + JSON.stringify(conflictedArchiveCard));
+    if (await page.evaluate(() => window.conflictedCalls !== 1 || !aiHistory.some(message => message.content.includes('Исходный текст архива')))) throw new Error('archive input was not preserved for analysis');
     await page.evaluate(() => {
       aiCurrentData = {company: {name: 'Альфа', unp: '123456789'}, certification: {standard: 'iso'}};
       aiAttachedFiles = [{name: 'реквизиты.docx'}];
@@ -89,7 +89,7 @@ const path = require('path');
       document.getElementById('ai-input').value = 'исправь объект';
     });
     await page.evaluate(() => aiSend());
-    if (await page.evaluate(() => window.modelOnlyConflictCalls !== 1 || aiCurrentData.objects?.length || aiCurrentData.staff?.length || aiHistory.some(message => message.content.includes('ЧУЖОЙ ТЕКСТ ТОЛЬКО ИИ')))) throw new Error('model-only conflict bypassed protection');
+    if (await page.evaluate(() => window.modelOnlyConflictCalls !== 1 || aiCurrentData.company?.name !== 'Альфа' || aiCurrentData.objects?.[0]?.name !== 'Чужой объект' || !aiHistory.some(message => message.content.includes('ЧУЖОЙ ТЕКСТ ТОЛЬКО ИИ')))) throw new Error('selected title was not preserved while processing the source');
     await page.evaluate(() => {
       aiCurrentData = {company: {name: 'Альфа', unp: '123456789'}, certification: {standard: 'iso'}};
       aiAttachedFiles = [{name: 'реквизиты.docx'}];
@@ -113,7 +113,7 @@ const path = require('path');
     await page.evaluate(() => aiSend());
     const modelConflict = await page.evaluate(() => ({card: aiCurrentData, called: window.modelCalled}));
     if (!modelConflict.called) throw new Error('mock model was not reached');
-    if (modelConflict.card.company?.name !== 'Альфа' || modelConflict.card.staff?.length) throw new Error('conflicting AI data entered the card');
+    if (modelConflict.card.company?.name !== 'Альфа' || modelConflict.card.staff?.[0]?.fio !== 'Петров Петр Петрович') throw new Error('selected title was overwritten or response data was dropped');
     await page.evaluate(() => {
       aiCurrentData = {company: {name: 'Альфа', unp: '123456789'}, certification: {standard: 'iso'}};
       aiAttachedFiles = [{name: 'счет.docx'}];

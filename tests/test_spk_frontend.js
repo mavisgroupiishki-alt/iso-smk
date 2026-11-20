@@ -144,6 +144,8 @@ context.aiNormalizeCompanyAttestation = () => {};
 context.aiApplySelectedRequestProfile = () => {};
 context.aiSyncRequestProfileControls = () => {};
 context.aiWorkerPickerHtml = () => '';
+context.aiCompanyNameControl = () => '';
+context.aiDocumentDateControl = () => '';
 context.aiSaveCurrentCompany = () => ({ catch() {} });
 context.aiValidateReadiness = () => ({ ready: false, warnings: [], missing: [] });
 context.igorEscape = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');

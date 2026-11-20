@@ -4,8 +4,10 @@ const vm = require('vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 if (!html.includes('id="ai-document-date"') || !html.includes('aiSetDocumentDateToday()') ||
-    !html.includes('function aiDocumentDateControl()') || !html.includes('html += aiDocumentDateControl();')) {
-  throw new Error('company card does not offer a persistent direct document-date control');
+    !html.includes('function aiDocumentDateControl()') || !html.includes('html += aiDocumentDateControl();') ||
+    !html.includes('id="ai-company-name"') || !html.includes('function aiCompanyNameControl()') ||
+    !html.includes('html += aiCompanyNameControl();')) {
+  throw new Error('company card does not offer persistent direct date and name controls');
 }
 function extractFunction(name) {
   const start = html.indexOf(`function ${name}(`);
@@ -48,6 +50,8 @@ vm.runInContext([
   extractFunction('aiNormalizeDocumentDate'),
   extractFunction('aiSetDocumentDate'),
   extractFunction('aiDocumentDateControl'),
+  extractFunction('aiSetCompanyName'),
+  extractFunction('aiCompanyNameControl'),
 ].join('\n\n'), context);
 
 if (context.aiValidateReadiness(context.aiCurrentData).ready) {
@@ -69,5 +73,10 @@ if (context.aiNormalizeDocumentDate('13.10.2026') !== '13.10.2026' ||
 if (!context.aiDocumentDateControl().includes('value="13.10.2026"') ||
     !context.aiDocumentDateControl().includes('placeholder="ДД.ММ.ГГГГ"')) {
   throw new Error('manual date control does not show the saved editable value');
+}
+context.aiSetCompanyName('  Кровлюкс  ');
+if (context.aiCurrentData.company.name !== 'Кровлюкс' || rendered !== 2 ||
+    !context.aiCompanyNameControl().includes('value="Кровлюкс"')) {
+  throw new Error('manual company-name control does not persist the selected card identity');
 }
 console.log('document date frontend test passed');

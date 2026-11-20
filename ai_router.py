@@ -171,7 +171,7 @@ class AIProviderRouter:
         ]
         if self._vibe_allowed():
             candidates.append(Candidate("vibecode", self.env.get("VIBE_MODEL", "bitrix/bitrixgpt-5.5")))
-        paid = Candidate("aiai", self.env.get("AIAI_MODEL", ""))
+        paid = Candidate("aiai", self.env.get("AIAI_MODEL", "gpt-4o"))
         if str(self.env.get("AIAI_PREFERRED", "")).lower() == "true":
             candidates.insert(0, paid)
         else:
@@ -190,7 +190,7 @@ class AIProviderRouter:
         candidates.append(Candidate("cloudflare", self.env.get("CLOUDFLARE_VISION_MODEL", "@cf/meta/llama-3.2-11b-vision-instruct")))
         if self._vibe_allowed():
             candidates.append(Candidate("vibecode", self.env.get("VIBE_VISION_MODEL", "bitrix/bitrixgpt-5.5-thinking")))
-        paid = Candidate("aiai", self.env.get("AIAI_VISION_MODEL", self.env.get("AIAI_MODEL", "")))
+        paid = Candidate("aiai", self.env.get("AIAI_VISION_MODEL", self.env.get("AIAI_MODEL", "gpt-4o")))
         if str(self.env.get("AIAI_PREFERRED", "")).lower() == "true":
             candidates.insert(0, paid)
         else:
@@ -342,7 +342,7 @@ class AIProviderRouter:
             if reserved_cost is None or not self._within_aiai_budget(reserved_cost):
                 raise AIProviderError("paid_budget_exhausted")
         key = self._secret("AIAI_API_KEY")
-        base_url = self._required("AIAI_BASE_URL").rstrip("/")
+        base_url = str(self.env.get("AIAI_BASE_URL") or "https://api.aiai.by/v1").rstrip("/")
         if kind == "audio":
             audio = base64.b64decode(payload["audio_b64"])
             response = self._post(base_url + "/audio/transcriptions", headers={"Authorization": f"Bearer {key}"}, files={"file": (payload["filename"], audio, payload["mime_type"]), "model": (None, candidate.model)}, timeout=self._timeout(kind))
@@ -393,7 +393,7 @@ class AIProviderRouter:
 
     def _aiai_enabled(self) -> bool:
         configured = (str(self.env.get("AIAI_PAID_ENABLED", "")).lower() == "true"
-                      and bool(self.env.get("AIAI_API_KEY")) and bool(self.env.get("AIAI_BASE_URL")))
+                      and bool(self.env.get("AIAI_API_KEY")))
         budgeted = (_as_float(self.env.get("AIAI_DAILY_BUDGET_BEL")) not in (None, 0)
                     and _as_float(self.env.get("AIAI_MONTHLY_BUDGET_BEL")) not in (None, 0)
                     and self._configured_aiai_price() is not None)
